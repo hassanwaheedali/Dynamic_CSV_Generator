@@ -16,6 +16,7 @@ from sku_handle import (
     extract_model,
     extract_variant_tokens,
     format_variant,
+    join_base_variant,
 )
 from tests.conftest import Pipeline
 from warranty import lookup_terms
@@ -130,6 +131,25 @@ def test_variant_tokens_cover_capacity_colour_taps_and_generation() -> None:
     joined = format_variant(tokens)
     assert joined == "1.5TON-WHITE-3TAPS"
     assert joined == joined.upper()
+
+
+def test_join_base_variant_collapses_stuttered_numeric_tokens() -> None:
+    assert join_base_variant("KIA-DAWLANCE-KORE-32", "32INCH") == "KIA-DAWLANCE-KORE-32-INCH"
+    assert join_base_variant("KIA-DAWLANCE-ECONO-1", "1TON-WHITE") == "KIA-DAWLANCE-ECONO-1-TON-WHITE"
+    assert join_base_variant("KIA-ORIENT-TWISTER-10", "10KG-SILVER") == "KIA-ORIENT-TWISTER-10-KG-SILVER"
+    assert (
+        join_base_variant("KIA-DAWLANCE-FREEZERONTOP-12", "12CUFT-BLACK")
+        == "KIA-DAWLANCE-FREEZERONTOP-12-CUFT-BLACK"
+    )
+    assert join_base_variant("KIA-DAWLANCE-ECONO-15", "1.5TON-WHITE") == "KIA-DAWLANCE-ECONO-1.5-TON-WHITE"
+
+    registry = UniqueRegistry()
+    registry.register_base("KIA-DAWLANCE-KORE-32")
+    registry.register_base("KIA-DAWLANCE-KORE-32")
+    first, _ = registry.assign("KIA-DAWLANCE-KORE-32", "32INCH")
+    second, _ = registry.assign("KIA-DAWLANCE-KORE-32", "32INCH")
+    assert first == "KIA-DAWLANCE-KORE-32-INCH"
+    assert second == "KIA-DAWLANCE-KORE-32-INCH-2"
 
 
 # --------------------------------------------------------------------------

@@ -335,6 +335,39 @@ def build_handle_token(model: str, product_type: str) -> str:
     return handle
 
 
+def join_base_variant(base: str, variant: str) -> str:
+    """Join a base code with a variant suffix, collapsing stuttered dimension tokens.
+
+    When a fallback base already ends in the capacity number (e.g. ``KIA-...-32``
+    or ``KIA-...-15`` for 1.5 Ton) and the variant suffix repeats that number
+    (e.g. ``32INCH`` or ``1.5TON-WHITE``), the repeating number is collapsed so the
+    SKU reads ``KIA-...-32-INCH`` or ``KIA-...-1.5-TON-WHITE`` instead of
+    stuttering as ``KIA-...-32-32INCH`` or ``KIA-...-15-1.5TON-WHITE``.
+    """
+    if not (base and variant):
+        return base or variant
+
+    m_base = re.search(r"(?:^|[-_])(\d+)$", base)
+    m_var = re.match(r"^(\d+(?:\.\d+)?)([A-Za-z]+)(?:([-_].*))?$", variant)
+    if m_base and m_var:
+        base_digits = m_base.group(1)
+        var_num = m_var.group(1)
+        unit = m_var.group(2)
+        rest = m_var.group(3) or ""
+        if base_digits in (var_num.replace(".", ""), var_num):
+            stem = base[:-len(base_digits)].rstrip("-_")
+            return f"{stem}-{var_num}-{unit}{rest}"
+
+    if m_base:
+        digits = m_base.group(1)
+        if variant == digits:
+            return base
+        if variant.startswith(f"{digits}-"):
+            return f"{base}-{variant[len(digits) + 1:]}"
+
+    return f"{base}-{variant}"
+
+
 # ---------------------------------------------------------------------------
 #  Uniqueness
 # ---------------------------------------------------------------------------
@@ -377,7 +410,7 @@ class UniqueRegistry:
             self._taken.add(base)
             return base, False
 
-        candidate = f"{base}-{variant}" if variant else base
+        candidate = join_base_variant(base, variant) if variant else base
         if candidate not in self._taken:
             self._taken.add(candidate)
             return candidate, False
