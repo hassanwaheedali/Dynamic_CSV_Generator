@@ -471,11 +471,30 @@ def main() -> int:
         ui.box("FILES", lines, t.blue)
 
     ui.write()
-    if not args.no_wait and msvcrt is not None:
-        ui.write(f"  {t.paint('Press', t.grey)} {t.paint('O', t.bold, t.cyan)} "
-                 f"{t.paint('to open the output folder, any other key to exit', t.grey)}")
-        if msvcrt.getwch().lower() == "o":
-            os.startfile(out_dir)  # type: ignore[attr-defined]
+    if not args.no_wait:
+        ui.write(f"  {t.paint('Press', t.grey)} {t.paint('[Enter]', t.bold, t.cyan)} "
+                 f"{t.paint('or', t.grey)} {t.paint('[O]', t.bold, t.cyan)} "
+                 f"{t.paint('to open output folder (or any other key to exit)...', t.grey)}")
+        key = ""
+        if msvcrt is not None and sys.stdin.isatty():
+            try:
+                key = msvcrt.getwch().lower()
+            except Exception:
+                key = ""
+        if not key:
+            try:
+                key = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                key = "q"
+
+        # Accept letter 'o', number '0', '1', or Enter
+        if key in ("o", "0", "1", "\r", "\n", ""):
+            ui.write(f"  {t.paint(t.ok, t.green)} {t.paint('Opening folder:', t.bold, t.green)} {out_dir}")
+            try:
+                os.startfile(str(out_dir))  # type: ignore[attr-defined]
+            except Exception:
+                subprocess.Popen(["explorer", str(out_dir)])
+            time.sleep(0.4)
     return 1 if blocked else (2 if audit_failed else 0)
 
 
