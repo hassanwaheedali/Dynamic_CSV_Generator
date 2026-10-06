@@ -1,0 +1,338 @@
+"""Sections 4 and 5 -- category classification and Product Type, both platforms.
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║  ██  EDIT HERE  ██  -- category id tables for each platform              ║
+║                                                                            ║
+║  CATEGORY_DIGI_PATHS  : DigiMall needs the FULL underscore-joined         ║
+║                         root-to-leaf path (e.g. 11639_11643_11661_11669). ║
+║  CATEGORY_ALFA_IDS    : Alfa needs ONLY the bare leaf id (e.g. 11509).    ║
+║  PRODUCT_TYPE_MAP     : the plain-text "Product Type" column, shared by   ║
+║                         both output files.                                ║
+║                                                                            ║
+║  The values below are final, verified output strings.  The code never     ║
+║  reconstructs or concatenates an id -- it returns the table's literal     ║
+║  value unmodified.  To add a category, add a key to the relevant table    ║
+║  AND a matching key in PRODUCT_TYPE_MAP.                                  ║
+║                                                                            ║
+║  DIGI_SEGMENT_ALIASES / ALFA_SEGMENT_ALIASES                              ║
+║      Breadcrumb wording varies ("Deep Freezer" vs the table's "freezers", ║
+║      "Air purifier & humdifier" vs "air purifiers").  When a breadcrumb   ║
+║      segment does not match a table key, add the segment wording here     ║
+║      pointing at the table key it should resolve to.                      ║
+║                                                                            ║
+║  A miss on one platform's table NEVER blanks the other platform's cell.   ║
+╚══════════════════════════════════════════════════════════════════════════╝
+"""
+
+from __future__ import annotations
+
+import re
+
+from models import ResolvedCategory
+
+# ===========================================================================
+#  EDIT HERE -- DigiMall: full root-to-leaf path, underscore-joined
+# ===========================================================================
+CATEGORY_DIGI_PATHS: dict[str, str] = {
+    "air coolers": "11639_11643_11653_11654",
+    "air purifiers": "11639_11643_11653_11655",
+    "ac inverter": "11639_11643_11653_11782_11783",  # Air Conditioners > Inverters
+    "ac non-inverter": "11639_11643_11653_11782_11784",  # Air Conditioners > Non-Invertors
+    "fans": "11639_11643_11653_11786",
+    "heaters": "11639_11643_11653_11813",
+    "microwaves": "11639_11643_11661_11666",
+    "water dispenser": "11639_11643_11661_11669",
+    "dishwashers": "11639_11643_11661_11747",
+    "refrigerators": "11639_11643_11661_11787",
+    "freezers": "11639_11643_11661_11788",
+    "ovens": "11639_11643_11661_11789",
+    "irons": "11639_11643_11748_11749",
+    "vacuum cleaners": "11639_11643_11751_11795",
+    "washing machines": "11639_11643_11791_11792",
+    "juicers": "11639_11643_11802_11804",
+    "mixers": "11639_11643_11802_11805",
+    "blenders": "11639_11643_11802_11806",
+    "food processors": "11639_11643_11802_11807",
+    "air fryers": "11639_11643_11802_11808",
+    "grinders": "11639_11643_11802_11809",
+    "sandwich maker": "11639_11643_11802_11814",
+    "toaster": "11639_11643_11802_11815",
+    "hair straightener": "11773_11777_11823",
+    # NOTE (do not remove this comment): DigiMall has NO "LED TV" leaf anywhere
+    # in its tree, and no leaf for geysers / sound bars / speakers / UPS.
+    # Products in those groups get an EMPTY DigiMall Category plus a QC flag.
+    # If DigiMall adds any of those leaves later, just add the entry here.
+}
+
+# ===========================================================================
+#  EDIT HERE -- Alfa: bare leaf id only, never a joined path
+# ===========================================================================
+CATEGORY_ALFA_IDS: dict[str, str] = {
+    "air coolers": "11511",
+    "air conditioner": "11505",  # Alfa has one flat AC leaf, no inverter/non-inverter split
+    "washing machine": "11506",
+    "refrigerators": "11507",
+    "deep freezer": "11508",
+    "water dispenser": "11509",
+    "geysers": "11510",
+    "microwaves": "11519",
+    "dish washer": "12068",
+    "oven": "11527",
+    "blenders": "11528",
+    "food factory": "11529",
+    "coffee maker": "11530",
+    "led tv": "11539",  # non-smart
+    "smart led tv": "11540",  # smart / Android / Google TV
+    # NOTE: Alfa has NO leaf for Fans, Heaters, Air Purifiers, Irons, Vacuum
+    # Cleaners, Juicers, Mixers, Food Processors, Air Fryers, Grinders,
+    # Sandwich Maker, Toaster, Hair Straightener, Sound bars, Speakers or UPS.
+}
+
+# ===========================================================================
+#  EDIT HERE -- breadcrumb wording -> table key (only when wording differs)
+# ===========================================================================
+DIGI_SEGMENT_ALIASES: dict[str, str] = {
+    "deep freezer": "freezers",
+    "freezers": "freezers",
+    "washing machine": "washing machines",
+    "air purifier & humdifier": "air purifiers",
+    "air purifier": "air purifiers",
+    "air humidifier": "air purifiers",
+}
+
+ALFA_SEGMENT_ALIASES: dict[str, str] = {
+    "deep freezer": "deep freezer",
+    "air purifier & humdifier": "air purifiers",  # not in Alfa table -> stays unresolved
+}
+
+# Breadcrumb wordings that mean "this row sits OUTSIDE the mapped catalogue".
+# When the most specific segment is one of these, the walk stops immediately and
+# that platform's Category stays EMPTY -- it must not fall through to a parent
+# segment that happens to match (e.g. "Sound bars" sitting under an "LED TV"
+# root is NOT a TV).  If a later sheet has a genuine UPS/Speaker category, add
+# its id to the id table above and delete the wording from these sets.
+STOP_SEGMENTS: set[str] = {
+    "sound bars",
+    "soundbar",
+    "speakers",
+    "ups",
+    "audio & visuals",
+    "green energy",
+}
+
+# ===========================================================================
+#  EDIT HERE -- plain-text Product Type column (shared by BOTH output files)
+# ===========================================================================
+PRODUCT_TYPE_MAP: dict[str, str] = {
+    "air coolers": "Air Cooler",
+    "air purifiers": "Air Purifier",
+    "ac inverter": "Air Conditioner",
+    "ac non-inverter": "Air Conditioner",
+    "air conditioner": "Air Conditioner",  # Alfa's flat AC leaf
+    "fans": "Fan",
+    "heaters": "Heater",
+    "microwaves": "Microwave Oven",
+    "water dispenser": "Water Dispenser",
+    "dishwashers": "Dishwasher",
+    "dish washer": "Dishwasher",
+    "refrigerators": "Refrigerator",
+    "freezers": "Deep Freezer",
+    "deep freezer": "Deep Freezer",
+    "ovens": "Oven",
+    "oven": "Oven",
+    "irons": "Iron",
+    "vacuum cleaners": "Vacuum Cleaner",
+    "washing machines": "Washing Machine",
+    "washing machine": "Washing Machine",
+    "juicers": "Juicer",
+    "mixers": "Mixer",
+    "blenders": "Blender",
+    "food processors": "Food Processor",
+    "air fryers": "Air Fryer",
+    "grinders": "Grinder",
+    "sandwich maker": "Sandwich Maker",
+    "toaster": "Toaster",
+    "hair straightener": "Hair Straightener",
+    "geysers": "Geyser",
+    "coffee maker": "Coffee Maker",
+    "food factory": "Food Processor",
+    "led tv": "LED TV",
+    "smart led tv": "LED TV",
+}
+
+# Keywords that mark a breadcrumb segment as belonging to the AC group.
+_AC_SEGMENT_RE = re.compile(r"\bac\b")
+# Keywords that mark a breadcrumb segment as belonging to the LED-TV group.
+_LED_SEGMENT_RE = re.compile(r"\bled\b")
+# Inverter / non-inverter signals, checked in this order (negation first).
+_NON_INVERTER_RE = re.compile(r"\bnon[\s\-_]?inverter\b|\bnon[\s\-_]?inv\b", re.IGNORECASE)
+_INVERTER_RE = re.compile(
+    r"\binverter\b|\bdc inverter\b|\bt-?ai\b|\bbldc\b|\binverteron\b", re.IGNORECASE
+)
+_SMART_TV_RE = re.compile(r"\bsmart\b|\bgoogle\s?tv\b|\bandroid\b|\bandriod\b", re.IGNORECASE)
+
+# Group markers used internally; never written to a CSV cell.
+_GROUP_AC = "__ac_group__"
+_GROUP_LED = "__led_group__"
+
+
+def _singularise(words: str) -> str:
+    """Very small, explicit plural fold used only for table-key comparison."""
+    return re.sub(r"\b([a-z]{4,})s\b", r"\1", words)
+
+
+def _match_table_key(segment: str, table_keys: list[str]) -> str | None:
+    """Find the table key a breadcrumb segment refers to, or ``None``.
+
+    Order of attempts, all deterministic:
+      1. exact key equality
+      2. exact equality ignoring a trailing plural "s"
+      3. the key appears inside the segment (e.g. "water dispenser 2026")
+      4. the segment appears inside the key (e.g. "washing machine" -> "washing machines")
+    """
+    if segment in table_keys:
+        return segment
+    folded = _singularise(segment)
+    for key in table_keys:
+        if _singularise(key) == folded:
+            return key
+    for key in table_keys:
+        if key in segment:
+            return key
+    for key in table_keys:
+        if segment in key:
+            return key
+    return None
+
+
+def _resolve_group(segments: list[str], digi: bool) -> tuple[str | None, str]:
+    """Walk breadcrumb segments most specific -> least, returning (key|GROUP, reason)."""
+    table_keys = list(CATEGORY_DIGI_PATHS) if digi else list(CATEGORY_ALFA_IDS)
+    aliases = DIGI_SEGMENT_ALIASES if digi else ALFA_SEGMENT_ALIASES
+    for segment in reversed(segments):
+        if segment in STOP_SEGMENTS:
+            return None, "segment marked as outside the mapped catalogue"
+        if _AC_SEGMENT_RE.search(segment):
+            return _GROUP_AC, "ac group"
+        if _LED_SEGMENT_RE.search(segment):
+            return _GROUP_LED, "led group"
+        key = aliases.get(segment)
+        if key is None:
+            key = _match_table_key(segment, table_keys)
+        if key is not None and key in table_keys:
+            return key, "matched"
+    return None, "unmatched"
+
+
+def _ac_inverter_key(text: str) -> tuple[str | None, str]:
+    """Decide DigiMall's inverter vs non-inverter AC leaf from the row's own text."""
+    if _NON_INVERTER_RE.search(text):
+        return "ac non-inverter", "non-inverter signal"
+    if _INVERTER_RE.search(text):
+        return "ac inverter", "inverter signal"
+    return None, (
+        "air conditioner with no inverter/non-inverter signal in Title OR Description -- "
+        "DigiMall has separate Inverter and Non-Invertor leaves, so this needs a human decision"
+    )
+
+
+def resolve_category(
+    raw_breadcrumb: str, digi_text: str, alfa_text: str
+) -> ResolvedCategory:
+    """Resolve one breadcrumb string for BOTH platforms, independently.
+
+    ``digi_text`` / ``alfa_text`` are the row's Title + Description, passed
+    separately because the two platforms key off different signals (DigiMall
+    needs inverter status, Alfa needs TV smartness).
+    """
+    segments = [s.strip().lower() for s in raw_breadcrumb.split("/") if s.strip()]
+
+    # ---- DigiMall ---------------------------------------------------------
+    digi_key, _ = _resolve_group(segments, digi=True)
+    digi_path: str | None = None
+    digi_reason = ""
+    if digi_key == _GROUP_AC:
+        ac_key, ac_reason = _ac_inverter_key(digi_text)
+        if ac_key is not None:
+            digi_path = CATEGORY_DIGI_PATHS[ac_key]
+        else:
+            digi_reason = ac_reason
+    elif digi_key == _GROUP_LED:
+        digi_reason = (
+            "no DigiMall category exists for LED TV -- confirmed gap in current tree"
+        )
+    elif digi_key is None:
+        digi_reason = (
+            f"breadcrumb {raw_breadcrumb!r} did not match any DigiMall category key -- "
+            "add a keyword or a DIGI_SEGMENT_ALIASES entry"
+        )
+    else:
+        digi_path = CATEGORY_DIGI_PATHS[digi_key]
+
+    # ---- Alfa -------------------------------------------------------------
+    alfa_key, _ = _resolve_group(segments, digi=False)
+    alfa_id: str | None = None
+    alfa_reason = ""
+    if alfa_key == _GROUP_AC:
+        alfa_id = CATEGORY_ALFA_IDS["air conditioner"]
+    elif alfa_key == _GROUP_LED:
+        # A smart TV has its own leaf id; everything else in the LED group uses
+        # the plain one.
+        alfa_id = (
+            CATEGORY_ALFA_IDS["smart led tv"]
+            if _SMART_TV_RE.search(alfa_text)
+            else CATEGORY_ALFA_IDS["led tv"]
+        )
+    elif alfa_key is None:
+        alfa_reason = (
+            f"breadcrumb {raw_breadcrumb!r} did not match any Alfa category key -- "
+            "add a keyword or an ALFA_SEGMENT_ALIASES entry"
+        )
+    else:
+        alfa_id = CATEGORY_ALFA_IDS[alfa_key]
+
+    real_digi = digi_key if digi_key in CATEGORY_DIGI_PATHS else None
+    real_alfa = alfa_key if alfa_key in CATEGORY_ALFA_IDS else None
+    reason = digi_reason or alfa_reason
+    return ResolvedCategory(
+        raw=raw_breadcrumb,
+        digi_path=digi_path,
+        alfa_id=alfa_id,
+        matched_key=real_digi or real_alfa,
+        reason=reason,
+    )
+
+
+def _infer_product_type(category: ResolvedCategory, source_brand: str) -> str:
+    """Section 5 fallback: a plain generic singular name from the product's own words."""
+    last = category.raw.split("/")[-1].strip()
+    last = re.sub(re.escape(source_brand), "", last, flags=re.IGNORECASE).strip(" -")
+    if last.isupper():
+        return last  # keep acronyms such as UPS exactly as the sheet spells them
+    if len(last) > 3 and last.lower().endswith("s") and not last.lower().endswith(("ss", "us")):
+        last = last[:-1]
+    return last.title() if last else "Product"
+
+
+def resolve_product_type(
+    category: ResolvedCategory, source_brand: str
+) -> tuple[str, bool]:
+    """Return ``(product_type, was_inferred)``.
+
+    Product Type is never left blank in either output file: if neither
+    platform's table matched, a generic singular name is derived from the
+    product's own breadcrumb and the row is flagged for a human glance.
+    """
+    if category.matched_key and category.matched_key in PRODUCT_TYPE_MAP:
+        return PRODUCT_TYPE_MAP[category.matched_key], False
+
+    # Alfa's leaf may still be known even when DigiMall's is not (and vice versa).
+    if category.alfa_id:
+        for key, value in CATEGORY_ALFA_IDS.items():
+            if value == category.alfa_id and key in PRODUCT_TYPE_MAP:
+                return PRODUCT_TYPE_MAP[key], False
+    if category.digi_path:
+        for key, value in CATEGORY_DIGI_PATHS.items():
+            if value == category.digi_path and key in PRODUCT_TYPE_MAP:
+                return PRODUCT_TYPE_MAP[key], False
+    return _infer_product_type(category, source_brand), True
