@@ -1,0 +1,64 @@
+# Lint policy for the pipeline.
+#
+# `ruff check .` from this directory is clean.  The rules kept here catch dead
+# code, unused imports, latent bugs and simplification misses -- the rules left
+# out are style heuristics that would fight the way this codebase is written.
+
+target-version = "py310"
+line-length = 120
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes -- unused imports, undefined names, dead variables
+    "I",    # import sorting
+    "B",    # flake8-bugbear -- likely bugs, loop-variable capture
+    "C4",   # comprehensions
+    "SIM",  # simplifications
+    "UP",   # pyupgrade
+    "PIE",  # misc lints
+    "RUF",  # ruff's own rules
+    "RET",  # return statements
+    "FURB", # refurb suggestions
+    "PL",   # the pylint subset, minus the heuristics ignored below
+]
+ignore = [
+    # The editable values -- VENDOR_DIGI/VENDOR_ALFA, the SEO length bounds,
+    # DEFAULT_VARIANT_QUANTITY, WARRANTY_TERMS -- are deliberately re-exported
+    # through the module that reads them, in the explicit "X as X" form that
+    # mypy --strict wants for a re-export.
+    "PLC0414",
+
+    # The pipeline parses source text that legitimately contains typographic
+    # characters: bullets are "•·-*–—", and cleaning strips " -–—/,".  These are
+    # data, not typos (see the unicode edge case in the stress sheet).
+    "RUF001",
+
+    # Magic numbers.  The thresholds a client may want to change -- SEO lengths,
+    # the default quantity, the vendor names -- already live in config.py, where
+    # they are editable without touching logic.  The rest (5-8 tags, a 3-bullet
+    # short description, "3 digits after a comma") are local rules of thumb whose
+    # extraction into constants would bury the rule they express.
+    "PLR2004",
+
+    # Functions such as resolve_row(), build_description_bundle() and the audit's
+    # main() are long and take several arguments on purpose: they are the
+    # readable, step-by-step specification of one business rule each, and the
+    # plan for this project asked for exactly that shape.
+    "PLR0912",  # too many branches
+    "PLR0913",  # too many arguments
+    "PLR0915",  # too many statements
+    "PLR0917",  # too many positional arguments
+]
+
+[lint.per-file-ignores]
+# Fixed-width ASCII banner boxes: the box is 228 columns wide by design.
+"attributes.py" = ["E501"]
+"brands.py" = ["E501"]
+"categories.py" = ["E501"]
+"warranty.py" = ["E501"]
+"warranty_terms.py" = ["E501"]
+# The 66-column / 28-column header contract has to stay one literal so the test
+# fails if a single column moves.
+"tests/test_output_schema.py" = ["E501"]
