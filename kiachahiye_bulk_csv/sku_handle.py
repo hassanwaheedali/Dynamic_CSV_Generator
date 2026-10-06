@@ -86,6 +86,9 @@ CAPACITY_ONLY_RE = re.compile(
     r"(?i)^\s*\d+(?:\.\d+)?\s*(?:cu\.?\s?ft\.?|liter|litre|ltr|kg|ton|inch|"
     r"inches|watt|watts|w|v|volt|volts|taps?|star)\s*$"
 )
+TRAILING_DIGITS_RE = re.compile(r"(?:^|[-_])(\d+)$")
+DIMENSION_VARIANT_RE = re.compile(r"^(\d+(?:\.\d+)?)([A-Za-z]+)(?:([-_].*))?$")
+
 
 
 @dataclass(frozen=True)
@@ -335,6 +338,35 @@ def build_handle_token(model: str, product_type: str) -> str:
     return handle
 
 
+def _collapse_dimension_stutter(
+    base: str, variant: str, base_digits: str
+) -> str | None:
+    """Collapse repeating numbers when the variant starts with a unit-bearing dimension."""
+    m_var = DIMENSION_VARIANT_RE.match(variant)
+    if not m_var:
+        return None
+
+    var_num = m_var.group(1)
+    unit = m_var.group(2)
+    rest = m_var.group(3) or ""
+
+    if base_digits not in (var_num.replace(".", ""), var_num):
+        return None
+
+    stem = base[:-len(base_digits)].rstrip("-_")
+    return f"{stem}-{var_num}-{unit}{rest}"
+
+
+def _collapse_prefixed_digits(base: str, variant: str, digits: str) -> str | None:
+    """Collapse exact matching digits or a 'digits-' prefix."""
+    if variant == digits:
+        return base
+    prefix = f"{digits}-"
+    if variant.startswith(prefix):
+        return f"{base}-{variant[len(prefix):]}"
+    return None
+
+
 def join_base_variant(base: str, variant: str) -> str:
     """Join a base code with a variant suffix, collapsing stuttered dimension tokens.
 
@@ -347,23 +379,18 @@ def join_base_variant(base: str, variant: str) -> str:
     if not (base and variant):
         return base or variant
 
-    m_base = re.search(r"(?:^|[-_])(\d+)$", base)
-    m_var = re.match(r"^(\d+(?:\.\d+)?)([A-Za-z]+)(?:([-_].*))?$", variant)
-    if m_base and m_var:
-        base_digits = m_base.group(1)
-        var_num = m_var.group(1)
-        unit = m_var.group(2)
-        rest = m_var.group(3) or ""
-        if base_digits in (var_num.replace(".", ""), var_num):
-            stem = base[:-len(base_digits)].rstrip("-_")
-            return f"{stem}-{var_num}-{unit}{rest}"
+    m_base = TRAILING_DIGITS_RE.search(base)
+    if not m_base:
+        return f"{base}-{variant}"
 
-    if m_base:
-        digits = m_base.group(1)
-        if variant == digits:
-            return base
-        if variant.startswith(f"{digits}-"):
-            return f"{base}-{variant[len(digits) + 1:]}"
+    base_digits = m_base.group(1)
+    collapsed = _collapse_dimension_stutter(base, variant, base_digits)
+    if collapsed:
+        return collapsed
+
+    collapsed = _collapse_prefixed_digits(base, variant, base_digits)
+    if collapsed:
+        return collapsed
 
     return f"{base}-{variant}"
 

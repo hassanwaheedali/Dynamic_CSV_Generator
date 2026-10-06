@@ -142,6 +142,12 @@ def test_join_base_variant_collapses_stuttered_numeric_tokens() -> None:
         == "KIA-DAWLANCE-FREEZERONTOP-12-CUFT-BLACK"
     )
     assert join_base_variant("KIA-DAWLANCE-ECONO-15", "1.5TON-WHITE") == "KIA-DAWLANCE-ECONO-1.5-TON-WHITE"
+    assert join_base_variant("KIA-DAWLANCE-KORE-32", "32") == "KIA-DAWLANCE-KORE-32"
+    assert join_base_variant("KIA-DAWLANCE-KORE-32", "32-RED") == "KIA-DAWLANCE-KORE-32-RED"
+    assert join_base_variant("KIA-DAWLANCE-KORE-32", "RED") == "KIA-DAWLANCE-KORE-32-RED"
+    assert join_base_variant("KIA-DAWLANCE-KORE", "RED") == "KIA-DAWLANCE-KORE-RED"
+    assert join_base_variant("", "RED") == "RED"
+    assert join_base_variant("KIA-DAWLANCE", "") == "KIA-DAWLANCE"
 
     registry = UniqueRegistry()
     registry.register_base("KIA-DAWLANCE-KORE-32")
