@@ -1,0 +1,684 @@
+"""Entrypoint -- reads the source sheet, resolves every row once, writes both
+platform CSVs and the combined QC report.
+
+Usage
+-----
+    python main.py                       # uses the paths in CONFIG below
+    python main.py --input other.csv --digi my_digi.csv --alfa my_alfa.csv
+    python main.py --sample-titles 20    # write a before/after Title review file
+
+Nothing here calls an LLM or the network.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+import config as CONFIG
+from attributes import build_attributes
+from brands import resolve_brand
+from categories import resolve_category, resolve_product_type
+from description_builder import build_description_bundle
+from models import InputRow, ProductRecord
+from pricing import resolve_prices, resolve_quantity
+from qc_report import (
+    CAT_AC_INVERTER_UNKNOWN,
+    CAT_ATTRIBUTE_EMPTY,
+    CAT_BRAND_ALFA,
+    CAT_BRAND_DIGI,
+    CAT_CATEGORY_ALFA,
+    CAT_CATEGORY_DIGI,
+    CAT_FALLBACK_SKU,
+    CAT_HANDLE_DEDUPED,
+    CAT_PRODUCT_TYPE_INFERRED,
+    CAT_QTY_DEFAULTED,
+    CAT_SEO_DESCRIPTION_LENGTH,
+    CAT_SHORT_DESCRIPTION_THIN,
+    CAT_SKU_DEDUPED,
+    CAT_THIN_DESCRIPTION,
+    CAT_TITLE_DESCRIPTION_CONFLICT,
+    CAT_TITLE_FALLBACK,
+    CAT_WEIGHT_MISSING,
+    CAT_WEIGHT_UNREADABLE,
+    QCFlagCollector,
+)
+from sku_handle import (
+    ModelExtraction,
+    UniqueRegistry,
+    build_fallback_model,
+    build_handle_token,
+    build_sku_token,
+    compact_model,
+    extract_model,
+    extract_variant_tokens,
+    find_series_token,
+    format_variant,
+    handle_normaliser,
+    parse_capacity,
+    taps_conflict,
+    upper_sku_normaliser,
+)
+from textutils import (
+    find_weight_in_text,
+    parse_weight_cell,
+    parse_weight_unit,
+    pick_weight_columns,
+    strip_markup_keep_lines,
+)
+from title_builder import build_title
+from warranty import TERM_LINES, resolve_warranty
+from writers import (
+    ALFA_HEADER,
+    DIGI_HEADER,
+    build_alfa_row,
+    build_digi_row,
+    write_csv,
+)
+
+# ===========================================================================
+#  CONFIG -- everything editable lives in config.py (vendors, paths, defaults)
+# ===========================================================================
+PROJECT_ROOT = CONFIG.PROJECT_ROOT
+INPUT_FILE = CONFIG.INPUT_FILE
+DIGI_OUTPUT = CONFIG.DIGI_OUTPUT
+ALFA_OUTPUT = CONFIG.ALFA_OUTPUT
+QC_REPORT = CONFIG.QC_REPORT
+TITLE_SAMPLE = CONFIG.TITLE_SAMPLE
+
+# The only columns the sheet must supply.  "Vendor" is deliberately NOT here:
+# neither file's Vendor is ever taken from the sheet (the two literals live in
+# config.py -- VENDOR_DIGI / VENDOR_ALFA), so a sheet without a Vendor column is
+# perfectly valid.  If the column is present its value is read and ignored.
+REQUIRED_COLUMNS = (
+    "Title", "Description", "Sell Price", "Original Price",
+    "Categories", "Brand", "Image",
+)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Input reading
+# ---------------------------------------------------------------------------
+def _normalise_row(raw: dict[str, Any], row_number: int) -> InputRow:
+    def get(name: str) -> str:
+        for key, value in raw.items():
+            if key is not None and key.strip().lower() == name.lower():
+                return "" if value is None else str(value)
+        return ""
+
+
+    # The weight columns are found by name, so any spelling works: "Shipping
+    # Weight", "Gross Weight (kg)", "Wt In Kgs" or plain "Weight".
+    weight_column, unit_column = pick_weight_columns([key or "" for key in raw])
+
+    # A source cell may carry HTML; strip it before anything parses the text, so
+    # markup can never reach the specification table or the Attributes as content.
+    return InputRow(
+        row_number=row_number,
+        title=strip_markup_keep_lines(get("Title")).strip(),
+        description=strip_markup_keep_lines(get("Description")),
+        sell_price=get("Sell Price"),
+        original_price=get("Original Price"),
+        categories=get("Categories"),
+        brand=get("Brand"),
+        image=get("Image"),
+        vendor=get("Vendor"),  # read but deliberately never used
+        weight=get(weight_column) if weight_column else "",
+        weight_unit=get(unit_column) if unit_column else "",
+    )
+
+
+def read_input(path: Path) -> list[InputRow]:
+    """Read the source sheet (.csv or .xlsx) with a real parser."""
+    if not path.exists():
+        raise FileNotFoundError(f"Input sheet not found: {path}")
+
+    rows: list[InputRow] = []
+    if path.suffix.lower() in (".xlsx", ".xlsm"):
+        try:
+            from openpyxl import load_workbook  # noqa: PLC0415 -- optional, only for .xlsx input
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise RuntimeError(
+                "openpyxl is required to read .xlsx input; pip install openpyxl"
+            ) from exc
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        sheet = workbook.active
+        iterator = sheet.iter_rows(values_only=True)
+        header = next(iterator)
+        columns = [str(cell) if cell is not None else "" for cell in header]
+        for index, values in enumerate(iterator, start=2):
+            raw = {columns[i]: values[i] for i in range(min(len(columns), len(values)))}
+            rows.append(_normalise_row(raw, index))
+        workbook.close()
+        return rows
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        missing = [
+            column
+            for column in REQUIRED_COLUMNS
+            if not any(
+                (field or "").strip().lower() == column.lower()
+                for field in (reader.fieldnames or [])
+            )
+        ]
+        if missing:
+            raise ValueError(f"Input sheet is missing required column(s): {missing}")
+        for index, raw in enumerate(reader, start=2):
+            rows.append(_normalise_row(raw, index))
+    return rows
+
+
+def resolve_images(raw_image: str) -> str:
+    """Pipe-join multiple URLs; never invent one."""
+    parts = [part.strip() for part in raw_image.split(",") if part.strip()]
+    return "|".join(parts)
+
+
+def resolve_weight(
+    text: str, column_value: str = "", column_unit: str = ""
+) -> tuple[str, str, str]:
+    """Weight for the Variant Weight cells, and where it came from.
+
+    The sheet's own Weight column wins when it holds a readable weight; otherwise
+    the Description is read, which is where most of the current sheet states it.
+    Returns ``(number, unit, source)`` with source ``"column"``, ``"description"``
+    or ``""`` when neither has one.
+    """
+    written = parse_weight_cell(column_value)
+    if written is not None:
+        # A separate unit column, when the sheet has one, refines the unit.
+        stated_unit = parse_weight_unit(column_unit) if column_unit else None
+        unit = stated_unit if stated_unit is not None else written[1]
+        return written[0], unit, "column"
+    in_text = find_weight_in_text(text)
+    if in_text is not None:
+        return in_text[0], in_text[1], "description"
+    return "", "", ""
+
+
+# ---------------------------------------------------------------------------
+# Per-row resolution
+# ---------------------------------------------------------------------------
+def resolve_row(
+    row: InputRow,
+    flags: QCFlagCollector,
+    sku_registry: UniqueRegistry,
+    handle_registry: UniqueRegistry,
+    finalise: bool,
+) -> ProductRecord:
+    """Resolve one input row into a single shared ProductRecord.
+
+    Runs twice: first pass counts SKU/Handle collisions, second pass assigns the
+    final unique values.  The two passes share every other rule, so nothing is
+    resolved twice differently.
+    """
+    text = f"{row.title}\n{row.description}"
+
+    brand = resolve_brand(row.brand)
+    if brand.digi_id is None:
+        flags.flag(
+            row.row_number, row.title, CAT_BRAND_DIGI,
+            f"brand {row.brand!r} is not in BRANDS_DIGI (brands.py) -- DigiMall Brands left empty",
+            platform="digi",
+        )
+    if brand.alfa_id is None:
+        flags.flag(
+            row.row_number, row.title, CAT_BRAND_ALFA,
+            f"brand {row.brand!r} is not in BRANDS_ALFA (brands.py) -- Alfa Brands left empty",
+            platform="alfa",
+        )
+
+    category = resolve_category(row.categories, text, text)
+    if category.digi_path is None:
+        is_ac_silent = "inverter/non-inverter signal" in category.reason
+        flags.flag(
+            row.row_number,
+            row.title,
+            CAT_AC_INVERTER_UNKNOWN if is_ac_silent else CAT_CATEGORY_DIGI,
+            f"{category.reason} -- DigiMall Category left empty",
+            platform="digi",
+        )
+    if category.alfa_id is None:
+        flags.flag(
+            row.row_number, row.title, CAT_CATEGORY_ALFA,
+            f"{category.reason} -- Alfa Category left empty",
+            platform="alfa",
+        )
+
+    product_type, inferred = resolve_product_type(category, row.brand)
+    if inferred:
+        flags.flag(
+            row.row_number, row.title, CAT_PRODUCT_TYPE_INFERRED,
+            f"Product Type {product_type!r} inferred from the breadcrumb -- please confirm",
+        )
+
+    conflict = taps_conflict(row.title, row.description)
+    if conflict is not None:
+        flags.flag(
+            row.row_number, row.title, CAT_TITLE_DESCRIPTION_CONFLICT,
+            f"Title says {conflict[0]} but the Description says {conflict[1]} -- the "
+            "SKU follows the Title; please confirm which is correct in the source.",
+        )
+
+    extraction = extract_model(row.title, row.description)
+    capacity = parse_capacity(text)
+    if extraction.confidence == "none":
+        model = build_fallback_model(
+            row.brand, find_series_token(text), capacity, row.title
+        )
+        used = ModelExtraction(model, "fallback", "none")
+        flags.flag(
+            row.row_number, row.title, CAT_FALLBACK_SKU,
+            "No formal model code found -- fallback SKU built from title words, "
+            "please verify manually before upload.",
+        )
+    else:
+        model = extraction.code
+        used = extraction
+
+    title_result = build_title(
+        row.brand, used, product_type, row.title, row.description
+    )
+    if title_result.strategy == "kept-with-light-cleanup":
+        flags.flag(
+            row.row_number, row.title, CAT_TITLE_FALLBACK,
+            "Title kept from source with light cleanup -- no reliable Model code "
+            "found for a full rebuild.",
+        )
+    elif len(title_result.dropped_words) >= 2:
+        flags.flag(
+            row.row_number, row.title, CAT_TITLE_FALLBACK,
+            "Rebuilt Title dropped source word(s): "
+            + ", ".join(title_result.dropped_words[:8])
+            + " -- add any real series name to SERIES_WORDS in sku_handle.py",
+        )
+
+    warranty_rows, warranty_headline, warranty_source = resolve_warranty(
+        text, brand.normalized, product_type
+    )
+
+    description = build_description_bundle(
+        brand=row.brand,
+        model=model if used.confidence != "none" else "",
+        product_type=product_type,
+        breadcrumb_leaf=row.categories.split("/")[-1].strip(),
+        color=title_result.color_token,
+        capacity=title_result.capacity_token,
+        warranty_rows=warranty_rows,
+        description=row.description,
+        title=title_result.title,
+        has_real_model=used.confidence != "none",
+        feature_tokens=[
+            title_result.series_token,
+            title_result.color_token,
+            title_result.inverter_token,
+            title_result.capacity_token,
+        ],
+    )
+    if description.thin:
+        flags.flag(
+            row.row_number, row.title, CAT_THIN_DESCRIPTION,
+            "Source Description is thin -- the table shows only what was genuinely "
+            "stated, with no filler rows added.",
+        )
+    if not (151 <= len(description.seo_description) <= 155):
+        flags.flag(
+            row.row_number, row.title, CAT_SEO_DESCRIPTION_LENGTH,
+            f"SEO Description is {len(description.seo_description)} characters, outside "
+            "the required 151-155 -- the source had too little product-specific "
+            "material to pad with honestly.",
+        )
+    if description.short_description_bullets < 3:
+        flags.flag(
+            row.row_number, row.title, CAT_SHORT_DESCRIPTION_THIN,
+            f"Short Description built with only {description.short_description_bullets} "
+            "bullet(s) -- fewer than 3 standout facts existed in the source.",
+        )
+
+    attributes, unmatched = build_attributes(
+        title=title_result.title,
+        description=row.description,
+        product_type=product_type,
+        warranty_headline=warranty_headline,
+    )
+    for column, signal in unmatched:
+        flags.flag(
+            row.row_number, row.title, CAT_ATTRIBUTE_EMPTY,
+            f"{column}: raw signal {signal!r} did not exactly match any allowed value "
+            "-- cell left empty; extend ALIASES/ALLOWED in attributes.py if it should map",
+            platform="digi",
+        )
+
+    price, compare_at = resolve_prices(row, flags)
+    quantity = resolve_quantity(row, flags)
+
+    weight, weight_unit, _source = resolve_weight(text, row.weight, row.weight_unit)
+    if not weight:
+        if row.weight.strip():
+            flags.flag(
+                row.row_number, row.title, CAT_WEIGHT_UNREADABLE,
+                f"Weight column says {row.weight!r}, which is not a weight in kg/g/lb/oz "
+                "-- Variant Weight left empty.",
+            )
+        else:
+            flags.flag(
+                row.row_number, row.title, CAT_WEIGHT_MISSING,
+                "No weight stated in the source -- Variant Weight left empty.",
+            )
+
+    variant_tokens = extract_variant_tokens(text, capacity, row.brand)
+    # A dimension already present in the model code (e.g. a colour baked into a
+    # fallback model) must not be repeated in the variant suffix.
+    compact = compact_model(model).upper()
+    variant_tokens = tuple(
+        token for token in variant_tokens if token.replace(" ", "").upper() not in compact
+    )
+    variant_suffix = format_variant(variant_tokens)
+
+    if not finalise:
+        sku_registry.register_base(build_sku_token(model))
+        handle_registry.register_base(build_handle_token(model, product_type))
+        sku = handle = ""
+    else:
+        sku, sku_numeric = sku_registry.assign(build_sku_token(model), variant_suffix)
+        handle, handle_numeric = handle_registry.assign(
+            build_handle_token(model, product_type),
+            f"{variant_suffix} -{product_type}".strip() if variant_suffix else "",
+        )
+        if sku_numeric:
+            flags.flag(
+                row.row_number, row.title, CAT_SKU_DEDUPED,
+                f"SKU {sku} needed a numeric suffix -- the model plus every "
+                "extractable variant dimension was already taken.",
+            )
+        if handle_numeric:
+            flags.flag(
+                row.row_number, row.title, CAT_HANDLE_DEDUPED,
+                f"Handle {handle} needed a numeric suffix to stay unique in this run.",
+            )
+        elif handle_registry.base_is_colliding(
+            build_handle_token(model, product_type)
+        ):
+            flags.flag(
+                row.row_number, row.title, CAT_HANDLE_DEDUPED,
+                f"Handle disambiguated with the variant suffix: {handle}",
+            )
+
+    return ProductRecord(
+        row_number=row.row_number,
+        source=row,
+        title=title_result.title,
+        product_type=product_type,
+        product_type_inferred=inferred,
+        description=description,
+        brand=brand,
+        category=category,
+        images=resolve_images(row.image),
+        option1_name="Color" if title_result.color_token else "",
+        option1_value=title_result.color_token,
+        option2_name="", option2_value="", option3_name="", option3_value="",
+        sku=sku,
+        barcode=sku,
+        bin_number=sku,
+        handle=handle,
+        weight=weight,
+        weight_unit=weight_unit,
+        variant_price=price,
+        variant_compare_at_price=compare_at,
+        variant_quantity=quantity,
+        attributes=attributes,
+        model=model,
+        model_source=used.source,
+        model_confidence=used.confidence,
+        warranty_source=warranty_source,
+        variant_suffix=variant_suffix,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+def run(rows: list[InputRow], flags: QCFlagCollector) -> list[ProductRecord]:
+    # The SKU registry upper-cases everything it hands out; the Handle registry
+    # slugs it.  Both are applied inside the registry, so a suffix can never
+    # leak a raw Title spelling (" -Water Dispenser") into a live handle.
+    print(
+        f"  Warranty terms: {len(TERM_LINES)} brand/category entries from "
+        "warranty_terms.py (edit WARRANTY_TERMS there to change a term)"
+    )
+
+    sku_registry = UniqueRegistry(upper_sku_normaliser)
+    handle_registry = UniqueRegistry(handle_normaliser)
+    # The counting pass exists only so pass two can see which models collide.
+    # It runs the same row code, so it must NOT report: a scratch collector
+    # swallows those flags and the QC report keeps exactly one row per real
+    # finding.  SKU/Handle dedupe flags are raised in pass two only, so nothing
+    # is lost by the swap.
+    scratch = QCFlagCollector()
+    for row in rows:
+        resolve_row(row, scratch, sku_registry, handle_registry, finalise=False)
+    records: list[ProductRecord] = []
+    for index, row in enumerate(rows, start=1):
+        if index % 100 == 0 or index == len(rows):
+            print(f"  ... resolved {index}/{len(rows)} rows", flush=True)
+        records.append(resolve_row(row, flags, sku_registry, handle_registry, finalise=True))
+    return records
+
+
+def write_title_sample(path: Path, records: list[ProductRecord]) -> None:
+    """A before/after review file: 10 rebuilt rows and up to 10 kept rows."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
+        writer.writerow(
+            [
+                "Row", "Strategy", "Source Title", "Final Title", "Model", "Capacity",
+                "Color", "Series/Feature", "Inverter", "Source words dropped",
+            ]
+        )
+        quotas: Counter[str] = Counter()
+        for record in records:
+            strategy = (
+                "kept-with-light-cleanup"
+                if record.model_confidence == "none"
+                else "rebuilt"
+            )
+            if quotas[strategy] >= 10:
+                continue
+            quotas[strategy] += 1
+            title_result = build_title(
+                record.source.brand,
+                ModelExtraction(record.model, record.model_source, record.model_confidence),
+                record.product_type,
+                record.source.title,
+                record.source.description,
+            )
+            writer.writerow(
+                [
+                    record.row_number,
+                    strategy,
+                    record.source.title,
+                    record.title,
+                    record.model,
+                    title_result.capacity_token,
+                    title_result.color_token,
+                    title_result.series_token,
+                    title_result.inverter_token,
+                    ", ".join(title_result.dropped_words),
+                ]
+            )
+
+
+def print_summary(
+    records: list[ProductRecord],
+    flags: QCFlagCollector,
+    digi_path: Path,
+    alfa_path: Path,
+) -> None:
+    total = len(records)
+    print()
+    print("=" * 78)
+    print(f"RUN COMPLETE -- {total} rows processed")
+    print("=" * 78)
+    print(f"  DigiMall file : {digi_path}")
+    print(f"  Alfa file     : {alfa_path}")
+
+    summary = flags.platform_summary(total)
+    print()
+    print("ROWS NEEDING MANUAL REVIEW (split per platform -- never merged)")
+    for platform, label, path in (
+        ("digi", "DigiMall", digi_path),
+        ("alfa", "Alfa", alfa_path),
+    ):
+        stats = summary[platform]
+        print(
+            f"  {label:9} need review: {stats['rows_need_review']:5} | "
+            f"info-only notes: {stats['rows_info_only']:5} | "
+            f"completely clean: {stats['rows_clean']:5}   ({path.name})"
+        )
+
+    print()
+    print("PER-PLATFORM CELL COUNTS")
+    print(f"  DigiMall Category empty : {flags.count(CAT_CATEGORY_DIGI):5} rows")
+    print(f"  Alfa     Category empty : {flags.count(CAT_CATEGORY_ALFA):5} rows")
+    print(f"  DigiMall Brands empty   : {flags.count(CAT_BRAND_DIGI):5} rows")
+    print(f"  Alfa     Brands empty   : {flags.count(CAT_BRAND_ALFA):5} rows")
+    print(f"  AC rows with unknown inverter status : {flags.count(CAT_AC_INVERTER_UNKNOWN):5} rows")
+
+    print()
+    print("SHARED FLAGS (both files)")
+    for category, label in (
+        (CAT_FALLBACK_SKU, "Fallback SKU built from title words"),
+        (CAT_SKU_DEDUPED, "SKU disambiguated (variant suffix, then numeric)"),
+        (CAT_HANDLE_DEDUPED, "Handle needed a uniqueness suffix"),
+        (CAT_WEIGHT_MISSING, "Variant Weight left empty (no weight in source)"),
+        (CAT_WEIGHT_UNREADABLE, "Weight column not readable as kg/g/lb/oz"),
+        (CAT_QTY_DEFAULTED, "Variant Quantity defaulted to 20"),
+        (CAT_ATTRIBUTE_EMPTY, "DigiMall Attribute_* left empty despite a raw signal"),
+        (CAT_THIN_DESCRIPTION, "Description thin (no filler rows added)"),
+        (CAT_TITLE_FALLBACK, "Title kept from source / rebuild dropped words"),
+        (CAT_PRODUCT_TYPE_INFERRED, "Product Type inferred from breadcrumb"),
+    ):
+        print(f"  {label:60} {flags.count(category):5} rows")
+
+    # ---- the explicit "not found in the lookup table" listing you asked for --
+    brand_misses: dict[str, Counter[str]] = {"digi": Counter(), "alfa": Counter()}
+    category_misses: dict[str, Counter[str]] = {"digi": Counter(), "alfa": Counter()}
+    for record in records:
+        if record.brand.digi_id is None:
+            brand_misses["digi"][record.brand.raw] += 1
+        if record.brand.alfa_id is None:
+            brand_misses["alfa"][record.brand.raw] += 1
+        if record.category.digi_path is None:
+            category_misses["digi"][record.category.raw] += 1
+        if record.category.alfa_id is None:
+            category_misses["alfa"][record.category.raw] += 1
+
+    print()
+    print("BRAND NOT FOUND IN LOOKUP TABLE")
+    for platform, table, filename in (
+        ("digi", "BRANDS_DIGI", "brands.py"),
+        ("alfa", "BRANDS_ALFA", "brands.py"),
+    ):
+        misses = brand_misses[platform]
+        if not misses:
+            print(f"  {platform.upper():5} none -- every brand resolved")
+            continue
+        print(f"  {platform.upper():5} edit {table} in {filename}:")
+        for name, count in misses.most_common():
+            print(f"          {name!r} -> {count} rows left with an empty Brands cell")
+
+    print()
+    print("CATEGORY NOT FOUND IN LOOKUP TABLE")
+    for platform, table, filename in (
+        ("digi", "CATEGORY_DIGI_PATHS", "categories.py"),
+        ("alfa", "CATEGORY_ALFA_IDS", "categories.py"),
+    ):
+        misses = category_misses[platform]
+        if not misses:
+            print(f"  {platform.upper():5} none -- every breadcrumb resolved")
+            continue
+        print(f"  {platform.upper():5} edit {table} in {filename}:")
+        for name, count in misses.most_common():
+            print(f"          {name!r} -> {count} rows left with an empty Category cell")
+
+    print()
+    print("ATTRIBUTE VALUES NOT IN THE VOCABULARY YET (DigiMall Attribute_* cells left empty)")
+    gaps = flags.attribute_gaps()
+    if not gaps:
+        print("  none -- every signal the sheet stated is on the allowed list")
+    else:
+        total = sum(gaps.values())
+        print(f"  {total} empty cells across {len(gaps)} column/string pairs "
+              "-- edit ALLOWED in attributes.py:")
+        for (column, raw), count in gaps.most_common(12):
+            print(f"          {column} <- {raw!r} on {count} rows")
+        if len(gaps) > 12:
+            print(f"          ... and {len(gaps) - 12} more pairs; the full list is in the QC report")
+
+    print()
+    print("WARRANTY COVERAGE")
+    sources = Counter(record.warranty_source for record in records)
+    for source, count in sources.most_common():
+        print(f"  {source:26} {count:5} rows")
+    brands_without_table = Counter(
+        record.brand.normalized
+        for record in records
+        if record.warranty_source == "none"
+    )
+    if brands_without_table:
+        print(
+            "  rows with no warranty row "
+            "(add the brand and category to WARRANTY_TERMS in warranty_terms.py):"
+        )
+        blanks: Counter[tuple[str, str]] = Counter(
+            (record.brand.normalized, record.product_type)
+            for record in records
+            if record.warranty_source == "none"
+        )
+        for (brand, product_type), count in blanks.most_common(12):
+            print(f"          {brand!r} / {product_type} -> {count} rows")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="KiaChahiye bulk CSV pipeline")
+    parser.add_argument("--input", type=Path, default=INPUT_FILE)
+    parser.add_argument("--digi", type=Path, default=DIGI_OUTPUT)
+    parser.add_argument("--alfa", type=Path, default=ALFA_OUTPUT)
+    parser.add_argument("--qc", type=Path, default=QC_REPORT)
+    parser.add_argument(
+        "--sample-titles", type=Path, default=TITLE_SAMPLE,
+        help="write a before/after Title review file to this path",
+    )
+    args = parser.parse_args(argv)
+
+    print(f"Reading {args.input}")
+    rows = read_input(args.input)
+    print(f"  {len(rows)} data rows, {len(DIGI_HEADER)} DigiMall columns, "
+          f"{len(ALFA_HEADER)} Alfa columns")
+
+    flags = QCFlagCollector()
+    records = run(rows, flags)
+
+    print("Writing output files")
+    write_csv(args.digi, DIGI_HEADER, [build_digi_row(r).values for r in records])
+    write_csv(args.alfa, ALFA_HEADER, [build_alfa_row(r).values for r in records])
+    flags.write_csv(args.qc)
+    write_title_sample(args.sample_titles, records)
+
+    print_summary(records, flags, args.digi, args.alfa)
+    print()
+    print(f"  QC report        : {args.qc}")
+    print(f"  Title sample     : {args.sample_titles}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
