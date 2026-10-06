@@ -7,7 +7,7 @@
    ─────────────                     ────────                    ────────────────
                                                         ┌── 1. digi/digimall_bulk_import.csv   ← UPLOAD
    data/input/                                          │
-   READY FIRST STEP 1 CSV.csv  ──►  main.py  ───────────┼── 2. alfa/alfa_bulk_import.csv        ← UPLOAD
+   Products.csv  ──►  main.py  ───────────┼── 2. alfa/alfa_bulk_import.csv        ← UPLOAD
    (1800 rows, 7 zaroori columns)                       │
                                                         ├── 3. qc_report.csv                   ← aap parhein
                                                         └── 4. title_review_sample.csv         ← aap dekhein

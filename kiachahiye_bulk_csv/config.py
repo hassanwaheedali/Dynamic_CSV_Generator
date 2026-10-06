@@ -39,7 +39,7 @@ VENDOR_ALFA = "Kia Chahiye Pvt Ltd"
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # The source product sheet (.csv or .xlsx).
-INPUT_FILE = PROJECT_ROOT / "data" / "input" / "READY FIRST STEP 1 CSV.csv"
+INPUT_FILE = PROJECT_ROOT / "data" / "input" / "Products.csv"
 
 # The two finished bulk-upload files -- separate folders, never combined.
 DIGI_OUTPUT = PROJECT_ROOT / "data" / "output" / "digi" / "digimall_bulk_import.csv"
