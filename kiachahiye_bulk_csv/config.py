@@ -41,13 +41,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # The source product sheet (.csv or .xlsx).
 INPUT_FILE = PROJECT_ROOT / "data" / "input" / "Products.csv"
 
+# Dedicated output directory per input sheet (e.g. data/output/Products/):
+OUTPUT_DIR = PROJECT_ROOT / "data" / "output" / INPUT_FILE.stem
+
 # The two finished bulk-upload files -- separate folders, never combined.
-DIGI_OUTPUT = PROJECT_ROOT / "data" / "output" / "digi" / "digimall_bulk_import.csv"
-ALFA_OUTPUT = PROJECT_ROOT / "data" / "output" / "alfa" / "alfa_bulk_import.csv"
+DIGI_OUTPUT = OUTPUT_DIR / "digi" / "digimall_bulk_import.csv"
+ALFA_OUTPUT = OUTPUT_DIR / "alfa" / "alfa_bulk_import.csv"
 
 # The combined QC / flagging report and the 20-row Title review sample.
-QC_REPORT = PROJECT_ROOT / "data" / "output" / "qc_report.csv"
-TITLE_SAMPLE = PROJECT_ROOT / "data" / "output" / "title_review_sample.csv"
+QC_REPORT = OUTPUT_DIR / "qc_report.csv"
+TITLE_SAMPLE = OUTPUT_DIR / "title_review_sample.csv"
 
 # The warranty terms themselves live in warranty_terms.py as WARRANTY_TERMS --
 # brand -> category -> "Part = Duration".  Nothing to configure here.

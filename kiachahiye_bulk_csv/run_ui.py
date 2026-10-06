@@ -303,9 +303,8 @@ def main() -> int:
     ui = UI(Theme(fancy))
     t = ui.t
 
-    custom = args.sheet is not None
     sheet = (args.sheet or CONFIG.INPUT_FILE).resolve()
-    out_dir = (PKG / "data" / "output" / sheet.stem) if custom else CONFIG.DIGI_OUTPUT.parent.parent
+    out_dir = PKG / "data" / "output" / sheet.stem
     digi = out_dir / "digi" / "digimall_bulk_import.csv"
     alfa = out_dir / "alfa" / "alfa_bulk_import.csv"
     qc = out_dir / "qc_report.csv"
@@ -338,10 +337,11 @@ def main() -> int:
     ).returncode == 0
     run_tests = (not args.no_tests) and have_pytest and (PKG / "tests").exists()
 
-    main_cmd = [py, "main.py", "--input", str(sheet)]
-    if custom:
-        main_cmd += ["--digi", str(digi), "--alfa", str(alfa), "--qc", str(qc),
-                     "--sample-titles", str(titles)]
+    main_cmd = [
+        py, "main.py", "--input", str(sheet),
+        "--digi", str(digi), "--alfa", str(alfa),
+        "--qc", str(qc), "--sample-titles", str(titles),
+    ]
     audit_cmd = [py, "audit.py", "--input", str(sheet), "--digi", str(digi), "--alfa", str(alfa),
                  "--qc", str(qc), "--evidence", str(evidence)]
     thin_cmd = [py, "thin_report.py", "--input", str(sheet), "--digi", str(digi), "--qc", str(qc),

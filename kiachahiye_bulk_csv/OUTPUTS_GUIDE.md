@@ -23,7 +23,7 @@ Ek command = 6 files. Do files **upload** ke liye, chaar files **aap ke liye** (
 
 | | DigiMall | Alfa |
 |---|---|---|
-| Path | `data/output/digi/digimall_bulk_import.csv` | `data/output/alfa/alfa_bulk_import.csv` |
+| Path | `data/output/<sheet>/digi/digimall_bulk_import.csv` | `data/output/<sheet>/alfa/alfa_bulk_import.csv` |
 | Rows | 1800 (input ke barabar) | 1800 |
 | Columns | **66** | **28** |
 | Vendor | `KiaChahiye PVT LTD` | `Kia Chahiye Pvt Ltd` |
@@ -66,14 +66,16 @@ Woh rows jinki **source Description bahut kamzor** hai — aap ki sheet ka masla
 
 ---
 
-## Test run ka alag folder
-
-Custom sheet dete waqt outputs **alag folder** `data/output/<sheet-name>/` mein jati hain, taake aap ki asli 1800 wali files kabhi na bigdein:
-
+## Har sheet ka apna dedicated folder (`data/output/<sheet-name>/`)
+ 
+Har run ke saare outputs us sheet ke naam ke folder mein bante hain:
+ 
 ```
-run_pipeline.bat                                        → data/output/…
+run_pipeline.bat                                        → data/output/Products/…
 run_pipeline.bat "…\TEST_100_PRODUCTS.csv"              → data/output/TEST_100_PRODUCTS/…
 ```
+ 
+Har sheet folder ke andar 2 platform folders (`alfa/`, `digi/`) aur saari report files hoti hain. Root `data/output/` bilkul saaf rehta hai.
 
 ## Description sudharne wala step (`data/output/cleaned/`)
 
