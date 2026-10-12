@@ -42,6 +42,7 @@ from qc_report import (
     CAT_SKU_DEDUPED,
     CAT_THIN_DESCRIPTION,
     CAT_TITLE_DESCRIPTION_CONFLICT,
+    CAT_TITLE_DROPPED_WORDS,
     CAT_TITLE_FALLBACK,
     CAT_WEIGHT_MISSING,
     CAT_WEIGHT_UNREADABLE,
@@ -294,7 +295,7 @@ def resolve_row(
         )
     elif len(title_result.dropped_words) >= 2:
         flags.flag(
-            row.row_number, row.title, CAT_TITLE_FALLBACK,
+            row.row_number, row.title, CAT_TITLE_DROPPED_WORDS,
             "Rebuilt Title dropped source word(s): "
             + ", ".join(title_result.dropped_words[:8])
             + " -- add any real series name to SERIES_WORDS in sku_handle.py",
@@ -411,6 +412,11 @@ def resolve_row(
                 f"Handle disambiguated with the variant suffix: {handle}",
             )
 
+    option1_color = (
+        title_result.color_token
+        or getattr(CONFIG, "DEFAULT_PRODUCT_TYPE_COLORS", {}).get(product_type, "")
+    )
+
     return ProductRecord(
         row_number=row.row_number,
         source=row,
@@ -421,8 +427,8 @@ def resolve_row(
         brand=brand,
         category=category,
         images=resolve_images(row.image),
-        option1_name="Color" if title_result.color_token else "",
-        option1_value=title_result.color_token,
+        option1_name="Color" if option1_color else "",
+        option1_value=option1_color,
         option2_name="", option2_value="", option3_name="", option3_value="",
         sku=sku,
         barcode=sku,
@@ -563,7 +569,8 @@ def print_summary(
         (CAT_QTY_DEFAULTED, "Variant Quantity defaulted to 20"),
         (CAT_ATTRIBUTE_EMPTY, "DigiMall Attribute_* left empty despite a raw signal"),
         (CAT_THIN_DESCRIPTION, "Description thin (no filler rows added)"),
-        (CAT_TITLE_FALLBACK, "Title kept from source / rebuild dropped words"),
+        (CAT_TITLE_FALLBACK, "Title kept from source"),
+        (CAT_TITLE_DROPPED_WORDS, "Rebuilt Title dropped extra source words"),
         (CAT_PRODUCT_TYPE_INFERRED, "Product Type inferred from breadcrumb"),
     ):
         print(f"  {label:60} {flags.count(category):5} rows")

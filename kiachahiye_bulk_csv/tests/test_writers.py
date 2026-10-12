@@ -437,3 +437,46 @@ def test_the_counting_pass_does_not_duplicate_qc_flags(pipeline: Pipeline) -> No
     assert len(seen) == len(set(seen)), sorted(seen)
     defaulted = [f for f in result["flags"].flags if f.category == "quantity_defaulted"]
     assert len({f.row_number for f in defaulted}) == len(defaulted) == 2
+
+
+def test_default_option1_color_for_led_tv(pipeline: Pipeline) -> None:
+    result = pipeline(
+        [
+            {
+                "Title": "Haier 32 Inch Google Android LED TV (H32K85FX)",
+                "Description": "Model: H32K85FX\n32 Inch Google TV",
+                "Sell Price": "45,000",
+                "Original Price": "46,000",
+                "Categories": "TVs / LED TV",
+                "Brand": "Haier",
+                "Image": "https://example.com/tv.jpg",
+            }
+        ]
+    )
+    for platform in ("digi", "alfa"):
+        row = result[platform][0]
+        assert row["Option1 Name"] == "Color"
+        assert row["Option1 Value"] == "Black"
+        assert "Black" not in row["Title"]
+
+
+def test_default_option1_color_can_be_disabled_via_config(pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch) -> None:
+    import config as CONFIG
+    monkeypatch.setattr(CONFIG, "DEFAULT_PRODUCT_TYPE_COLORS", {})
+    result = pipeline(
+        [
+            {
+                "Title": "Haier 32 Inch Google Android LED TV (H32K85FX)",
+                "Description": "Model: H32K85FX\n32 Inch Google TV",
+                "Sell Price": "45,000",
+                "Original Price": "46,000",
+                "Categories": "TVs / LED TV",
+                "Brand": "Haier",
+                "Image": "https://example.com/tv.jpg",
+            }
+        ]
+    )
+    for platform in ("digi", "alfa"):
+        row = result[platform][0]
+        assert row["Option1 Name"] == ""
+        assert row["Option1 Value"] == ""

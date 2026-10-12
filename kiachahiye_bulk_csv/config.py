@@ -67,8 +67,8 @@ SEO_TITLE_MAX = 90
 SEO_DESC_MIN = 151
 SEO_DESC_MAX = 155
 
-# Hard cap for a product Title.
-TITLE_MAX = 90
+# Hard cap for a product Title (Shopify / DigiMall standard 255).
+TITLE_MAX = 255
 
 # Thin-content thresholds.  Nothing in the upload pipeline depends on these:
 # they only decide which rows land in the "descriptions that need work" report
@@ -89,3 +89,40 @@ THIN_REPORT = PROJECT_ROOT / "data" / "output" / "thin_descriptions.csv"
 #         "no warranty row for a TV".
 # False = revert to showing no warranty row for a TV.
 APPLY_TV_WARRANTY_TABLE = True
+
+# ===========================================================================
+#  EDIT HERE -- Title rebuilding mode
+# ===========================================================================
+# True  = ALWAYS strictly rebuild titles using our standard formula:
+#         [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name] - [Model] [Series/Feature Keyword] [Main Warranty]
+#         Disables keeping source titles as supplied.
+# False = Rebuild titles only when a confident model code exists (Step A);
+#         keep source title with light cleanup when no model code exists (Step B).
+STRICT_TITLE_REBUILD = True
+
+# ===========================================================================
+#  EDIT HERE -- Default Product Colors (Option1 Name / Option1 Value)
+# ===========================================================================
+# Categories / Product Types where a default color should be populated in the
+# CSV variant columns (Option1 Name: "Color", Option1 Value: "Black", etc.)
+# when no color was detected in the source sheet.
+#
+# In Pakistan, almost all LED TVs are black, so LED TV defaults to "Black".
+#
+# To edit or add: {"LED TV": "Black", "Category": "Color"}
+# To disable or remove: set to {}
+DEFAULT_PRODUCT_TYPE_COLORS: dict[str, str] = {
+    "LED TV": "Black",
+}
+
+# Categories / Product Types where color should NEVER be included in the product Title,
+# even if a color is detected in the source or defaulted.
+#
+# In Pakistan, LED TV titles almost never state color (e.g. "Haier 32 Inch LED TV", not "Black LED TV").
+#
+# To edit or add: {"LED TV", "Other Category"}
+# To disable or remove: set to set()
+OMIT_TITLE_COLOR_CATEGORIES: set[str] = {
+    "LED TV",
+}
+

@@ -270,6 +270,7 @@ FLAG_LABELS = {
     "quantity_defaulted": "Quantity defaulted to 20 (no stock column)",
     "handle_deduplicated": "Handles made unique (shared titles)",
     "title_kept_from_source": "Titles kept as supplied",
+    "title_dropped_words": "Rebuilt titles (dropped extra words)",
     "attribute_empty": "Attribute values outside the vocabulary",
     "sku_disambiguated": "SKUs made unique",
     "fallback_sku": "SKUs built without a model code",

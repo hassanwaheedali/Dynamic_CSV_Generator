@@ -174,10 +174,17 @@ def build_alfa_row(record: ProductRecord) -> AlfaOutputRow:
 def write_csv(path: Path, header: tuple[str, ...], rows: list[dict[str, str]]) -> None:
     """Write one platform's file: every field quoted, HTML fields single-line."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
-        writer.writerow(header)
-        for row in rows:
-            writer.writerow([_single_line(str(row.get(column, ""))) for column in header])
+    try:
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
+            writer.writerow(header)
+            for row in rows:
+                writer.writerow([_single_line(str(row.get(column, ""))) for column in header])
+    except PermissionError as exc:
+        raise PermissionError(
+            f"\n\n[PERMISSION DENIED] Cannot write to '{path}'.\n"
+            f"The file is locked by another program (e.g. Microsoft Excel).\n"
+            f"Please close '{path.name}' in Excel or your CSV viewer and re-run.\n"
+        ) from exc
 
 

@@ -385,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     title_bad: list[str] = []
     for row, rec in zip(digi, source, strict=True):
         title = row["Title"]
-        if len(title) > 90:
+        if len(title) > CONFIG.TITLE_MAX:
             title_bad.append(f"{title[:40]} (too long)")
         if re.search(r"\s{2,}", title):
             title_bad.append(f"{title[:40]} (double space)")
@@ -394,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         model = extract_model(rec["Title"], rec["Description"])
         if model.code and model.code.replace(" ", "").lower() not in title.replace(" ", "").lower():
             title_bad.append(f"{title[:40]} (model {model.code!r} missing)")
-    check(not title_bad, "every Title is <=90 chars, single-spaced and carries its model code",
+    check(not title_bad, f"every Title is <={CONFIG.TITLE_MAX} chars, single-spaced and carries its model code",
           f"{len(title_bad)}: {title_bad[:4]}")
 
     missing_brand_row = [

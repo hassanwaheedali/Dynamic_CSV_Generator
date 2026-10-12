@@ -44,18 +44,23 @@ TYPE_WORDS: frozenset[str] = frozenset(
         "air", "conditioner", "conditioners", "ac", "acs", "refrigerator",
         "refrigerators", "fridge", "fridges", "freezer", "freezers", "deep",
         "washing", "machine", "machines", "washer", "dryer", "microwave",
-        "microwaves", "oven", "ovens", "dispenser", "dispensers", "water",
+        "microwaves", "oven", "ovens", "fryer", "fryers", "airfryer", "airfryers",
+        "dispenser", "dispensers", "water",
         "tv", "television", "led", "lcd", "smart", "qled", "uhd", "fhd", "hd",
         "audio", "video", "visuals", "sound", "bar", "bars", "speaker",
         "speakers", "ups", "geyser", "geysers", "heater", "heaters", "cooler",
         "coolers", "fan", "fans", "purifier", "purifiers", "humidifier",
         "humdifier", "inverter", "series", "with", "without", "and", "the",
         "new", "pro", "plus", "inch", "inches", "ton", "pcs", "set", "latest",
+        "taps", "tap", "ltr", "ltrs", "liter", "liters", "litre", "litres",
+        "kg", "kgs", "cuft", "cft", "watt", "watts", "volt", "volts",
         "technology", "electric", "digital", "automatic", "semi", "auto",
         "manual", "top", "front", "load", "double", "single", "door", "doors",
         "glass", "steel", "compressor", "cool", "cooling", "heat", "heating",
         "hot", "cold", "only", "high", "low", "best", "price", "pakistan",
         "buy", "google", "dolby", "turbo", "wide", "color", "colour", "gamut",
+        "black", "white", "silver", "grey", "gray", "red", "blue", "golden",
+        "gold", "maroon", "green", "brown", "bezel", "less",
     }
 )
 
@@ -67,14 +72,14 @@ TAPS_RE = re.compile(r"\b(\d+)\s*-?\s*taps?\b", re.IGNORECASE)
 WEIGHT_LINE_RE = re.compile(
     r"(?im)^[ \t]*(?:•\s*)?(?:set\s+|net\s+|gross\s+|product\s+)?weight[^\n]*$"
 )
-# Capacity: only units that really describe a product's size.  A bare "L" or
-# "Liters" is deliberately absent -- "2.5 L/Hour" is a flow rate, not a size.
+# Capacity: only units that really describe a product's size.
 CAPACITY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(\d+(?:\.\d+)?)\s*(?:cu\.?\s*ft\.?|cubic\s+feet|cuft)\b", re.IGNORECASE), "Cu Ft"),
     (re.compile(r"(\d+(?:\.\d+)?)\s*(?:cft)\b", re.IGNORECASE), "Cu Ft"),
     (re.compile(r"(\d+(?:\.\d+)?)\s*(?:kg|kgs|kilograms?)\b", re.IGNORECASE), "KG"),
     (re.compile(r"(\d+(?:\.\d+)?)\s*(?:ton|tons)\b", re.IGNORECASE), "Ton"),
     (re.compile(r"(\d+(?:\.\d+)?)\s*(?:inch|inches)\b", re.IGNORECASE), "Inch"),
+    (re.compile(r"(\d+(?:\.\d+)?)\s*(?:ltrs?|litres?|liters?)\b(?!\s*(?:/|per\b))", re.IGNORECASE), "Ltr"),
 )
 # A code token mixes letters and digits, with at least one dash/slash chunk.
 CODE_TOKEN_RE = re.compile(
@@ -178,10 +183,22 @@ def extract_model(title: str, description: str) -> ModelExtraction:
         if _usable_code(value):
             return ModelExtraction(value, "title-parenthetical", "high")
 
+    if " - " in title:
+        after_dash = title.rsplit(" - ", 1)[-1].strip()
+        first_token = after_dash.split()[0] if after_dash else ""
+        cleaned = clean_model_code(first_token)
+        if _usable_code(cleaned):
+            return ModelExtraction(cleaned, "title-after-hyphen", "high")
+
     for candidate in reversed(CODE_TOKEN_RE.findall(title)):
         value = clean_model_code(candidate)
         if _usable_code(value):
             return ModelExtraction(value, "title-code-token", "medium")
+
+    for candidate in reversed(re.findall(r"\b[A-Za-z0-9]{4,15}\b", title)):
+        cleaned = clean_model_code(candidate)
+        if _usable_code(cleaned) and re.search(r"[A-Za-z]", cleaned) and re.search(r"\d", cleaned):
+            return ModelExtraction(cleaned, "title-code-token", "medium")
 
     return ModelExtraction("", "fallback", "none")
 
@@ -249,6 +266,7 @@ def parse_capacity(text: str) -> str:
     not the product's capacity, and the spec forbids putting it in the Title.
     """
     cleaned = WEIGHT_LINE_RE.sub(" ", text)
+    cleaned = re.sub(r"(?im)^[ \t]*.*tank.*$", " ", cleaned)
     for pattern, unit in CAPACITY_PATTERNS:
         match = pattern.search(cleaned)
         if match:

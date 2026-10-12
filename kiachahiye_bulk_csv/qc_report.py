@@ -32,6 +32,7 @@ CAT_ATTRIBUTE_EMPTY = "attribute_empty"
 CAT_THIN_DESCRIPTION = "thin_description"
 CAT_PRODUCT_TYPE_INFERRED = "product_type_inferred"
 CAT_TITLE_FALLBACK = "title_kept_from_source"
+CAT_TITLE_DROPPED_WORDS = "title_dropped_words"
 CAT_WEIGHT_MISSING = "weight_missing"
 CAT_WEIGHT_UNREADABLE = "weight_unreadable"
 CAT_SHORT_DESCRIPTION_THIN = "short_description_thin"
@@ -52,6 +53,7 @@ INFO_CATEGORIES: frozenset[str] = frozenset(
         CAT_HANDLE_DEDUPED,
         CAT_SKU_DEDUPED,
         CAT_TITLE_FALLBACK,
+        CAT_TITLE_DROPPED_WORDS,
         CAT_THIN_DESCRIPTION,
     }
 )

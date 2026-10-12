@@ -263,3 +263,78 @@ def find_base_color(text: str) -> str | None:
     return word.title()
 
 
+COLOR_MODIFIERS: frozenset[str] = frozenset(
+    {
+        "crimson", "meadow", "coral", "emerald", "forest", "olive", "mint", "mist",
+        "jade", "ruby", "burgundy", "wine", "rose", "cherry", "magnetic", "silky",
+        "silk", "pearl", "midnight", "navy", "cosmic", "ocean", "sky", "royal",
+        "clear", "ice", "charcoal", "metallic", "manhattan", "mystic", "graphite",
+        "space", "dark", "light", "hairline", "starry", "platinum", "diamond",
+        "titanium", "snow", "milky", "cloud", "pure", "crystal", "piano", "matte",
+        "matt", "glossy", "luxe", "hazel", "amber", "grace", "gem", "deep",
+    }
+)
+
+COLOR_NON_MODIFIERS: frozenset[str] = frozenset(
+    {
+        "air", "conditioner", "split", "ac", "refrigerator", "fridge", "freezer",
+        "deep", "chest", "washing", "machine", "washer", "dryer", "microwave",
+        "oven", "water", "dispenser", "tv", "television", "led", "lcd", "cooler",
+        "purifier", "geyser", "heater", "ft", "cuft", "cft", "cu", "kg", "kgs",
+        "ton", "tons", "ltr", "ltrs", "litre", "litres", "liter", "liters", "inch",
+        "inches", "watt", "watts", "volt", "volts", "taps", "tap", "door", "doors",
+        "glass", "top", "front", "load", "side", "series", "inverter", "non",
+        "inv", "new", "best", "pro", "plus", "direct", "cool", "auto", "automatic",
+        "semi", "manual", "the", "with", "and", "for", "in", "of", "to", "a",
+        "an", "at", "by", "from", "size", "hc", "arcelik", "dawlance", "haier",
+        "pel", "homage", "orient", "gree", "kenwood", "tcl", "ecostar", "superasia",
+    }
+)
+
+
+def find_full_color(text: str, title: str = "") -> str | None:
+    """Return the full colour name (e.g. ``Crimson Red``, ``Meadow Green``, ``White``), or ``None``.
+
+    When a marketing or descriptive modifier is present, returns the full colour phrase.
+    Otherwise falls back to :func:`find_base_color`.
+    """
+    full_text = f"{title}\n{text}" if title else text
+    scope_title = title or text.splitlines()[0]
+
+    # 1. Hyphen color at end of title: e.g. '-(9173-WB)-Crimson Red' or '-Crimson Red'
+    m_hyphen = re.search(r"-\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\s*$", scope_title.strip())
+    if m_hyphen:
+        cand = m_hyphen.group(1).strip()
+        words = cand.lower().split()
+        if any(w in BASE_COLORS for w in words):
+            if not any(w in COLOR_NON_MODIFIERS for w in words):
+                return " ".join(w.title() for w in words)
+
+    # 2. 'finished in <Color>' or 'Product Color: <Color>' in details
+    m_desc = re.search(
+        r"(?:finished in|product color:\s*|available in)\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\b",
+        full_text,
+        re.IGNORECASE,
+    )
+    if m_desc:
+        cand = m_desc.group(1).strip()
+        words = cand.lower().split()
+        if any(w in BASE_COLORS for w in words):
+            filtered = [w for w in words if w not in COLOR_NON_MODIFIERS]
+            if any(w in BASE_COLORS for w in filtered):
+                return " ".join(w.title() for w in filtered)
+
+    # 3. Known modifier + base color in title
+    base_re = "|".join(BASE_COLORS)
+    m_mod = re.search(rf"\b([A-Za-z]+)\s+({base_re})\b", scope_title, re.IGNORECASE)
+    if m_mod:
+        mod, base = m_mod.group(1).lower(), m_mod.group(2).lower()
+        if mod in COLOR_MODIFIERS and mod not in COLOR_NON_MODIFIERS:
+            if base == "gray":
+                base = "grey"
+            return f"{mod.title()} {base.title()}"
+
+    # 4. Fallback to base color
+    return find_base_color(full_text)
+
+

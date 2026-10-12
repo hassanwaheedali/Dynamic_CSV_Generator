@@ -112,10 +112,11 @@ def lookup_terms(
     """
     if product_type == "LED TV" and not APPLY_TV_WARRANTY_FALLBACK:
         return None
+    b_key = brand_key.strip().lower()
     title = text.splitlines()[0] if text else ""
     default: TermLine | None = None
     for line in TERM_LINES:
-        if line.brand != brand_key or line.category != product_type:
+        if line.brand != b_key or line.category != product_type:
             continue
         if not line.variant_words:
             if default is None:
@@ -325,3 +326,64 @@ def resolve_warranty(
         for part, duration in entries
     ]
     return rows, (entries[0][1] if entries else None), f"reference-{brand_key}"
+
+
+def headline_part_and_duration(
+    parts: list[StatedPart],
+) -> tuple[str, str] | None:
+    """Return ``(part_name, duration)`` for the headline component."""
+    dated = [part for part in parts if part.duration]
+    if not dated:
+        return None
+    for wanted in HEADLINE_PRIORITY:
+        for part in dated:
+            if wanted in part.part.lower():
+                return wanted.title(), part.duration
+    cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", dated[0].part).strip(" -:")
+    return (cleaned.title() if cleaned else "Warranty"), dated[0].duration
+
+
+
+def format_main_warranty(part: str, duration: str) -> str:
+    """Format duration + part into the title warranty token.
+
+    Examples:
+        format_main_warranty("Parts", "1 Year") -> "1 Year Warranty"
+        format_main_warranty("Compressor", "10 Years") -> "10 Year Compressor Warranty"
+        format_main_warranty("Motor", "10 Years") -> "10 Year Motor Warranty"
+        format_main_warranty("Panel", "2 Years") -> "2 Year Panel Warranty"
+    """
+    duration_clean = re.sub(r"(?i)\b(year|month)s\b", r"\1", duration.strip())
+    part_clean = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", part).strip(" -:")
+    part_lower = part_clean.lower()
+    if not part_clean or part_lower in (
+        "parts",
+        "general",
+        "service",
+        "parts and labour",
+        "official",
+        "brand",
+    ):
+        return f"{duration_clean} Warranty"
+    return f"{duration_clean} {part_clean.title()} Warranty"
+
+
+def resolve_main_warranty(
+    source_text: str, brand_key: str, product_type: str
+) -> str | None:
+    """Return the formatted main warranty phrase for the title, or ``None``."""
+    stated = find_stated_warranty_text(source_text)
+    if stated:
+        rounds = parse_warranty_parts(stated)
+        headline_pair = headline_part_and_duration(rounds)
+        if headline_pair:
+            return format_main_warranty(headline_pair[0], headline_pair[1])
+        if has_explicit_non_numeric_term(stated):
+            return None
+
+    entries = lookup_terms(brand_key, product_type, source_text)
+    if entries:
+        return format_main_warranty(entries[0][0], entries[0][1])
+
+    return None
+
