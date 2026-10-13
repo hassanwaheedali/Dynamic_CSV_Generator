@@ -24,7 +24,7 @@ from pathlib import Path
 
 import config as CONFIG
 from attributes import ALLOWED
-from brands import canonical_brand_key
+from brands import canonical_brand_key, resolve_brand
 from categories import resolve_category, resolve_product_type
 from sku_handle import extract_model
 from textutils import (
@@ -452,9 +452,10 @@ def main(argv: list[str] | None = None) -> int:
     warranty_bad: list[str] = []
     for row, rec in zip(digi, source, strict=True):
         text = f"{rec['Title'].strip()}\n{rec['Description']}"
-        brand = canonical_brand_key(rec["Brand"])
+        resolved_brand = resolve_brand(rec["Brand"], rec["Title"])
+        brand = resolved_brand.normalized
         category = resolve_category(rec["Categories"], text, text)
-        product_type, _ = resolve_product_type(category, rec["Brand"])
+        product_type, _ = resolve_product_type(category, resolved_brand.raw)
         warranty_rows, headline, _src = resolve_warranty(text, brand, product_type)
         shown = row["Attribute_Warranty"]
         if (headline or "") != shown:

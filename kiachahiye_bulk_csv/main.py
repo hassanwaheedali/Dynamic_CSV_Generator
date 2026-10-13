@@ -222,17 +222,18 @@ def resolve_row(
     """
     text = f"{row.title}\n{row.description}"
 
-    brand = resolve_brand(row.brand)
+    brand = resolve_brand(row.brand, row.title)
+    effective_brand = brand.raw
     if brand.digi_id is None:
         flags.flag(
             row.row_number, row.title, CAT_BRAND_DIGI,
-            f"brand {row.brand!r} is not in BRANDS_DIGI (brands.py) -- DigiMall Brands left empty",
+            f"brand {effective_brand!r} is not in BRANDS_DIGI (brands.py) -- DigiMall Brands left empty",
             platform="digi",
         )
     if brand.alfa_id is None:
         flags.flag(
             row.row_number, row.title, CAT_BRAND_ALFA,
-            f"brand {row.brand!r} is not in BRANDS_ALFA (brands.py) -- Alfa Brands left empty",
+            f"brand {effective_brand!r} is not in BRANDS_ALFA (brands.py) -- Alfa Brands left empty",
             platform="alfa",
         )
 
@@ -253,7 +254,7 @@ def resolve_row(
             platform="alfa",
         )
 
-    product_type, inferred = resolve_product_type(category, row.brand)
+    product_type, inferred = resolve_product_type(category, effective_brand)
     if inferred:
         flags.flag(
             row.row_number, row.title, CAT_PRODUCT_TYPE_INFERRED,
@@ -272,7 +273,7 @@ def resolve_row(
     capacity = parse_capacity(text)
     if extraction.confidence == "none":
         model = build_fallback_model(
-            row.brand, find_series_token(text), capacity, row.title
+            effective_brand, find_series_token(text), capacity, row.title
         )
         used = ModelExtraction(model, "fallback", "none")
         flags.flag(
@@ -285,7 +286,7 @@ def resolve_row(
         used = extraction
 
     title_result = build_title(
-        row.brand, used, product_type, row.title, row.description
+        effective_brand, used, product_type, row.title, row.description
     )
     if title_result.strategy == "kept-with-light-cleanup":
         flags.flag(
@@ -306,7 +307,7 @@ def resolve_row(
     )
 
     description = build_description_bundle(
-        brand=row.brand,
+        brand=effective_brand,
         model=model if used.confidence != "none" else "",
         product_type=product_type,
         breadcrumb_leaf=row.categories.split("/")[-1].strip(),
@@ -374,7 +375,7 @@ def resolve_row(
                 "No weight stated in the source -- Variant Weight left empty.",
             )
 
-    variant_tokens = extract_variant_tokens(text, capacity, row.brand)
+    variant_tokens = extract_variant_tokens(text, capacity, effective_brand)
     # A dimension already present in the model code (e.g. a colour baked into a
     # fallback model) must not be repeated in the variant suffix.
     compact = compact_model(model).upper()

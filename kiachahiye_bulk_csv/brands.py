@@ -96,6 +96,42 @@ BRAND_ALIASES: dict[str, str] = {
     "anex pakistan": "anex",
 }
 
+BRAND_DISPLAY_MAP: dict[str, str] = {
+    "super asia": "Super Asia",
+    "superasia": "Super Asia",
+    "dawlance": "Dawlance",
+    "haier": "Haier",
+    "pel": "PEL",
+    "gree": "Gree",
+    "ecostar": "EcoStar",
+    "eco star": "EcoStar",
+    "kenwood": "Kenwood",
+    "tcl": "TCL",
+    "orient": "Orient",
+    "midea": "Midea",
+    "westpoint": "Westpoint",
+    "west point": "Westpoint",
+    "anex": "Anex",
+    "homage": "Homage",
+    "hisense": "Hisense",
+    "iffalcon": "iFFalcon",
+    "nasgas": "Nasgas",
+    "jackpot": "Jackpot",
+    "xiaomi": "Xiaomi",
+    "xioami": "Xiaomi",
+}
+
+
+def extract_brand(title: str = "", fallback_brand: str = "") -> str:
+    """Extract canonical brand name from title prefix, falling back to fallback_brand."""
+    if title:
+        title_norm = title.strip().lower()
+        for key in sorted(BRAND_DISPLAY_MAP, key=len, reverse=True):
+            if title_norm.startswith(key + " ") or title_norm == key:
+                return BRAND_DISPLAY_MAP[key]
+    fallback = fallback_brand.strip()
+    return BRAND_DISPLAY_MAP.get(fallback.lower(), fallback)
+
 
 def canonical_brand_key(raw_brand: str) -> str:
     """Normalise a source brand string to its canonical lookup key."""
@@ -103,16 +139,16 @@ def canonical_brand_key(raw_brand: str) -> str:
     return BRAND_ALIASES.get(key, key)
 
 
-def resolve_brand(raw_brand: str) -> ResolvedBrand:
+def resolve_brand(raw_brand: str, title: str = "") -> ResolvedBrand:
     """Resolve one brand string against both platform lists, independently.
 
-    A brand present in one list and absent from the other is expected and fine:
-    that platform's id stays ``None`` and later becomes an empty ``Brands`` cell
-    in that platform's own file, with a QC flag naming the platform.
+    If title is supplied and starts with a known brand (e.g. Nasgas, iFFalcon, Jackpot),
+    that brand takes precedence over raw_brand.
     """
-    key = canonical_brand_key(raw_brand)
+    effective = extract_brand(title, raw_brand) if title else raw_brand
+    key = canonical_brand_key(effective)
     return ResolvedBrand(
-        raw=raw_brand,
+        raw=effective,
         normalized=key,
         digi_id=BRANDS_DIGI.get(key),
         alfa_id=BRANDS_ALFA.get(key),
