@@ -55,6 +55,7 @@ TYPE_WORDS: frozenset[str] = frozenset(
         "taps", "tap", "ltr", "ltrs", "liter", "liters", "litre", "litres",
         "kg", "kgs", "cuft", "cft", "watt", "watts", "volt", "volts",
         "technology", "electric", "digital", "automatic", "semi", "auto",
+        "fully", "full", "twin", "tub", "tubs", "tube", "tubes", "spin", "spinner", "loading",
         "manual", "top", "front", "load", "double", "single", "door", "doors",
         "glass", "steel", "compressor", "cool", "cooling", "heat", "heating",
         "hot", "cold", "only", "high", "low", "best", "price", "pakistan",
@@ -71,6 +72,10 @@ MODEL_LABEL_RE = re.compile(
 TAPS_RE = re.compile(r"\b(\d+)\s*-?\s*taps?\b", re.IGNORECASE)
 WEIGHT_LINE_RE = re.compile(
     r"(?im)^[ \t]*(?:•\s*)?(?:set\s+|net\s+|gross\s+|product\s+)?weight[^\n]*$"
+)
+# "net Weight: 14.45 kg" written inside a sentence (not at the start of a line).
+INLINE_WEIGHT_RE = re.compile(
+    r"(?i)\bweight\s*[:\-]?\s*\d+(?:\.\d+)?\s*(?:kgs?|kilograms?|g|grams?|lbs?|oz)\b"
 )
 # Capacity: only units that really describe a product's size.
 CAPACITY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -266,6 +271,7 @@ def parse_capacity(text: str) -> str:
     not the product's capacity, and the spec forbids putting it in the Title.
     """
     cleaned = WEIGHT_LINE_RE.sub(" ", text)
+    cleaned = INLINE_WEIGHT_RE.sub(" ", cleaned)
     cleaned = re.sub(r"(?im)^[ \t]*.*tank.*$", " ", cleaned)
     for pattern, unit in CAPACITY_PATTERNS:
         match = pattern.search(cleaned)
