@@ -247,9 +247,13 @@ def parse_warranty_parts(warranty_text: str) -> list[StatedPart]:
             # "Motor Warranty: 10" -- a bare number beside a named part is years.
             value = qualifier.split(":", 1)[-1].strip(" -,")
             bare = parse_bare_years(value)
-            if bare and _label_for(qualifier) != "Warranty":
+            if bare:
                 duration = bare
-                qualifier = _label_for(qualifier).replace(" Warranty", "")
+                label = _label_for(qualifier)
+                if label != "Warranty":
+                    qualifier = label.replace(" Warranty", "")
+                else:
+                    qualifier = ""
         parts.append(StatedPart(part=qualifier, duration=duration, raw=chunk))
     return parts
 
@@ -261,7 +265,7 @@ def _label_for(qualifier: str) -> str:
             return label
     cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", qualifier).strip(" -,")
     cleaned = re.sub(r"(?i)^(official|brand|the)\b\s*", "", cleaned).strip()
-    if not cleaned:
+    if not cleaned or re.match(r"^\d+$", cleaned):
         return "Warranty"
     return f"{cleaned.title()} Warranty"
 
@@ -340,6 +344,8 @@ def headline_part_and_duration(
             if wanted in part.part.lower():
                 return wanted.title(), part.duration
     cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", dated[0].part).strip(" -:")
+    if re.match(r"^\d+$", cleaned):
+        cleaned = ""
     return (cleaned.title() if cleaned else "Warranty"), dated[0].duration
 
 
@@ -356,7 +362,8 @@ def format_main_warranty(part: str, duration: str) -> str:
     duration_clean = re.sub(r"(?i)\b(year|month)s\b", r"\1", duration.strip())
     part_clean = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", part).strip(" -:")
     part_lower = part_clean.lower()
-    if not part_clean or part_lower in (
+    if not part_clean or re.match(r"^\d+$", part_clean) or part_lower in (
+        "warranty",
         "parts",
         "general",
         "service",
@@ -372,16 +379,26 @@ def resolve_main_warranty(
     source_text: str, brand_key: str, product_type: str
 ) -> str | None:
     """Return the formatted main warranty phrase for the title, or ``None``."""
+    entries = lookup_terms(brand_key, product_type, source_text)
+
     stated = find_stated_warranty_text(source_text)
     if stated:
         rounds = parse_warranty_parts(stated)
         headline_pair = headline_part_and_duration(rounds)
         if headline_pair:
-            return format_main_warranty(headline_pair[0], headline_pair[1])
+            part_name, dur = headline_pair
+            # If stated headline part is generic ('Warranty'), but the reference
+            # table has a specific major component (e.g. Motor or Compressor):
+            if part_name in ("Warranty", "") and entries:
+                ref_part, ref_dur = entries[0]
+                dur_clean = re.sub(r"(?i)\b(year|month)s\b", r"\1", dur)
+                ref_dur_clean = re.sub(r"(?i)\b(year|month)s\b", r"\1", ref_dur)
+                if dur_clean.lower() == ref_dur_clean.lower() or ref_part.lower() in source_text.lower():
+                    part_name = ref_part
+            return format_main_warranty(part_name, dur)
         if has_explicit_non_numeric_term(stated):
             return None
 
-    entries = lookup_terms(brand_key, product_type, source_text)
     if entries:
         return format_main_warranty(entries[0][0], entries[0][1])
 
