@@ -248,13 +248,24 @@ _COLOR_RE = re.compile(
 )
 
 
+# False-positive colour phrases that are technical features, NOT product body colours.
+FALSE_COLOR_PHRASES: tuple[str, ...] = (
+    r"\bgolden\s+fin\b",
+    r"\bgold\s+fin\b",
+)
+
+
 def find_base_color(text: str) -> str | None:
     """Return the first base colour word in ``text`` (Title case), or ``None``.
 
     ``Grey``/``Gray`` are folded to ``Grey`` because §9's own colour list writes
     them as a single entry.
     """
-    match = _COLOR_RE.search(text)
+    cleaned_text = text
+    for phrase in FALSE_COLOR_PHRASES:
+        cleaned_text = re.sub(phrase, "", cleaned_text, flags=re.IGNORECASE)
+
+    match = _COLOR_RE.search(cleaned_text)
     if match is None:
         return None
     word = match.group(1).lower()
@@ -301,7 +312,25 @@ def find_full_color(text: str, title: str = "") -> str | None:
     full_text = f"{title}\n{text}" if title else text
     scope_title = title or text.splitlines()[0]
 
-    # 1. Hyphen color at end of title: e.g. '-(9173-WB)-Crimson Red' or '-Crimson Red'
+    # Clean false-positive phrases (like 'Golden Fin')
+    cleaned_full_text = full_text
+    for phrase in FALSE_COLOR_PHRASES:
+        cleaned_full_text = re.sub(phrase, "", cleaned_full_text, flags=re.IGNORECASE)
+
+    # 1. Explicit 'Color:' or 'Product Color:' spec line anywhere in text
+    m_color_line = re.search(
+        r"(?im)^[ \t]*(?:•\s*)?(?:product\s+|appliance\s+|body\s+)?colo(?:u)?r(?:\s*(?:name|code))?\s*[:\-]?\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\b",
+        cleaned_full_text,
+    )
+    if m_color_line:
+        cand = m_color_line.group(1).strip()
+        words = cand.lower().split()
+        if any(w in BASE_COLORS for w in words):
+            filtered = [w for w in words if w not in COLOR_NON_MODIFIERS]
+            if any(w in BASE_COLORS for w in filtered):
+                return " ".join(w.title() for w in filtered)
+
+    # 2. Hyphen color at end of title: e.g. '-(9173-WB)-Crimson Red' or '-Crimson Red'
     m_hyphen = re.search(r"-\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\s*$", scope_title.strip())
     if m_hyphen:
         cand = m_hyphen.group(1).strip()
@@ -311,10 +340,10 @@ def find_full_color(text: str, title: str = "") -> str | None:
         ):
             return " ".join(w.title() for w in words)
 
-    # 2. 'finished in <Color>' or 'Product Color: <Color>' in details
+    # 3. 'finished in <Color>' or 'Product Color: <Color>' in details
     m_desc = re.search(
         r"(?:finished in|product color:\s*|available in)\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\b",
-        full_text,
+        cleaned_full_text,
         re.IGNORECASE,
     )
     if m_desc:
@@ -325,7 +354,7 @@ def find_full_color(text: str, title: str = "") -> str | None:
             if any(w in BASE_COLORS for w in filtered):
                 return " ".join(w.title() for w in filtered)
 
-    # 3. Known modifier + base color in title
+    # 4. Known modifier + base color in title
     base_re = "|".join(BASE_COLORS)
     m_mod = re.search(rf"\b([A-Za-z]+)\s+({base_re})\b", scope_title, re.IGNORECASE)
     if m_mod:
@@ -335,7 +364,8 @@ def find_full_color(text: str, title: str = "") -> str | None:
                 base = "grey"
             return f"{mod.title()} {base.title()}"
 
-    # 4. Fallback to base color
-    return find_base_color(full_text)
+    # 5. Fallback to base color
+    return find_base_color(cleaned_full_text)
+
 
 
