@@ -183,6 +183,7 @@ FEATURE_STOPWORDS: frozenset[str] = frozenset(
         "top", "front", "load", "door", "doors", "less", "bezel", "wall", "mount",
         "set", "pcs", "size", "watt", "watts", "volt", "volts", "hz", "amp",
         "glass", "single", "double", "triple", "auto", "automatic", "semi", "manual",
+        "fully", "full", "twin", "tub", "tubs", "tube", "tubes", "spin", "spinner", "loading",
         "type", "plus", "pro", "all", "hd", "fhd", "uhd",
         "freezer-on-top", "side-by-side", "french", "direct", "cool", "no-frost",
         "litre", "litres", "liter", "liters", "ltr", "ltrs",
@@ -190,6 +191,65 @@ FEATURE_STOPWORDS: frozenset[str] = frozenset(
         "tap", "taps",
     }
 )
+
+
+# EDIT HERE -- sub-category words that are core to a product type.  They are
+# placed just before the category name:  "Fully Automatic Front Load Washing
+# Machine".  Each product type has groups; per group the first label whose
+# aliases appear in the SOURCE TITLE wins.  Add / remove entries freely.
+SUBTYPES: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {
+    "Washing Machine": (
+        {
+            "Semi Automatic": ("semi automatic", "semi auto"),
+            "Twin Tub": ("twin tub",),
+            "Fully Automatic": ("fully automatic", "fully auto", "automatic"),
+        },
+        {
+            "Front Load": ("front load", "front loading"),
+            "Top Load": ("top load", "top loading"),
+        },
+    ),
+    "Air Conditioner": (
+        {
+            "Floor Standing": ("floor standing",),
+            "Split": ("split",),
+        },
+        {
+            "Heat & Cool": ("heat and cool", "heat cool", "cool and heat", "cool heat"),
+            "Cool Only": ("cool only",),
+        },
+    ),
+    "Deep Freezer": (
+        {
+            "Single Door": ("single door",),
+            "Double Door": ("double door",),
+        },
+        {
+            "Chest": ("chest",),
+            "Vertical": ("vertical",),
+        },
+    ),
+    "Geyser": (
+        {"Instant": ("instant",)},
+        {
+            "Semi Electric": ("semi electric",),
+            "Electric": ("electric",),
+            "Gas": ("gas",),
+        },
+    ),
+}
+
+
+def extract_subtype(product_type: str, source_title: str) -> str:
+    """Sub-category words the source title states, e.g. ``Fully Automatic Front Load``."""
+    title = " " + re.sub(r"[^a-z]+", " ", source_title.lower()) + " "
+    labels: list[str] = []
+    for group in SUBTYPES.get(product_type, ()):
+        for label, aliases in group.items():
+            if any(f" {alias} " in title for alias in aliases):
+                labels.append(label)
+                break
+    return " ".join(labels)
 
 
 def extract_feature(
@@ -279,8 +339,9 @@ def build_title(
 
     if should_rebuild:
         title_color = "" if product_type in OMIT_TITLE_COLOR_CATEGORIES else color
+        subtype = extract_subtype(product_type, source_title)
         part1_pieces: list[str] = []
-        for raw_piece in (brand, capacity, title_color, inverter, product_type):
+        for raw_piece in (brand, capacity, title_color, inverter, subtype, product_type):
             piece = clean_inline(raw_piece)
             if not piece:
                 continue

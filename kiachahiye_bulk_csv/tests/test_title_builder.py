@@ -44,7 +44,7 @@ def test_rebuilt_title_washing_machine_with_capacity_and_color() -> None:
         source_description="Automatic Washing Machine 8 Kg White",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 8 KG White Washing Machine - DW-6100 Advanco 12 Year Motor Warranty"
+    assert result.title == "Dawlance 8 KG White Top Load Washing Machine - DW-6100 Advanco 12 Year Motor Warranty"
 
 
 def test_rebuilt_title_microwave_oven_with_capacity() -> None:
@@ -84,7 +84,7 @@ def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
         source_description="Split AC 1.0 Ton White. Warranty: 10 Year Compressor Warranty",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 1 Ton White Inverter Air Conditioner - Aura 10 Year Compressor Warranty"
+    assert result.title == "Dawlance 1 Ton White Inverter Split Air Conditioner - Aura 10 Year Compressor Warranty"
 
     # When strict_rebuild is toggled False:
     result_kept = build_title(
@@ -247,4 +247,42 @@ def test_led_tv_kept_title_omits_color() -> None:
     )
     assert result.strategy == "kept-with-light-cleanup"
     assert "Black" not in result.title
+
+
+def test_washing_machine_title_no_fully_and_correct_warranty() -> None:
+    extraction = ModelExtraction(code="HW120-BP12357S8", source="title-parenthetical", confidence="high")
+    source_title = "Haier Front Load Fully Automatic Washing Machine 12KG (HW120-BP12357S8)"
+    source_desc = "Capacity: 12 KG\nColor: Grey\nWarranty: 10\nFront Load Fully Automatic\na 10 motor and 3 years panel warranty"
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="Washing Machine",
+        source_title=source_title,
+        source_description=source_desc,
+    )
+    assert "10 Year 10 Warranty" not in result.title
+    assert result.title == "Haier 12 KG Grey Fully Automatic Front Load Washing Machine - HW120-BP12357S8 10 Year Motor Warranty"
+
+
+
+def test_geyser_capacity_ignores_inline_weight_and_keeps_nasgas() -> None:
+    extraction = ModelExtraction(code="MEH-30", source="title-parenthetical", confidence="high")
+    result = build_title(
+        brand="Superasia",
+        extraction=extraction,
+        product_type="Geyser",
+        source_title="Super Asia Mega Electric Water Heater 30Ltr White (MEH-30)",
+        source_description="A 30 L water heater. Key features include capacity: 30 Liters, net Weight: 14.45 kg, gross Weight: 16.25 kg.",
+    )
+    assert result.capacity_token == "30 Ltr"
+    assert "KG" not in result.title
+
+    nas = build_title(
+        brand="Nasgas",
+        extraction=ModelExtraction(code="Sem-120", source="title-parenthetical", confidence="high"),
+        product_type="Geyser",
+        source_title="Nasgas Semi Electric Geyser 12 Litre (Sem-120)",
+        source_description="",
+    )
+    assert nas.title.startswith("Nasgas")
 
