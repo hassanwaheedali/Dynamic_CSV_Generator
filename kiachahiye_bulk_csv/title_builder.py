@@ -370,16 +370,19 @@ def build_title(
             ]
             if feat_words:
                 part2_pieces.append(" ".join(feat_words))
+        part2 = " ".join(part2_pieces)
+
+        part3 = ""
         if warranty:
             clean_warr = clean_inline(warranty)
             if (
-                clean_warr.lower() not in " ".join(part2_pieces).lower()
+                clean_warr.lower() not in part2.lower()
                 and clean_warr.lower() not in part1.lower()
             ):
-                part2_pieces.append(clean_warr)
-        part2 = " ".join(part2_pieces)
+                part3 = clean_warr
 
-        combined = f"{part1} - {part2}" if part1 and part2 else part1 or part2
+        segments = [s for s in (part1, part2, part3) if s]
+        combined = " - ".join(segments)
 
         title = clean_inline(_trim_to_limit(combined, TITLE_MAX))
         strategy = "rebuilt"

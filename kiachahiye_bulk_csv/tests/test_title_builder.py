@@ -18,7 +18,7 @@ def test_rebuilt_title_full_template() -> None:
         source_description="Model: HPU-24HDZ\nCapacity: 2 Ton\nColor: White\nDuzin Series\nInverter AC",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Haier 2 Ton White Inverter Air Conditioner - HPU-24HDZ Duzin 10 Year Compressor Warranty"
+    assert result.title == "Haier 2 Ton White Inverter Air Conditioner - HPU-24HDZ Duzin - 10 Year Compressor Warranty"
 
 
 def test_rebuilt_title_without_inverter_for_water_dispenser() -> None:
@@ -31,7 +31,7 @@ def test_rebuilt_title_without_inverter_for_water_dispenser() -> None:
         source_description="Model: WD-1051 HC White\n2 Taps\nInverter",  # Water dispenser must never grow inverter
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 2 Taps White Water Dispenser - WD-1051 HC 3 Year Compressor Warranty"
+    assert result.title == "Dawlance 2 Taps White Water Dispenser - WD-1051 HC - 3 Year Compressor Warranty"
 
 
 def test_rebuilt_title_washing_machine_with_capacity_and_color() -> None:
@@ -44,7 +44,7 @@ def test_rebuilt_title_washing_machine_with_capacity_and_color() -> None:
         source_description="Automatic Washing Machine 8 Kg White",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 8 KG White Top Load Washing Machine - DW-6100 Advanco 12 Year Motor Warranty"
+    assert result.title == "Dawlance 8 KG White Top Load Washing Machine - DW-6100 Advanco - 12 Year Motor Warranty"
 
 
 def test_rebuilt_title_microwave_oven_with_capacity() -> None:
@@ -57,7 +57,7 @@ def test_rebuilt_title_microwave_oven_with_capacity() -> None:
         source_description="Black finish",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 25 Ltr Black Microwave Oven - DW-525-AF Air Fryer 1 Year Warranty"
+    assert result.title == "Dawlance 25 Ltr Black Microwave Oven - DW-525-AF Air Fryer - 1 Year Warranty"
 
 
 def test_user_example_microwave_baking_1_year_warranty() -> None:
@@ -70,7 +70,7 @@ def test_user_example_microwave_baking_1_year_warranty() -> None:
         source_description="The Dawlance DW-115-CHZP is a 25 Ltr microwave oven in Black.",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 25 Ltr Black Microwave Oven - DW-115-CHZP Baking 1 Year Warranty"
+    assert result.title == "Dawlance 25 Ltr Black Microwave Oven - DW-115-CHZP Baking - 1 Year Warranty"
 
 
 def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
@@ -84,7 +84,7 @@ def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
         source_description="Split AC 1.0 Ton White. Warranty: 10 Year Compressor Warranty",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 1 Ton White Inverter Split Air Conditioner - Aura 10 Year Compressor Warranty"
+    assert result.title == "Dawlance 1 Ton White Inverter Split Air Conditioner - Aura - 10 Year Compressor Warranty"
 
     # When strict_rebuild is toggled False:
     result_kept = build_title(
@@ -109,7 +109,7 @@ def test_title_kept_when_no_confident_model() -> None:
         source_description="32 inch TV",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 32 Inch LED TV - Kore Google 2 Year Panel Warranty"
+    assert result.title == "Dawlance 32 Inch LED TV - Kore Google - 2 Year Panel Warranty"
 
     result_kept = build_title(
         brand="Dawlance",
@@ -156,7 +156,7 @@ def test_no_duplicate_warranty_if_already_in_source_title() -> None:
         source_title="Dawlance 32 Inch Kore Google HD LED TV - 2 Year Panel Warranty",
         source_description="32 inch TV",
     )
-    assert result.title == "Dawlance 32 Inch LED TV - Kore Google 2 Year Panel Warranty"
+    assert result.title == "Dawlance 32 Inch LED TV - Kore Google - 2 Year Panel Warranty"
 
     result_kept = build_title(
         brand="Dawlance",
@@ -217,7 +217,7 @@ def test_full_color_refrigerator_titles() -> None:
         )
         assert result.color_token == expected_color
         assert expected_color in result.title
-        assert result.title == f"Dawlance {expected_color} Inverter Refrigerator - {expected_model} Acce 12 Year Compressor Warranty"
+        assert result.title == f"Dawlance {expected_color} Inverter Refrigerator - {expected_model} Acce - 12 Year Compressor Warranty"
 
 
 def test_led_tv_title_omits_color_even_when_in_source() -> None:
@@ -232,7 +232,7 @@ def test_led_tv_title_omits_color_even_when_in_source() -> None:
     assert result.strategy == "rebuilt"
     assert "Black" not in result.title
     assert result.color_token == "Black"
-    assert result.title == "Haier 32 Inch LED TV - H32K85FX Android Google 2 Year Panel Warranty"
+    assert result.title == "Haier 32 Inch LED TV - H32K85FX Android Google - 2 Year Panel Warranty"
 
 
 def test_led_tv_kept_title_omits_color() -> None:
@@ -261,7 +261,7 @@ def test_washing_machine_title_no_fully_and_correct_warranty() -> None:
         source_description=source_desc,
     )
     assert "10 Year 10 Warranty" not in result.title
-    assert result.title == "Haier 12 KG Grey Fully Automatic Front Load Washing Machine - HW120-BP12357S8 10 Year Motor Warranty"
+    assert result.title == "Haier 12 KG Grey Fully Automatic Front Load Washing Machine - HW120-BP12357S8 - 10 Year Motor Warranty"
 
 
 

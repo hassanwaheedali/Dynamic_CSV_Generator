@@ -84,7 +84,7 @@ def test_tc1_shared_fields(pipeline: Pipeline) -> None:
     digi, alfa = result["digi"][0], result["alfa"][0]
 
     for row, label in ((digi, "digi"), (alfa, "alfa")):
-        assert row["Title"] == "Dawlance 2 Taps White Water Dispenser - WD-1051 HC 3 Year Compressor Warranty", label
+        assert row["Title"] == "Dawlance 2 Taps White Water Dispenser - WD-1051 HC - 3 Year Compressor Warranty", label
         assert row["Product Type"] == "Water Dispenser", label
         assert row["Product Images"] == TC1_IMAGE, label
         assert row["Option1 Name"] == "Color", label
@@ -156,7 +156,7 @@ def test_tc1_no_capacity_slot_in_title(pipeline: Pipeline) -> None:
 def test_tc2_shared_fields(pipeline: Pipeline) -> None:
     result = pipeline([TC2_ROW])
     for row in (result["digi"][0], result["alfa"][0]):
-        assert row["Title"] == "Dawlance 32 Inch LED TV - Kore Google 2 Year Panel Warranty"
+        assert row["Title"] == "Dawlance 32 Inch LED TV - Kore Google - 2 Year Panel Warranty"
         assert row["Product Type"] == "LED TV"
         assert row["Option1 Name"] == "Color"
         assert row["Option1 Value"] == "Black"
