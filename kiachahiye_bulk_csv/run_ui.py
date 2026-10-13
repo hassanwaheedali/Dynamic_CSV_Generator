@@ -105,7 +105,7 @@ def fmt_time(seconds: float) -> str:
 
 
 def fmt_size(path: Path) -> str:
-    size = path.stat().st_size if path.exists() else 0
+    size: float = float(path.stat().st_size) if path.exists() else 0.0
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024 or unit == "GB":
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
@@ -186,7 +186,9 @@ def run_stage(ui: UI, index: int, total: int, name: str, cmd: list[str], log, cw
         env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
     )
     chunks: list[str] = []
-    reader = threading.Thread(target=lambda: chunks.extend(iter(proc.stdout.readline, "")), daemon=True)
+    stdout = proc.stdout
+    assert stdout is not None
+    reader = threading.Thread(target=lambda: chunks.extend(iter(stdout.readline, "")), daemon=True)
     reader.start()
     tick = 0
     live = t.fancy

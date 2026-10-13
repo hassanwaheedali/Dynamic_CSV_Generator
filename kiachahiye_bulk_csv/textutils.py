@@ -306,9 +306,10 @@ def find_full_color(text: str, title: str = "") -> str | None:
     if m_hyphen:
         cand = m_hyphen.group(1).strip()
         words = cand.lower().split()
-        if any(w in BASE_COLORS for w in words):
-            if not any(w in COLOR_NON_MODIFIERS for w in words):
-                return " ".join(w.title() for w in words)
+        if any(w in BASE_COLORS for w in words) and not any(
+            w in COLOR_NON_MODIFIERS for w in words
+        ):
+            return " ".join(w.title() for w in words)
 
     # 2. 'finished in <Color>' or 'Product Color: <Color>' in details
     m_desc = re.search(

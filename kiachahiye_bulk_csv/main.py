@@ -143,7 +143,9 @@ def read_input(path: Path) -> list[InputRow]:
     rows: list[InputRow] = []
     if path.suffix.lower() in (".xlsx", ".xlsm"):
         try:
-            from openpyxl import load_workbook  # noqa: PLC0415 -- optional, only for .xlsx input
+            from openpyxl import (  # type: ignore[import-untyped]  # noqa: PLC0415
+                load_workbook,
+            )
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise RuntimeError(
                 "openpyxl is required to read .xlsx input; pip install openpyxl"

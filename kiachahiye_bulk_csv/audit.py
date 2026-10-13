@@ -24,7 +24,7 @@ from pathlib import Path
 
 import config as CONFIG
 from attributes import ALLOWED
-from brands import canonical_brand_key, resolve_brand
+from brands import resolve_brand
 from categories import resolve_category, resolve_product_type
 from sku_handle import extract_model
 from textutils import (

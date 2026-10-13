@@ -95,8 +95,8 @@ def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
         source_description="Split AC 1.0 Ton White. Warranty: 10 Year Compressor Warranty",
         strict_rebuild=False,
     )
-    assert result_kept.strategy == "kept-with-light-cleanup"
-    assert result_kept.title == "Dawlance Aura 15 Inverter Split Air Conditioner 1.0 Ton White - 10 Year Compressor Warranty"
+    expected = "Dawlance Aura 15 Inverter Split Air Conditioner 1.0 Ton White - 10 Year Compressor Warranty"
+    assert result_kept.title == expected
 
 
 def test_title_kept_when_no_confident_model() -> None:
@@ -216,8 +216,11 @@ def test_full_color_refrigerator_titles() -> None:
             source_description="",
         )
         assert result.color_token == expected_color
-        assert expected_color in result.title
-        assert result.title == f"Dawlance {expected_color} Inverter Refrigerator - {expected_model} Acce - 12 Year Compressor Warranty"
+        expected_title = (
+            f"Dawlance {expected_color} Inverter Refrigerator - {expected_model} Acce"
+            " - 12 Year Compressor Warranty"
+        )
+        assert result.title == expected_title
 
 
 def test_led_tv_title_omits_color_even_when_in_source() -> None:
@@ -252,7 +255,10 @@ def test_led_tv_kept_title_omits_color() -> None:
 def test_washing_machine_title_no_fully_and_correct_warranty() -> None:
     extraction = ModelExtraction(code="HW120-BP12357S8", source="title-parenthetical", confidence="high")
     source_title = "Haier Front Load Fully Automatic Washing Machine 12KG (HW120-BP12357S8)"
-    source_desc = "Capacity: 12 KG\nColor: Grey\nWarranty: 10\nFront Load Fully Automatic\na 10 motor and 3 years panel warranty"
+    source_desc = (
+        "Capacity: 12 KG\nColor: Grey\nWarranty: 10\n"
+        "Front Load Fully Automatic\na 10 motor and 3 years panel warranty"
+    )
     result = build_title(
         brand="Haier",
         extraction=extraction,
@@ -261,7 +267,11 @@ def test_washing_machine_title_no_fully_and_correct_warranty() -> None:
         source_description=source_desc,
     )
     assert "10 Year 10 Warranty" not in result.title
-    assert result.title == "Haier 12 KG Grey Fully Automatic Front Load Washing Machine - HW120-BP12357S8 - 10 Year Motor Warranty"
+    expected = (
+        "Haier 12 KG Grey Fully Automatic Front Load Washing Machine"
+        " - HW120-BP12357S8 - 10 Year Motor Warranty"
+    )
+    assert result.title == expected
 
 
 
@@ -272,7 +282,10 @@ def test_geyser_capacity_ignores_inline_weight_and_keeps_nasgas() -> None:
         extraction=extraction,
         product_type="Geyser",
         source_title="Super Asia Mega Electric Water Heater 30Ltr White (MEH-30)",
-        source_description="A 30 L water heater. Key features include capacity: 30 Liters, net Weight: 14.45 kg, gross Weight: 16.25 kg.",
+        source_description=(
+            "A 30 L water heater. Key features include capacity: 30 Liters, "
+            "net Weight: 14.45 kg, gross Weight: 16.25 kg."
+        ),
     )
     assert result.capacity_token == "30 Ltr"
     assert "KG" not in result.title

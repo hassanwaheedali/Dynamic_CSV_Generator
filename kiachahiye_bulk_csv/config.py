@@ -94,7 +94,8 @@ APPLY_TV_WARRANTY_TABLE = True
 #  EDIT HERE -- Title rebuilding mode
 # ===========================================================================
 # True  = ALWAYS strictly rebuild titles using our standard formula:
-#         [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name] - [Model] [Series/Feature Keyword] [Main Warranty]
+#         [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name]
+#         - [Model] [Series/Feature Keyword] - [Main Warranty]
 #         Disables keeping source titles as supplied.
 # False = Rebuild titles only when a confident model code exists (Step A);
 #         keep source title with light cleanup when no model code exists (Step B).

@@ -250,10 +250,7 @@ def parse_warranty_parts(warranty_text: str) -> list[StatedPart]:
             if bare:
                 duration = bare
                 label = _label_for(qualifier)
-                if label != "Warranty":
-                    qualifier = label.replace(" Warranty", "")
-                else:
-                    qualifier = ""
+                qualifier = label.replace(" Warranty", "") if label != "Warranty" else ""
         parts.append(StatedPart(part=qualifier, duration=duration, raw=chunk))
     return parts
 
@@ -336,17 +333,18 @@ def headline_part_and_duration(
     parts: list[StatedPart],
 ) -> tuple[str, str] | None:
     """Return ``(part_name, duration)`` for the headline component."""
-    dated = [part for part in parts if part.duration]
+    dated = [(p.part, p.duration) for p in parts if p.duration is not None]
     if not dated:
         return None
     for wanted in HEADLINE_PRIORITY:
-        for part in dated:
-            if wanted in part.part.lower():
-                return wanted.title(), part.duration
-    cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", dated[0].part).strip(" -:")
+        for part_name, duration in dated:
+            if wanted in part_name.lower():
+                return wanted.title(), duration
+    part_name, duration = dated[0]
+    cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", part_name).strip(" -:")
     if re.match(r"^\d+$", cleaned):
         cleaned = ""
-    return (cleaned.title() if cleaned else "Warranty"), dated[0].duration
+    return (cleaned.title() if cleaned else "Warranty"), duration
 
 
 

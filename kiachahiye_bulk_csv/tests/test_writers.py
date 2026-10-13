@@ -461,7 +461,7 @@ def test_default_option1_color_for_led_tv(pipeline: Pipeline) -> None:
 
 
 def test_default_option1_color_can_be_disabled_via_config(pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch) -> None:
-    import config as CONFIG
+    import config as CONFIG  # noqa: PLC0415
     monkeypatch.setattr(CONFIG, "DEFAULT_PRODUCT_TYPE_COLORS", {})
     result = pipeline(
         [

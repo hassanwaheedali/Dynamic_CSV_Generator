@@ -2,7 +2,8 @@
 
 Title formula (spec section 6)::
 
-    [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name] - [Model] [Series/Feature Keyword] [Main Warranty]
+    [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name]
+    - [Model] [Series/Feature Keyword] - [Main Warranty]
 
 When STRICT_TITLE_REBUILD is True in config.py, the Title is ALWAYS strictly
 rebuilt from the pieces above. Titles kept as supplied are disabled.
@@ -21,11 +22,15 @@ from dataclasses import dataclass
 
 from config import (
     OMIT_TITLE_COLOR_CATEGORIES as OMIT_TITLE_COLOR_CATEGORIES,
+)
+from config import (
     STRICT_TITLE_REBUILD as STRICT_TITLE_REBUILD,
+)
+from config import (
     TITLE_MAX as TITLE_MAX,
 )
 from sku_handle import ModelExtraction, find_series_token, parse_capacity
-from textutils import clean_inline, find_base_color, find_full_color
+from textutils import clean_inline, find_full_color
 from warranty import resolve_main_warranty
 
 # ---------------------------------------------------------------------------
@@ -274,16 +279,16 @@ def extract_feature(
         candidates.append(series)
 
     # Air Fryer special check
-    if re.search(r"\bair\s*fryer\b", full_text, re.IGNORECASE):
-        if "Air Fryer" not in candidates:
-            candidates.append("Air Fryer")
+    if re.search(r"\bair\s*fryer\b", full_text, re.IGNORECASE) and "Air Fryer" not in candidates:
+        candidates.append("Air Fryer")
 
     # Extra prominent features (Google, Android, QLED, OLED, Grill, Baking, Convection, Solo)
     for feat in ("Google", "Android", "QLED", "OLED", "Grill", "Baking", "Convection", "Solo"):
-        if re.search(rf"\b{re.escape(feat)}\b", full_text, re.IGNORECASE):
-            if not any(feat.lower() in c.lower() for c in candidates):
-                candidates.append(feat)
-                break
+        if re.search(rf"\b{re.escape(feat)}\b", full_text, re.IGNORECASE) and not any(
+            feat.lower() in c.lower() for c in candidates
+        ):
+            candidates.append(feat)
+            break
 
     return " ".join(candidates[:2])
 
@@ -301,7 +306,8 @@ def build_title(
 
     When strict_rebuild is True (configured by STRICT_TITLE_REBUILD in config.py),
     the Title is always strictly rebuilt from our standard formula:
-    [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name] - [Model] [Series/Feature Keyword] [Main Warranty]
+    [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name]
+    - [Model] [Series/Feature Keyword] - [Main Warranty]
 
     When strict_rebuild is False, Step A rebuilds if a confident model code
     exists, and Step B keeps the source Title with light cleanup otherwise.
