@@ -160,8 +160,11 @@ PRODUCT_TYPE_MAP: dict[str, str] = {
     "smart led tv": "LED TV",
 }
 
+# Delimiters commonly used in product hierarchy breadcrumbs: "/", ">", "|", ">>"
+_BREADCRUMB_DELIM_RE = re.compile(r"\s*(?:[/>|]+)\s*")
+
 # Keywords that mark a breadcrumb segment as belonging to the AC group.
-_AC_SEGMENT_RE = re.compile(r"\bac\b")
+_AC_SEGMENT_RE = re.compile(r"\bac\b|\bair[\s\-_]?condition(?:er|ers|ing)?\b", re.IGNORECASE)
 # Keywords that mark a breadcrumb segment as belonging to the LED-TV group.
 _LED_SEGMENT_RE = re.compile(r"\bled\b")
 # Inverter / non-inverter signals, checked in this order (negation first).
@@ -245,7 +248,7 @@ def resolve_category(
     separately because the two platforms key off different signals (DigiMall
     needs inverter status, Alfa needs TV smartness).
     """
-    segments = [s.strip().lower() for s in raw_breadcrumb.split("/") if s.strip()]
+    segments = [s.strip().lower() for s in _BREADCRUMB_DELIM_RE.split(raw_breadcrumb) if s.strip()]
 
     # ---- DigiMall ---------------------------------------------------------
     digi_key, _ = _resolve_group(segments, digi=True)
@@ -305,7 +308,8 @@ def resolve_category(
 
 def _infer_product_type(category: ResolvedCategory, source_brand: str) -> str:
     """Section 5 fallback: a plain generic singular name from the product's own words."""
-    last = category.raw.split("/")[-1].strip()
+    segments = [s.strip() for s in _BREADCRUMB_DELIM_RE.split(category.raw) if s.strip()]
+    last = segments[-1] if segments else category.raw.strip()
     last = re.sub(re.escape(source_brand), "", last, flags=re.IGNORECASE).strip(" -")
     if last.isupper():
         return last  # keep acronyms such as UPS exactly as the sheet spells them
