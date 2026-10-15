@@ -970,3 +970,294 @@ def test_a_phrase_is_matched_in_the_order_the_row_wrote_it() -> None:
         breadcrumb="Electronics / Home appliances / Air Conditioners",
     )
     assert row.claimed["only"] == "subtype"
+
+
+def test_a_single_letter_written_in_front_of_a_name_is_part_of_that_name() -> None:
+    """Owner ruling: Haier's line is `E-Star`, so the sheet never offered `star` alone.
+
+    `E` is not a word any table names and not a code: it is the initial of the word after it.
+    Joining it is what stops 14 Haier rows from voting for a name the vendor never wrote.
+    """
+    haier = analyze_row(
+        "Haier E-Star Freezer-On-Top Refrigerator 12 Cu Ft (HRF-346EPB)",
+        product_type="Refrigerator",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    assert "e-star" in haier.words
+    assert "star" not in haier.words
+    assert source_of(haier, "e-star") == "E-Star"
+
+
+def test_the_space_and_the_dash_form_of_one_line_share_one_vote_key() -> None:
+    """`E Chrome` and `E-CHROME` are Dawlance's one line; the key must not fork it.
+
+    The key is canonical so the evidence of both writings votes together, while each row keeps
+    its own spelling for rendering -- which is why the dash is not simply stripped.
+    """
+    spaced = analyze_row(
+        "Dawlance E Chrome Freezer-On-Top Refrigerator Metallic Grey (REF-9149WB)",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    dashed = analyze_row(
+        "DAW 9149WB E-CHROME METALLIC GRAY",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Refrigerators",
+    )
+    assert "e-chrome" in spaced.words and "e-chrome" in dashed.words
+    assert "chrome" not in spaced.words and "chrome" not in dashed.words
+    assert source_of(spaced, "e-chrome") == "E Chrome"
+    assert source_of(dashed, "e-chrome") == "E-CHROME"
+
+
+def test_the_letter_may_only_take_a_word_that_no_slot_claimed() -> None:
+    """A one-letter initial joins a NAME, never a word a slot already owns.
+
+    `X Inverter` is a mode statement and `U Cool` is the brand: joining either would invent a
+    word the row does not sell.  The pairs are real rows from the two sheets.
+    """
+    dawlance = analyze_row(
+        "Dawlance Elegance X Inverter Split Air Conditioner 1 Ton",
+        product_type="Air Conditioner",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "x-inverter" not in dawlance.words
+    homage = analyze_row(
+        "U COOL AIR CURTAIN UCA-315Y 3FT",
+        product_type="Air Curtain",
+        brand="U Cool",
+        breadcrumb="Air Curtains",
+    )
+    assert "u-cool" not in homage.words
+
+
+def test_a_two_letter_word_is_never_glued_to_the_name_after_it() -> None:
+    """The bound is one letter, measured: two-letter pieces are units and phrase words.
+
+    `Cu Ft Red`, `Freezer-On-Top` and `No Frost` all put a two-letter piece directly in front of
+    a word, and gluing them would have destroyed the capacity unit, the category phrase and the
+    type phrase this very row states.
+    """
+    dawlance = analyze_row(
+        "Dawlance 12 Cu Ft Red Freezer-On-Top Refrigerator No Frost (HRF-346EPR)",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    for glued in ("ft-red", "on-top", "no-frost", "cu-ft"):
+        assert glued not in dawlance.words, glued
+    assert "frost" not in dawlance.words
+
+
+def test_every_candidate_carries_the_rows_own_spelling() -> None:
+    """The folded key decides the vote; the sheet's own letters are what a shop can print.
+
+    `eComfort` is Haier's/Midea's spelling of a line.  A pipeline that renders the key would
+    ship `Ecomfort`, so the reading layer has to hand both forms down.
+    """
+    midea = analyze_row(
+        "Midea eComfort Inverter Split Air Conditioner 1 Ton White (MSAG2B-12HRDN1-QC0)",
+        product_type="Air Conditioner",
+        brand="Midea",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "ecomfort" in midea.words
+    assert source_of(midea, "ecomfort") == "eComfort"
+
+
+def test_a_candidate_records_every_piece_it_covers() -> None:
+    """The invariant the whole design rests on, stated on candidates: claimed XOR covered.
+
+    A joined pair covers two pieces under one candidate, so coverage -- not the key -- is what
+    must partition the row's pieces.
+    """
+    for title in (
+        "Haier E-Star Freezer-On-Top Refrigerator 12 Cu Ft (HRF-346EPB)",
+        "MIDEA ECO - WALL MOUNTED DC INVERTER MSAG2B-12HRDN1-QC0",
+        "Dawlance Chrome Freezer-On-Top Refrigerator 10 Cu Ft (9160-WB)",
+        "KENWOOD 1267S COMFORT PRO INVERTER",
+    ):
+        analysis = analyze_row(
+            title,
+            product_type="Air Conditioner",
+            brand="Dawlance",
+            breadcrumb="Electronics / Home appliances / Air Conditioners",
+        )
+        covered = [piece for candidate in analysis.candidates for piece in candidate.pieces]
+        assert not set(analysis.claimed) & set(covered), title
+        assert set(analysis.claimed) | set(covered) == set(analysis.title_words), title
+        assert len(covered) == len(set(covered)), title
+
+
+def test_a_letter_that_is_half_of_an_abbreviation_is_not_an_initial() -> None:
+    """`W/O REF` is a note, not a name: the letter after the slash belongs to the slash.
+
+    Review finding.  A one-letter piece that itself follows a slash or a dot is the tail of a
+    written abbreviation (`W/O`, `M/O`, `R/C`), so joining it to the next word both invents a
+    label nobody sells (`o-ref`) and deletes the row's one genuine free word (`ref`) from the
+    vote.  `E-Star` stays joinable because its letter begins a written word.
+    """
+    note = analyze_row(
+        "DW1060FP-DAWLANCE 1060FP W/O REF WHITE",
+        product_type="Deep Freezer",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Deep Freezers",
+    )
+    assert "o-ref" not in note.words
+    assert "ref" in note.words
+    remote = analyze_row(
+        "Haier Split AC 1.5 Ton R/C Remote White",
+        product_type="Air Conditioner",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "c-remote" not in remote.words
+    assert "remote" in remote.words
+
+
+@pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014", " - ", "\u00a0", " "])
+def test_the_join_reads_every_way_the_sheet_writes_a_separator(dash: str) -> None:
+    """One line, one key: `E-Star` and `E\u2013Star` must not vote as two names.
+
+    Review finding.  The stock and Shape-A sheets both emit en/em dashes, and a separator class
+    that lists only ASCII dashes leaves `E\u2013Star` as bare `star` -- exactly the name ruling 3
+    exists to retire.  The spelling stays the row's own; only the key is canonical.
+    """
+    title = f"Haier E{dash}Star Freezer-On-Top Refrigerator 12 Cu Ft (HRF-346EPB)"
+    analysis = analyze_row(
+        title,
+        product_type="Refrigerator",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    assert "e-star" in analysis.words, repr(dash)
+    assert "star" not in analysis.words, repr(dash)
+    assert source_of(analysis, "e-star") in title, repr(dash)
+
+
+def test_a_letter_is_never_absorbed_into_two_names_at_once() -> None:
+    """Two initials in one row: the second word stands alone rather than sharing its letter.
+
+    Review finding, from a fuzzed shape: `E-Star E-Glow` covered the piece `e` in two
+    candidates, so the row's pieces stopped partitioning -- the one invariant the whole design
+    rests on.  Ownership of a letter is decided once per row, and the first name it introduces
+    keeps it.
+    """
+    analysis = analyze_row(
+        "Haier E-Star E-Glow Refrigerator 12 Cu Ft (HRF-346EPB)",
+        product_type="Refrigerator",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Refrigerators",
+    )
+    covered = [piece for candidate in analysis.candidates for piece in candidate.pieces]
+    assert len(covered) == len(set(covered)), covered
+    assert set(analysis.claimed) | set(covered) == set(analysis.title_words)
+    assert "e-star" in analysis.words
+    assert "glow" in analysis.words
+
+
+def test_the_vote_keys_the_line_the_sheet_wrote_not_its_last_word() -> None:
+    """What ruling 3 buys, on the real sheets, driven the way main.py drives it.
+
+    `star` earned 14 Haier rows that all read `E-Star`; after the join `e-star` earns them and
+    Haier stops earning `star`.  `f-stand` is three brands' shorthand for a floor stand, so the
+    existing three-brand rule disqualifies the joined form too -- no new rule, no word list.
+    """
+    shape_a, stock = _real_rows()
+    a_corpus = build_corpus(shape_a)
+    assert a_corpus.is_proven("Haier", "e-star")
+    assert not a_corpus.is_proven("Haier", "star")
+    assert a_corpus.is_proven("Dawlance", "e-chrome")
+    b_corpus = build_corpus(stock)
+    assert "f-stand" in b_corpus.blacklisted
+
+
+def test_joining_costs_the_stock_sheet_a_proof_it_had_only_by_faking_a_neighbour() -> None:
+    """Pinned, not fixed: Dawlance `Chrome` stops earning on the stock sheet, and this says why.
+
+    Before the join it earned on 16 rows with 12 of them code-adjacent, and the 4 free-standing
+    rows were exactly the `E-CHROME` / `E CHROME` rows -- the word looked un-adjacent to a code
+    only because the single letter in front of it was not one.  Once that letter belongs to the
+    name, the pair sits after `9149WB` like everything else on a stock sheet, so neither
+    `chrome` nor `e-chrome` clears the "stands free of a part number" bar here.
+
+    Whether an initial-delimited label should still count as code-adjacent is a rule for the
+    VOTE, not for the reading layer, and the stock corpus is not wired into main.py yet, so it
+    is recorded as a decision for T4 rather than quietly answered here.
+    """
+    _, stock = _real_rows()
+    corpus = build_corpus(stock)
+    chrome = corpus.undecided["chrome"]
+    assert chrome.code_adjacent == chrome.rows
+    assert not corpus.is_proven("Dawlance", "chrome")
+    assert not corpus.is_proven("Dawlance", "e-chrome")
+
+
+def test_every_piece_of_every_real_row_is_claimed_or_covered_by_exactly_one_candidate() -> None:
+    """The partition the whole design rests on, checked on all 1,620 real rows.
+
+    A piece may be owned by a slot or sit inside one name candidate, never both and never
+    nowhere -- that is what makes a dropped word a bug a test can see instead of a title that
+    silently loses it.
+    """
+    shape_a, stock = _real_rows()
+    for analysis in [*shape_a, *stock]:
+        covered = [piece for candidate in analysis.candidates for piece in candidate.pieces]
+        assert not set(analysis.claimed) & set(covered), analysis.title
+        assert set(analysis.claimed) | set(covered) == set(analysis.title_words), analysis.title
+        assert len(covered) == len(set(covered)), analysis.title
+        keys = [candidate.key for candidate in analysis.candidates]
+        assert len(keys) == len(set(keys)), analysis.title
+
+
+def source_of(analysis: RowAnalysis, key: str) -> str:
+    """The row's own spelling of one candidate, looked up by its vote key."""
+    return {candidate.key: candidate.source for candidate in analysis.candidates}[key]
+
+
+def _real_rows() -> tuple[list[RowAnalysis], list[RowAnalysis]]:
+    """Both sheets read the way main.py reads them: product type and brand resolved first."""
+    root = Path(__file__).resolve().parents[1]
+    with (root / "data/input/Products.csv").open(encoding="utf-8-sig", newline="") as handle:
+        shape_a = [
+            analyze_row(
+                (row.get("Title") or "").strip(),
+                brand=(row.get("Brand") or "").strip(),
+                product_type=_product_type(
+                    (row.get("Brand") or "").strip(),
+                    (row.get("Categories") or "").strip(),
+                    f"{(row.get('Title') or '').strip()} {(row.get('Description') or '').strip()}",
+                ),
+                breadcrumb=(row.get("Categories") or "").strip(),
+            )
+            for row in csv.DictReader(handle)
+        ]
+    stock_path = (
+        root
+        / "tests/fixtures"
+        / "Classified_Stock_Inventory_Master - KiaChahiye 12-10-2026 - Classified Stock.csv"
+    )
+    with stock_path.open(encoding="utf-8-sig", newline="") as handle:
+        stock = [
+            analyze_row(
+                (row.get("Original_Title") or "").strip(),
+                brand=(row.get("Brand") or "").strip(),
+                product_type=_product_type(
+                    (row.get("Brand") or "").strip(),
+                    (row.get("Category") or "").strip(),
+                    (row.get("Original_Title") or "").strip(),
+                ),
+                breadcrumb=(row.get("Category") or "").strip(),
+            )
+            for row in csv.DictReader(handle)
+        ]
+    return shape_a, stock
+
+
+def _product_type(brand: str, breadcrumb: str, text: str) -> str:
+    category = categories.resolve_category(breadcrumb, text, text)
+    return categories.resolve_product_type(category, brand)[0]

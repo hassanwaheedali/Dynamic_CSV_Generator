@@ -8,7 +8,8 @@ reviewed instead of guessed at:
     [0] :func:`normalize_shape`  collapse the repeated ``LABEL-CODE`` halves a stock
                                  sheet writes, leaving a genuine `` - (CODE)`` tail alone
     [1] :func:`analyze_row`      the slots claim the title in a fixed order
-    [2] the residue              what no slot took, in title order, lower-cased
+    [2] the candidates           what no slot took, in title order, keyed lower-cased and
+                                 recorded with the row's own spelling
 
 Three boundaries this layer keeps on purpose.
 
@@ -31,6 +32,12 @@ A brand is claimed as a WHOLE name: a two-word name is matched as a run of piece
 its glued form (``ECO STAR`` also covers ``ECOSTAR``), and the words inside a name the
 CATALOGUE holds are never flattened.  The one exception is the row's own ``Brand`` column:
 those words are that row's brand data, so they are claimed as written.
+
+A free word is offered as the name the row WROTE, not as its last piece: a single letter no
+table named, standing in front of a free word, is that word's initial (``E-Star``, ``E
+Chrome``, ``C Glow``), and the key carries the row's own spelling so a later layer can render
+``eComfort`` rather than invent ``Ecomfort``.  The bound is one letter because two-letter
+pieces are units (``Ft``, ``Kg``) or phrase words (``on``, ``no``) -- measured, not assumed.
 
 Nothing here knows the Title format, and nothing is invented: a slot the row does not
 state claims nothing.
@@ -80,6 +87,16 @@ _SPACES_RE = re.compile(r"\s+")
 _LABEL_RE = re.compile(r"[A-Za-z0-9]+")
 #: The dashes a sheet actually writes between two halves of one label.
 _SHAPE_DASHES = frozenset("-\u2013\u2014")
+#: A word run as written, for the spelling a shop may print.
+_RUN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+]*")
+#: One letter, one separator the sheet writes, one word: the shape every `E-Star` row has.
+#: The lookbehind rejects a letter that itself follows a slash or a dot, because that letter is
+#: the tail of a written abbreviation (`W/O REF`, `R/C Remote`), not the start of a name.
+_SP = r"[ \t\u00a0]"
+_INITIAL_RE = re.compile(
+    rf"(?<![A-Za-z0-9/.])([A-Za-z])(?:{_SP}*[-\u2013\u2014/.]{_SP}*|{_SP}+)"
+    r"([A-Za-z][A-Za-z0-9+]{2,})(?![A-Za-z0-9])"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -285,8 +302,23 @@ class WordPosition:
 
 
 @dataclass(frozen=True)
+class ResidueCandidate:
+    """One name the row offers: the key the vote counts, the spelling the shop may print.
+
+    The key is folded so an all-caps sheet votes exactly like a title-cased one, and it joins a
+    one-letter initial to the word it introduces (``e-star``, ``e-chrome``) so the line the
+    vendor wrote is the line the corpus is asked about.  ``pieces`` records every piece the
+    candidate covers, which is what keeps the row's pieces partitioned: claimed XOR covered.
+    """
+
+    key: str
+    source: str
+    pieces: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RowAnalysis:
-    """One row read once: its pieces, the slot that owns each, and the free residue."""
+    """One row read once: its pieces, the slot that owns each, and the free candidates."""
 
     title: str
     brand: str
@@ -294,6 +326,7 @@ class RowAnalysis:
     title_words: tuple[str, ...]
     claimed: Mapping[str, str] = field(default_factory=dict)
     positions: Mapping[str, WordPosition] = field(default_factory=dict)
+    candidates: tuple[ResidueCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         # The dicts handed in are the builder's working copies; freezing them here is what
@@ -303,12 +336,8 @@ class RowAnalysis:
 
     @property
     def words(self) -> tuple[str, ...]:
-        """The residue: pieces no slot claimed, letters-only, in title order."""
-        return tuple(
-            word
-            for word in self.title_words
-            if word not in self.claimed and _LETTER_RE.search(word) and not _DIGIT_RE.search(word)
-        )
+        """The residue as the vote sees it: candidate keys, in title order."""
+        return tuple(candidate.key for candidate in self.candidates)
 
 
 @dataclass(frozen=True)
@@ -372,13 +401,16 @@ def _abbreviates_row_brand(piece: str, row_brand: str) -> bool:
     return len(piece) >= _MIN_NAME_LENGTH and row_brand.startswith(piece) and row_brand != piece
 
 
-def _owner_slots(piece: str, vocabulary: _Vocabulary) -> list[str]:
-    """Every slot that could claim this piece; the earliest one in SLOT_ORDER wins.
+def _owner_slots(piece: str, vocabulary: _Vocabulary) -> tuple[list[str], bool]:
+    """Every slot that could claim this piece, and whether a TABLE named it.
 
     The named-slot vocabularies are consulted before the structural guesses at the end, so
     a word a table already knows is filed under its real slot rather than being guessed at:
     ``ft`` is a capacity unit, not a part number, even though it has no vowel, and a bare
     number is a part number unless this row states it as a capacity.
+
+    The flag matters because a guess is a different fact from a name: only a piece no table
+    named at all can turn out to be the initial of the word next to it.
     """
     explicit = vocabulary.explicit
     owners: list[str] = []
@@ -400,6 +432,7 @@ def _owner_slots(piece: str, vocabulary: _Vocabulary) -> list[str]:
         owners.append("warranty")
     if piece in vocabulary.structural:
         owners.append(REVIVABLE_SLOT)
+    named = bool(owners)
     if not owners:
         # Nothing in any table named this piece, so the only claims left are structural
         # facts about the string itself -- tried last, so a known unit word like ``ft``
@@ -408,7 +441,7 @@ def _owner_slots(piece: str, vocabulary: _Vocabulary) -> list[str]:
             owners.append("model")
         elif len(piece) < _MIN_NAME_LENGTH or _is_glued_known_words(piece, vocabulary.structural):
             owners.append(REVIVABLE_SLOT)
-    return owners
+    return owners, named
 
 
 def _has_digit_and_letter(piece: str) -> bool:
@@ -504,10 +537,13 @@ def analyze_row(
     # capacity this row states instead of filing it as a part number.
     claimed = {piece: "model" for piece in code_parts if piece in present and not piece.isdigit()}
     claimed.update(_claim_brand_phrases(present, vocabulary))
+    unnamed: set[str] = set()
     for piece in present:
         if piece in claimed:
             continue
-        owners = _owner_slots(piece, vocabulary)
+        owners, named = _owner_slots(piece, vocabulary)
+        if not named:
+            unnamed.add(piece)
         slot = next((name for name in SLOT_ORDER if name in owners), None)
         if slot is not None:
             claimed[piece] = slot
@@ -531,6 +567,9 @@ def analyze_row(
         for piece in present
         if piece not in claimed and _LETTER_RE.search(piece) and not _DIGIT_RE.search(piece)
     )
+    candidates, absorbed = _candidates(normalized, pieces, residue, unnamed)
+    for letter in absorbed:
+        claimed.pop(letter, None)
     # The class words this row states -- in its columns, and in its own title wherever a slot
     # recognised one. A sheet that writes "Split AC" instead of a breadcrumb still states Air
     # Conditioner, and the abbreviation guard has to read what the row itself says.
@@ -547,8 +586,71 @@ def analyze_row(
         product_key=code_parts_key or "|".join(sorted(present)),
         title_words=tuple(present),
         claimed=claimed,
-        positions=_positions(pieces, present, residue, code_parts, class_words, vocabulary),
+        positions=_positions(pieces, present, candidates, code_parts, class_words, vocabulary),
+        candidates=candidates,
     )
+
+
+def _candidates(
+    title: str,
+    pieces: list[str],
+    residue: frozenset[str],
+    unnamed: set[str],
+) -> tuple[tuple[ResidueCandidate, ...], frozenset[str]]:
+    """Group the free pieces into the names the row actually wrote.
+
+    A single letter that no table named, standing on its own directly in front of a free word,
+    is that word's initial -- the sheet's own way of writing ``E-Star``, ``E Chrome`` and
+    ``C Glow``.  Joining it is what stops fourteen Haier ``E-Star`` rows from voting for a name
+    nobody sold, and the canonical key keeps the dashed and the space-written form of one line
+    together while each row still carries its own spelling.
+
+    One letter is the whole rule.  Two-letter pieces are units (``Ft``, ``Kg``), phrase words
+    (``on`` in ``Freezer-On-Top``, ``no`` in ``No Frost``) or code fragments, and every one of
+    those sits directly in front of a word somewhere in the two sheets, so a wider bound would
+    glue a size onto a name.  A letter claimed by a second name is not shared: the first name it
+    introduces keeps it and the next word stands alone, so a row's pieces stay partitioned.
+    """
+    spelled: dict[tuple[str, str], str] = {}
+    for match in _INITIAL_RE.finditer(title):
+        spelled.setdefault((match.group(1).lower(), match.group(2).lower()), match.group())
+
+    found: list[ResidueCandidate] = []
+    seen: set[str] = set()
+    absorbed: set[str] = set()
+    for index, piece in enumerate(pieces):
+        if piece not in residue or piece in seen:
+            continue
+        letter = pieces[index - 1] if index else ""
+        pair = (letter, piece)
+        if (
+            len(letter) == 1
+            and letter.isalpha()
+            and letter in unnamed
+            and letter not in absorbed
+            and pair in spelled
+        ):
+            absorbed.add(letter)
+            seen.add(piece)
+            found.append(
+                ResidueCandidate(
+                    key=f"{letter}-{piece}", source=spelled[pair], pieces=(letter, piece)
+                )
+            )
+        else:
+            seen.add(piece)
+            found.append(
+                ResidueCandidate(key=piece, source=_source_run(title, piece), pieces=(piece,))
+            )
+    return tuple(found), frozenset(absorbed)
+
+
+def _source_run(title: str, piece: str) -> str:
+    """The row's own letters for a folded piece: what a shop title may print for it."""
+    for match in _RUN_RE.finditer(title):
+        if match.group().lower() == piece:
+            return match.group()
+    return piece
 
 
 #: Slots whose words name what the product IS -- a typo of one of them is not a product line.
@@ -589,17 +691,21 @@ def _claim_class_typos(present: dict[str, None], class_words: dict[str, str]) ->
 def _positions(
     pieces: list[str],
     present: dict[str, None],
-    candidates: frozenset[str],
+    candidates: tuple[ResidueCandidate, ...],
     code_parts: frozenset[str],
     class_words: frozenset[str],
     vocabulary: _Vocabulary,
 ) -> dict[str, WordPosition]:
-    """Record where each candidate word stood, once per word, across the whole row.
+    """Record where each candidate stood, once per candidate, across the whole row.
 
     A word a slot claimed for a reason that can be taken back (see REVIVABLE_SLOT) is still a
-    candidate: the vote has to see it to decide.  A word that occurs twice in one row keeps the
-    strongest reading it got -- standing free of codes somewhere in the row is what the vote
+    candidate: the vote has to see it to decide.  A candidate that occurs twice in one row keeps
+    the strongest reading it got -- standing free of codes somewhere in the row is what the vote
     needs to see.
+
+    A joined candidate is read as the one label it is: the pieces on either SIDE of the whole
+    pair are what touched it, so `Haier E-Star` is brand-adjacent and `9149WB E-CHROME` is not
+    free of codes.
 
     The two directions of a bare number are NOT the same fact.  A number BEFORE a word is the
     rest of a part number the sheet split with a space (`HRF 418 IFP`, `013W USDC`), so it is
@@ -607,31 +713,35 @@ def _positions(
     `Infinity Pro 15`), which is how the stock rows write their identity -- treating it as code
     evidence would delete every name+size pair in the catalogue.
     """
-    free = [piece for piece in present if piece in candidates]
     codes = {
         piece
         for piece in present
         if _has_digit_and_letter(piece) or (piece in code_parts and _LETTER_RE.search(piece))
     }
     positions: dict[str, WordPosition] = {}
-    for index, piece in enumerate(pieces):
-        if piece not in free:
-            continue
-        previous = pieces[index - 1] if index else ""
-        following = pieces[index + 1] if index + 1 < len(pieces) else ""
-        beside = {part for part in (previous, following) if part in codes}
-        if previous.isdigit():
-            beside.add(previous)
-        brand_adjacent = previous in vocabulary.row_brand_words or previous == vocabulary.row_brand
-        class_prefixed = any(
-            word.startswith(piece) and len(word) >= len(piece) + 2 for word in class_words
-        )
-        earlier = positions.get(piece)
-        positions[piece] = WordPosition(
-            brand_adjacent=brand_adjacent or bool(earlier and earlier.brand_adjacent),
-            class_prefixed=class_prefixed or bool(earlier and earlier.class_prefixed),
-            beside=frozenset(beside | set(earlier.beside if earlier else ())),
-        )
+    for candidate in candidates:
+        span = list(candidate.pieces)
+        for index in range(len(pieces) - len(span) + 1):
+            if pieces[index : index + len(span)] != span:
+                continue
+            previous = pieces[index - 1] if index else ""
+            following = pieces[index + len(span)] if index + len(span) < len(pieces) else ""
+            beside = {part for part in (previous, following) if part in codes}
+            if previous.isdigit():
+                beside.add(previous)
+            brand_adjacent = (
+                previous in vocabulary.row_brand_words or previous == vocabulary.row_brand
+            )
+            class_prefixed = any(
+                word.startswith(candidate.key) and len(word) >= len(candidate.key) + 2
+                for word in class_words
+            )
+            earlier = positions.get(candidate.key)
+            positions[candidate.key] = WordPosition(
+                brand_adjacent=brand_adjacent or bool(earlier and earlier.brand_adjacent),
+                class_prefixed=class_prefixed or bool(earlier and earlier.class_prefixed),
+                beside=frozenset(beside | set(earlier.beside if earlier else ())),
+            )
     return positions
 
 
