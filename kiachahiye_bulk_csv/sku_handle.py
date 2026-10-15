@@ -220,6 +220,9 @@ def find_series_token(text: str) -> str:
         return labelled.group(1).strip()
 
     title = text.splitlines()[0] if text else ""
+    # A sheet typed entirely in capitals carries no casing signal, so there an
+    # all-caps word is not evidence of an acronym.
+    shouty = title.upper() == title
     words: list[str] = re.findall(r"[A-Za-z][A-Za-z0-9+.\-]+", title)
     for index, word in enumerate(words):
         if index == 0:  # the leading word is the brand in this sheet
@@ -227,10 +230,23 @@ def find_series_token(text: str) -> str:
         key = normalize(word)
         if len(key) < 3 or key in TYPE_WORDS:
             continue
-        if word.isupper() or lookup_is_acronym(word):
+        if shouty:
+            if _is_code_like(word) or not _has_vowel(word):
+                continue
+        elif word.isupper() or lookup_is_acronym(word):
             continue
         return word
     return ""
+
+
+def _is_code_like(word: str) -> bool:
+    """True for a model code token such as ``MSAG2B-12HRDN1-QC0``."""
+    return bool(re.search(r"\d", word) or "-" in word or "." in word)
+
+
+def _has_vowel(word: str) -> bool:
+    """True for a pronounceable marketing word; rejects ``DC`` and ``HTZ``."""
+    return bool(re.search(r"[AEIOUY]", word.upper()))
 
 
 def lookup_is_acronym(word: str) -> bool:
