@@ -62,3 +62,9 @@ ignore = [
 # The 66-column / 28-column header contract has to stay one literal so the test
 # fails if a single column moves.
 "tests/test_output_schema.py" = ["E501"]
+# series_corpus.py reads title_builder's SUBTYPES and stop list, and from Task 4 the
+# Title builder imports series_corpus back.  Those two tables are therefore imported
+# inside the functions that need them, which is what keeps the pair from deadlocking on
+# a circular module-level import.  The rule is right in general; here the laziness is
+# the design.
+"series_corpus.py" = ["PLC0415"]
