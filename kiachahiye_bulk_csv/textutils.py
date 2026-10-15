@@ -318,8 +318,12 @@ def find_full_color(text: str, title: str = "") -> str | None:
         cleaned_full_text = re.sub(phrase, "", cleaned_full_text, flags=re.IGNORECASE)
 
     # 1. Explicit 'Color:' or 'Product Color:' spec line anywhere in text
+    #    The colour phrase is bounded to ITS OWN LINE: `[ \t]+`, never `\s+`, which
+    #    also matches newlines and used to swallow the next spec line's first word
+    #    ("Color: White\nDuzin Series" read the colour as "White Duzin").
     m_color_line = re.search(
-        r"(?im)^[ \t]*(?:•\s*)?(?:product\s+|appliance\s+|body\s+)?colo(?:u)?r(?:\s*(?:name|code))?\s*[:\-]?\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\b",
+        r"(?im)^[ \t]*(?:•\s*)?(?:product\s+|appliance\s+|body\s+)?colo(?:u)?r"
+        r"(?:\s*(?:name|code))?\s*[:\-]?\s*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\b",
         cleaned_full_text,
     )
     if m_color_line:
@@ -331,7 +335,7 @@ def find_full_color(text: str, title: str = "") -> str | None:
                 return " ".join(w.title() for w in filtered)
 
     # 2. Hyphen color at end of title: e.g. '-(9173-WB)-Crimson Red' or '-Crimson Red'
-    m_hyphen = re.search(r"-\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\s*$", scope_title.strip())
+    m_hyphen = re.search(r"-\s*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\s*$", scope_title.strip())
     if m_hyphen:
         cand = m_hyphen.group(1).strip()
         words = cand.lower().split()
@@ -342,7 +346,7 @@ def find_full_color(text: str, title: str = "") -> str | None:
 
     # 3. 'finished in <Color>' or 'Product Color: <Color>' in details
     m_desc = re.search(
-        r"(?:finished in|product color:\s*|available in)\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)\b",
+        r"(?:finished in|product color:[ \t]*|available in)[ \t]*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\b",
         cleaned_full_text,
         re.IGNORECASE,
     )
