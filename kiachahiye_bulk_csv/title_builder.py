@@ -234,6 +234,14 @@ SUBTYPES: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {
             "Vertical": ("vertical",),
         },
     ),
+    "Refrigerator": (
+        {
+            # What kind of fridge it is, not which line it belongs to: a row saying
+            # "No Frost" states the cooling type, while "Dawlance Frost 30" names the Frost
+            # model. Reading the first as the second put a type word into [series].
+            "No Frost": ("no frost", "frost free", "nofrost", "frostfree"),
+        },
+    ),
     "Geyser": (
         {"Instant": ("instant",)},
         {

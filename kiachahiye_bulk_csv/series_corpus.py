@@ -123,7 +123,7 @@ def noise_vocabulary() -> frozenset[str]:
     words |= _flatten(textutils.BASE_COLORS)
     words |= _flatten(textutils.COLOR_MODIFIERS)
     words |= _flatten(textutils.COLOR_NON_MODIFIERS)
-    words |= _flatten(_subtype_table())
+    words |= _single_word_subtype_labels()
     return frozenset(words)
 
 
@@ -206,6 +206,25 @@ def _subtype_table() -> dict[str, Any]:
     return title_builder.SUBTYPES
 
 
+def _single_word_subtype_labels() -> frozenset[str]:
+    """Sub-type labels that are ONE word, for the whole catalogue.
+
+    A multi-word label (``No Frost``, ``Top Load``, ``Heat & Cool``) is a PHRASE: its words are
+    type words only when the row writes the phrase, which is what :func:`_subtype_words` does
+    per row.  Flattening phrases into words is how ``frost`` would become a type word in an
+    air-conditioner row and steal Dawlance's line name.
+    """
+    words: set[str] = set()
+    for group in _subtype_table().values():
+        for labels in group:
+            for label, aliases in labels.items():
+                for variant in (label, *aliases):
+                    parts = _WORD_RE.findall(variant.lower())
+                    if len(parts) == 1:
+                        words.update(parts)
+    return frozenset(words)
+
+
 # --------------------------------------------------------------------------- #
 # [0] shape normalisation
 # --------------------------------------------------------------------------- #
@@ -271,6 +290,7 @@ class RowAnalysis:
 
     title: str
     brand: str
+    product_key: str
     title_words: tuple[str, ...]
     claimed: Mapping[str, str] = field(default_factory=dict)
     positions: Mapping[str, WordPosition] = field(default_factory=dict)
@@ -467,7 +487,7 @@ def analyze_row(
             "color": _value_words(color),
             "inverter": _value_words(inverter),
         },
-        subtype=frozenset(_subtype_words(product_type)),
+        subtype=_subtype_words(product_type, tuple(pieces)),
         category=frozenset(category_vocabulary() | row_context),
         brands=brand_words() | frozenset(row_words),
         row_brand=_alnum(row_brand_raw).lower(),
@@ -495,27 +515,91 @@ def analyze_row(
             # A size+word glue (`20FROST`, `13HFAB`) is a name candidate the row cannot
             # prove, so it waits in the revivable slot rather than reaching the residue.
             claimed[piece] = REVIVABLE_SLOT
+    # A word one letter off from a class word this very row states is that word misspelt, so it
+    # belongs to the class slot and never reaches the vote as a candidate. The class words are
+    # whatever this row wrote -- in its title, in its columns, or in its breadcrumb -- never a
+    # dictionary and never a list of banned spellings.
+    row_class_words = dict.fromkeys(vocabulary.row_class_words, "category")
+    row_class_words.update(dict.fromkeys(vocabulary.explicit["inverter"], "inverter"))
+    row_class_words.update(dict.fromkeys(vocabulary.explicit["capacity"], "capacity"))
+    row_class_words.update(
+        {piece: slot for piece, slot in claimed.items() if slot in CLASS_SLOTS}
+    )
+    claimed.update(_claim_class_typos(present, row_class_words))
+    residue = frozenset(
+        piece
+        for piece in present
+        if piece not in claimed and _LETTER_RE.search(piece) and not _DIGIT_RE.search(piece)
+    )
+    # The class words this row states -- in its columns, and in its own title wherever a slot
+    # recognised one. A sheet that writes "Split AC" instead of a breadcrumb still states Air
+    # Conditioner, and the abbreviation guard has to read what the row itself says.
+    class_words = frozenset(
+        set(vocabulary.row_class_words)
+        | {piece for piece, slot in claimed.items() if slot in ("category", "subtype", REVIVABLE_SLOT)}
+    )
+    # The product this row offers: its part numbers if it states any, else its whole word set.
+    # Colour and tonnage variants share it, which is the point.
+    code_parts_key = "|".join(sorted(piece for piece in present if _has_digit_and_letter(piece)))
     return RowAnalysis(
         title=normalized,
         brand=_alnum(row_brand_raw).lower(),
+        product_key=code_parts_key or "|".join(sorted(present)),
         title_words=tuple(present),
         claimed=claimed,
-        positions=_positions(pieces, present, claimed, code_parts, vocabulary),
+        positions=_positions(pieces, present, residue, code_parts, class_words, vocabulary),
     )
+
+
+#: Slots whose words name what the product IS -- a typo of one of them is not a product line.
+CLASS_SLOTS = frozenset({"inverter", "category", "subtype", "capacity", "warranty"})
+
+
+def _one_edit_apart(one: str, other: str) -> bool:
+    """True when the two words differ by exactly one substitution, insertion or deletion."""
+    if abs(len(one) - len(other)) > 1 or one == other:
+        return False
+    if len(one) == len(other):
+        return sum(1 for first, second in zip(one, other, strict=True) if first != second) == 1
+    longer, shorter = (one, other) if len(one) > len(other) else (other, one)
+    return any(longer[:skip] + longer[skip + 1 :] == shorter for skip in range(len(longer)))
+
+
+def _claim_class_typos(present: dict[str, None], class_words: dict[str, str]) -> dict[str, str]:
+    """Claim a word that is one letter off from a class word THIS row states.
+
+    The vendor's own spelling is the evidence, so no dictionary and no word list is consulted:
+    the row that writes `Haier Inventer ... Inverter Split Air Conditioner` has already given
+    `inverter` to the inverter slot, and `inventer` differs from it by one character, so it is
+    that word misspelt -- not a line name, and not something the vote should ever be asked to
+    weigh.  The comparison is deliberately row-local and only against class words, which is why
+    `Frost` beside `Freezer` and `Chrome` beside `Phone` stay names.
+    """
+    typos: dict[str, str] = {}
+    for piece in present:
+        if piece in class_words or len(piece) < 5 or not piece.isalpha():
+            continue
+        for word, slot in class_words.items():
+            if len(word) >= 5 and _one_edit_apart(piece, word):
+                typos[piece] = slot
+                break
+    return typos
 
 
 def _positions(
     pieces: list[str],
     present: dict[str, None],
-    claimed: Mapping[str, str],
+    candidates: frozenset[str],
     code_parts: frozenset[str],
+    class_words: frozenset[str],
     vocabulary: _Vocabulary,
 ) -> dict[str, WordPosition]:
-    """Record where each free word stood, once per word, across the whole row.
+    """Record where each candidate word stood, once per word, across the whole row.
 
-    Words a slot already claimed get no record: they are not candidates.  A word that occurs
-    twice in one row keeps the strongest reading it got -- standing free of codes somewhere in
-    the row is what the vote needs to see.
+    A word a slot claimed for a reason that can be taken back (see REVIVABLE_SLOT) is still a
+    candidate: the vote has to see it to decide.  A word that occurs twice in one row keeps the
+    strongest reading it got -- standing free of codes somewhere in the row is what the vote
+    needs to see.
 
     The two directions of a bare number are NOT the same fact.  A number BEFORE a word is the
     rest of a part number the sheet split with a space (`HRF 418 IFP`, `013W USDC`), so it is
@@ -523,23 +607,12 @@ def _positions(
     `Infinity Pro 15`), which is how the stock rows write their identity -- treating it as code
     evidence would delete every name+size pair in the catalogue.
     """
-    free = [
-        piece
-        for piece in present
-        if piece not in claimed and _LETTER_RE.search(piece) and not _DIGIT_RE.search(piece)
-    ]
+    free = [piece for piece in present if piece in candidates]
     codes = {
         piece
         for piece in present
         if _has_digit_and_letter(piece) or (piece in code_parts and _LETTER_RE.search(piece))
     }
-    # The class words this row states -- in its columns, and in its own title wherever a slot
-    # recognised one. A sheet that writes "Split AC" instead of a breadcrumb still states
-    # Air Conditioner in the title, and the abbreviation guard has to read what the row says.
-    classes = frozenset(
-        set(vocabulary.row_class_words)
-        | {piece for piece, slot in claimed.items() if slot in ("category", "subtype", REVIVABLE_SLOT)}
-    )
     positions: dict[str, WordPosition] = {}
     for index, piece in enumerate(pieces):
         if piece not in free:
@@ -551,7 +624,7 @@ def _positions(
             beside.add(previous)
         brand_adjacent = previous in vocabulary.row_brand_words or previous == vocabulary.row_brand
         class_prefixed = any(
-            word.startswith(piece) and len(word) >= len(piece) + 2 for word in classes
+            word.startswith(piece) and len(word) >= len(piece) + 2 for word in class_words
         )
         earlier = positions.get(piece)
         positions[piece] = WordPosition(
@@ -562,23 +635,37 @@ def _positions(
     return positions
 
 
-def _subtype_words(product_type: str) -> set[str]:
-    """The sub-type labels for this product type, plus every alias that spells them."""
+def _subtype_words(product_type: str, row_words: tuple[str, ...]) -> frozenset[str]:
+    """The sub-type words of THIS row's product type -- phrases claimed only when stated.
+
+    A label is two or more words exactly when the phrase is what names the type: `No Frost` is
+    a cooling type, while `Frost` on its own is Dawlance's line, and claiming the words of every
+    label in the table would have made `frost` a type word in an air-conditioner row too.  So a
+    multi-word label contributes its words only when the row writes the phrase, in order.
+    """
     words: set[str] = set()
     for group in _subtype_table().get(product_type, ()):
         for label, aliases in group.items():
-            words |= _words(label)
-            for alias in aliases:
-                words |= _words(alias)
-    return words
+            for variant in (label, *aliases):
+                parts = _WORD_RE.findall(variant.lower())
+                if len(parts) == 1 or _contains_run(row_words, tuple(parts)):
+                    words.update(parts)
+    return frozenset(words)
+
+
+def _contains_run(words: tuple[str, ...], run: tuple[str, ...]) -> bool:
+    """True when ``run`` appears in ``words`` as a contiguous run."""
+    span = len(run)
+    return any(words[start : start + span] == run for start in range(len(words) - span + 1))
 
 
 # --------------------------------------------------------------------------- #
 # [4] the corpus vote
 # --------------------------------------------------------------------------- #
-#: How many brands must share a word before it decorates rather than names.  Two is the
-#: tie the vote cannot break, so two brands leave the word undecided -- and undecided words
-#: are never printed.
+#: How many brands must share a word before it decorates rather than names.  This is a
+#: whole-catalogue judgement and the only one the vote makes: everything else is decided per
+#: brand, so two brands sharing a word no longer blocks either of them from earning it on its
+#: own rows -- it only means the word is not yet obviously a type word.
 BLACKLIST_BRANDS = 3
 
 
@@ -587,6 +674,7 @@ class WordEvidence:
     """What the whole run said about one residue word, kept so a decision is reviewable."""
 
     rows: int
+    products: int
     brands: frozenset[str]
     brand_adjacent: int
     code_adjacent: int
@@ -596,15 +684,23 @@ class WordEvidence:
 
 @dataclass(frozen=True)
 class Corpus:
-    """The run's verdict on every residue word: proven, disqualified, or not decided."""
+    """The run's verdict on every residue word: proven per brand, disqualified, or undecided.
 
-    proven: Mapping[str, WordEvidence]
+    A word is not a name in the abstract.  ``Frost`` is Dawlance's model line and, on a Haier
+    row, half of the type phrase ``No Frost`` -- so the proof belongs to the brand that earned
+    it, and one whole-catalogue verdict could only be wrong for one of them.  The maps are
+    plain dicts rather than live objects because a later learning area is meant to write them
+    out and read them back (plan D11/D12), which is also why the evidence travels with the
+    verdict instead of being recomputed from it.
+    """
+
+    proven: Mapping[str, Mapping[str, WordEvidence]]
     blacklisted: Mapping[str, WordEvidence]
     undecided: Mapping[str, WordEvidence]
 
-    def is_proven(self, word: str) -> bool:
-        """True when this run proved the word names a line -- stage [5]'s only gate."""
-        return word in self.proven
+    def is_proven(self, brand: str, word: str) -> bool:
+        """True when THIS run proved this word names a line for this brand."""
+        return word in self.proven.get(_alnum(brand).lower(), {})
 
 
 @dataclass
@@ -612,6 +708,7 @@ class _Tally:
     """One word's running count while the run is walked."""
 
     rows: int = 0
+    products: set[str] = field(default_factory=set)
     brands: set[str] = field(default_factory=set)
     brand_adjacent: int = 0
     code_adjacent: int = 0
@@ -620,6 +717,10 @@ class _Tally:
 
     def record(self, word: str, analysis: RowAnalysis) -> None:
         self.rows += 1
+        # One shop row is one offer, not one product: the same SKU restated in three colours or
+        # tonnage variants used to "prove" the vendor's own typo (`inventer` on 4 Haier rows of
+        # one model).  Distinct products is the count that means something.
+        self.products.add(analysis.product_key)
         if analysis.brand:
             self.brands.add(analysis.brand)
         position = analysis.positions.get(word, WordPosition())
@@ -631,6 +732,7 @@ class _Tally:
     def evidence(self) -> WordEvidence:
         return WordEvidence(
             rows=self.rows,
+            products=len(self.products),
             brands=frozenset(self.brands),
             brand_adjacent=self.brand_adjacent,
             code_adjacent=self.code_adjacent,
@@ -640,42 +742,54 @@ class _Tally:
 
 
 def build_corpus(analyses: Iterable[RowAnalysis]) -> Corpus:
-    """Vote over a whole run's residue: which words name a line, which decorate one.
+    """Vote over a whole run's residue: which words name a line, for which brand.
 
-    Every signal comes from the rows, not from a word list: how many rows state the word, how
-    many brands do, whether it ever stands away from a part number or against two different
-    part numbers, and whether the rows state a longer class word it abbreviates.
+    Every signal comes from the rows, not from a word list: how many rows of one brand state
+    the word, whether it stands clear of a part number somewhere, whether the brand itself
+    introduces it, and whether the rows state a longer class word it abbreviates.
 
-    - abbreviates its own class in every row, or shared by three brands: disqualified.
-    - one brand, two rows, and free of a code somewhere or beside two different codes: a name.
-    - one brand, one row, introduced by the brand and touched by no code: a name -- the
-      thin-sheet rescue, because a run of two rows has no sibling to compare with.
+    - abbreviates its own class in every row, or shared by three brands: disqualified for all
+      of them, because a word that decorates three catalogues names none.
+    - one brand, two rows, and clear of every part number in at least one of them: that brand's
+      name.  Recurrence alone is NOT the signal -- `USDC` recurs in three rows and is the tail
+      of one part number read aloud.
+    - one brand, one row: believed when the brand introduces the word and no code touches it,
+      which is how a two-row sheet can still state ECO.
     - anything else: undecided, and an undecided word prints nothing.  The vote's silence is
       the safe answer, not a gap to fill with a guess.
     """
-    tallies: dict[str, _Tally] = {}
+    whole_run: dict[str, _Tally] = {}
+    per_brand: dict[tuple[str, str], _Tally] = {}
     for analysis in analyses:
         for word in analysis.words:
-            tallies.setdefault(word, _Tally()).record(word, analysis)
+            whole_run.setdefault(word, _Tally()).record(word, analysis)
+            per_brand.setdefault((analysis.brand, word), _Tally()).record(word, analysis)
 
-    proven: dict[str, WordEvidence] = {}
     blacklisted: dict[str, WordEvidence] = {}
-    undecided: dict[str, WordEvidence] = {}
-    for word, tally in tallies.items():
+    for word, tally in whole_run.items():
         evidence = tally.evidence()
-        single = len(evidence.brands) == 1
-        disqualified = evidence.class_prefixed == evidence.rows or len(evidence.brands) >= BLACKLIST_BRANDS
-        # Two or more rows of one brand, and the word stands clear of every part number in at
-        # least one of them.  Recurrence is NOT the signal: `USDC` recurs in three rows and
-        # names nothing, because it is the tail of one part number read aloud.
-        siblings = single and evidence.rows >= 2 and evidence.rows > evidence.code_adjacent
-        # One row only: believed when the brand itself introduces the word and no code touches
-        # it, which is how a two-row sheet can still state ECO.
-        brand_position = single and evidence.brand_adjacent == 1 and not evidence.code_adjacent
-        if disqualified:
+        if evidence.class_prefixed == evidence.rows or len(evidence.brands) >= BLACKLIST_BRANDS:
             blacklisted[word] = evidence
-        elif siblings or brand_position:
-            proven[word] = evidence
-        else:
-            undecided[word] = evidence
+
+    proven: dict[str, dict[str, WordEvidence]] = {}
+    earned: set[str] = set()
+    for (brand, word), tally in per_brand.items():
+        if not brand or word in blacklisted:
+            continue
+        evidence = tally.evidence()
+        siblings = (
+            evidence.products >= 2
+            and evidence.rows >= 2
+            and evidence.rows > evidence.code_adjacent
+        )
+        brand_position = evidence.brand_adjacent == 1 and not evidence.code_adjacent
+        if siblings or brand_position:
+            proven.setdefault(brand, {})[word] = evidence
+            earned.add(word)
+
+    undecided = {
+        word: tally.evidence()
+        for word, tally in whole_run.items()
+        if word not in blacklisted and word not in earned
+    }
     return Corpus(proven=proven, blacklisted=blacklisted, undecided=undecided)

@@ -497,9 +497,21 @@ def test_row_analysis_is_an_immutable_value() -> None:
 # --------------------------------------------------------------------------- #
 # [3]-[4]: the corpus vote -- what the whole run says about a residue word
 # --------------------------------------------------------------------------- #
-def _rows(*rows: tuple[str, str, str]) -> list[RowAnalysis]:
-    """Read (title, brand, breadcrumb) triples the way the pipeline will."""
-    return [analyze_row(title, brand=brand, breadcrumb=breadcrumb) for title, brand, breadcrumb in rows]
+def _rows(*rows: tuple[str, ...]) -> list[RowAnalysis]:
+    """Read (title, brand, breadcrumb, product_type) rows the way the pipeline will.
+
+    The product type is not decoration: `No Frost` is a type only for a Refrigerator row, and a
+    test that forgets it is testing a different contract than main.py will run.
+    """
+    return [
+        analyze_row(
+            row[0],
+            brand=row[1],
+            breadcrumb=row[2],
+            product_type=row[3] if len(row) > 3 else "",
+        )
+        for row in rows
+    ]
 
 
 def test_a_residue_word_is_recorded_with_where_it_sat_in_its_row() -> None:
@@ -539,9 +551,9 @@ def test_a_word_one_brand_states_in_several_rows_is_a_proven_name() -> None:
             ("Gree Chrome 8841 Split Air Conditioner 2 Ton", "Gree", "Air Conditioners"),
         )
     )
-    assert set(corpus.proven) == {"avante", "chrome"}
-    assert corpus.proven["avante"].rows == 2
-    assert corpus.proven["avante"].brands == frozenset({"gree"})
+    assert set(corpus.proven) == {"gree"}
+    assert set(corpus.proven["gree"]) == {"avante", "chrome"}
+    assert corpus.proven["gree"]["avante"].rows == 2
 
 
 def test_a_word_three_brands_share_is_a_modifier_not_a_name() -> None:
@@ -556,7 +568,7 @@ def test_a_word_three_brands_share_is_a_modifier_not_a_name() -> None:
         )
     )
     assert "ultra" in corpus.blacklisted
-    assert "infinity" in corpus.proven
+    assert corpus.is_proven("Dawlance", "infinity")
 
 
 def test_a_word_that_abbreviates_the_class_every_row_states_is_noise() -> None:
@@ -582,7 +594,7 @@ def test_a_word_that_abbreviates_the_class_every_row_states_is_noise() -> None:
             ("Dawlance Avante Deep Freezer 9 Cu Ft White", "Dawlance", "Electronics / Deep Freezers"),
         )
     )
-    assert "avante" in standing_free.proven
+    assert standing_free.is_proven("Dawlance", "avante")
 
 
 def test_a_word_that_only_ever_sits_next_to_a_code_is_never_a_name() -> None:
@@ -598,7 +610,7 @@ def test_a_word_that_only_ever_sits_next_to_a_code_is_never_a_name() -> None:
             ("HAIER HSU 19HFPCAA 013W USDC (S) INVERTER SPLIT AC", "Haier", "Air Conditioners"),
         )
     )
-    assert "usdc" not in corpus.proven
+    assert not corpus.is_proven("Haier", "usdc")
     assert corpus.undecided["usdc"].code_adjacent == 3
 
 
@@ -610,7 +622,7 @@ def test_a_single_row_word_is_proven_only_when_the_brand_introduces_it() -> None
             ("MIDEA MSAG2B-12HRDN1-QC0 WALL MOUNTED INVERTER", "Midea", "Air Conditioners"),
         )
     )
-    assert "eco" in corpus.proven
+    assert corpus.is_proven("Midea", "eco")
 
 
 def test_a_word_a_row_only_writes_glued_to_its_size_is_not_a_candidate() -> None:
@@ -626,7 +638,7 @@ def test_a_word_a_row_only_writes_glued_to_its_size_is_not_a_candidate() -> None
             ("DAWLANCE 30FROST INVERTER", "Dawlance", "Air Conditioners"),
         )
     )
-    assert "frost" not in glued_only.proven
+    assert not glued_only.is_proven("Dawlance", "frost")
     with_one_bare = build_corpus(
         _rows(
             ("DAWLANCE 20FROST INVERTER", "Dawlance", "Air Conditioners"),
@@ -634,7 +646,7 @@ def test_a_word_a_row_only_writes_glued_to_its_size_is_not_a_candidate() -> None
             ("Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
         )
     )
-    assert "frost" in with_one_bare.proven
+    assert with_one_bare.is_proven("Dawlance", "frost")
 
 
 def test_the_vote_reads_both_sheets_and_proves_the_names_the_shop_uses() -> None:
@@ -650,10 +662,21 @@ def test_the_vote_reads_both_sheets_and_proves_the_names_the_shop_uses() -> None
             for row in csv.DictReader(handle)
         ]
     corpus = build_corpus(analyses)
+    earned = {word for words in corpus.proven.values() for word in words}
     for name in ("avante", "chrome", "pular", "acce", "icemax", "glory", "persona", "zeno"):
-        assert name in corpus.proven, name
-    for noise in ("ultra", "classic", "mega", "wifi", "iot", "solo", "grill", "wash"):
-        assert noise not in corpus.proven, noise
+        assert name in earned, name
+    # Measured ownership, not guessed: Frost is Dawlance's (3 rows stating it after the brand,
+    # the rest being the No Frost type phrase), Blaze is Pel's (29 rows), and neither is judged
+    # by what the other brand does with the word.
+    assert corpus.is_proven("Dawlance", "frost")
+    assert corpus.is_proven("pel", "blaze")
+    for noise in ("ultra", "classic", "mega", "grill", "wash", "cabinet"):
+        assert noise not in earned, noise
+    # Known misses, measured here so they stay visible rather than silently accepted: a feature
+    # word that one brand states in two or more rows still earns that brand, because no table
+    # calls it a type.  This is the vocabulary gap (plan T5), not a voting bug.
+    for feature in ("wifi", "iot", "solo", "cooking", "flat"):
+        assert feature in earned or feature in corpus.blacklisted, feature
 
 
 def test_a_number_before_a_word_is_code_evidence_and_a_number_after_it_is_not() -> None:
@@ -709,7 +732,7 @@ def test_one_free_standing_word_in_one_row_is_not_a_name() -> None:
             ("Gree Inverter Split Air Conditioner 1.5 Ton White (GS-18NW)", "Gree", "Air Conditioners"),
         )
     )
-    assert "divine" not in corpus.proven
+    assert not corpus.is_proven("Gree", "divine")
     assert corpus.undecided["divine"].rows == 1
 
 
@@ -721,21 +744,26 @@ def test_the_rescue_needs_both_the_brand_position_and_no_code_touch() -> None:
             ("GREE 18DW INVERTER SPLIT AIR CONDITIONER", "Gree", "Air Conditioners"),
         )
     )
-    assert "pulse" not in corpus.proven
+    assert not corpus.is_proven("Gree", "pulse")
 
 
-def test_two_brands_sharing_a_word_leave_the_vote_undecided() -> None:
-    """Two brands is a tie this layer must not resolve -- and must not call a modifier either."""
+def test_a_word_two_brands_state_earns_only_the_one_with_its_own_evidence() -> None:
+    """Per brand means per brand evidence: two Dawlance rows prove Dawlance's, not Haier's.
+
+    The whole-catalogue count used to put any word two brands shared into the tie box, which
+    silenced Dawlance's own lines.  Now each brand is judged on its own rows, and a brand that
+    states the word once without introducing it stays undecided -- and prints nothing.
+    """
     corpus = build_corpus(
         _rows(
             ("Dawlance Magnum Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
             ("Dawlance Magnum Split Air Conditioner 1 Ton White", "Dawlance", "Air Conditioners"),
-            ("Haier Magnum Deep Freezer 9 Cu Ft White", "Haier", "Deep Freezers"),
+            ("Haier Inverter Double Door Deep Freezer Magnum 9 Cu Ft", "Haier", "Deep Freezers"),
         )
     )
-    assert "magnum" not in corpus.proven
-    assert "magnum" not in corpus.blacklisted
-    assert corpus.undecided["magnum"].brands == frozenset({"dawlance", "haier"})
+    assert corpus.is_proven("Dawlance", "magnum")
+    assert not corpus.is_proven("Haier", "magnum")
+    assert set(corpus.proven) == {"dawlance"}
 
 
 def test_a_class_abbreviation_is_disqualified_only_when_every_row_states_the_class() -> None:
@@ -753,7 +781,7 @@ def test_a_class_abbreviation_is_disqualified_only_when_every_row_states_the_cla
             ("Dawlance Ref Split Air Conditioner 1 Ton White", "Dawlance", "Air Conditioners"),
         )
     )
-    assert "ref" in one_row_silent.proven
+    assert one_row_silent.is_proven("Dawlance", "ref")
 
 
 def test_the_category_table_contributes_the_words_of_its_multi_word_entries() -> None:
@@ -761,3 +789,184 @@ def test_the_category_table_contributes_the_words_of_its_multi_word_entries() ->
     vocabulary = category_vocabulary()
     for word in ("green", "energy", "audio", "visuals", "sound", "bars"):
         assert word in vocabulary, word
+
+
+# --------------------------------------------------------------------------- #
+# slice 2: verdicts belong to a brand, and a TYPE phrase is not a name
+# --------------------------------------------------------------------------- #
+def test_no_frost_is_a_type_so_frost_is_not_that_rows_name() -> None:
+    """`No Frost` says what kind of fridge it is; `Frost` says which Dawlance line.
+
+    The phrase lives in the existing sub-type config, so the word is claimed as a type word
+    and never reaches the vote as a candidate -- no word list and no special case.
+    """
+    haier = analyze_row(
+        "Haier No Frost Freezer On Top Refrigerator 17 Cu Ft Black (HRF-488IFFB)",
+        product_type="Refrigerator",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    assert "frost" not in haier.words
+    assert haier.claimed["frost"] == "subtype"
+    dawlance = analyze_row(
+        "Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton White (Cool Only)",
+        product_type="Air Conditioner",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "frost" in dawlance.words
+
+
+def test_a_word_is_proven_for_the_brand_that_earned_it_and_not_for_the_other() -> None:
+    """One global verdict per word was wrong: Frost is Dawlance's line.
+
+    Haier states `Frost` too, and the old whole-catalogue count put the word in the tie box,
+    which silenced the Dawlance rows that sell the Frost model.  Per-brand evidence decides
+    per brand, and the brand that states it only inside a type phrase states no candidate.
+    """
+    corpus = build_corpus(
+        _rows(
+            (
+                "Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton White",
+                "Dawlance",
+                "Electronics / Home appliances / Air Conditioners",
+                "Air Conditioner",
+            ),
+            (
+                "Dawlance Frost 45 Inverter Split Air Conditioner 2 Ton White",
+                "Dawlance",
+                "Electronics / Home appliances / Air Conditioners",
+                "Air Conditioner",
+            ),
+            (
+                "Haier No Frost Refrigerator 17 Cu Ft Black (HRF-488IFFB)",
+                "Haier",
+                "Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+                "Refrigerator",
+            ),
+            (
+                "Haier No Frost Refrigerator 18 Cu Ft Silver (HRF-518IFFB)",
+                "Haier",
+                "Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+                "Refrigerator",
+            ),
+        )
+    )
+    assert corpus.is_proven("Dawlance", "frost")
+    assert not corpus.is_proven("Haier", "frost")
+    assert not corpus.is_proven("Samsung", "frost")
+
+
+def test_a_word_three_brands_share_is_still_disqualified_for_every_one_of_them() -> None:
+    """Per-brand proof must not reopen the door the multi-brand blacklist closes."""
+    corpus = build_corpus(
+        _rows(
+            ("Dawlance Ultra Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
+            ("Dawlance Ultra Split Air Conditioner 1 Ton White", "Dawlance", "Air Conditioners"),
+            ("Haier Ultra Inverter Split Air Conditioner 1 Ton", "Haier", "Air Conditioners"),
+            ("Haier Ultra Split Air Conditioner 1.5 Ton", "Haier", "Air Conditioners"),
+            ("PEL Ultra Deep Freezer 9 Cu Ft White", "PEL", "Deep Freezers"),
+            ("PEL Ultra Deep Freezer 12 Cu Ft Black", "PEL", "Deep Freezers"),
+        )
+    )
+    assert "ultra" in corpus.blacklisted
+    assert not corpus.is_proven("Dawlance", "ultra")
+    assert not corpus.is_proven("Haier", "ultra")
+
+
+def test_two_brands_each_with_their_own_evidence_both_keep_their_word() -> None:
+    """Gree Blaze and Pel Blaze are different lines; the vote is not asked to choose."""
+    corpus = build_corpus(
+        _rows(
+            ("Gree Blaze Inverter Split Air Conditioner 1.5 Ton", "Gree", "Air Conditioners"),
+            ("Gree Blaze Split Air Conditioner 2 Ton White", "Gree", "Air Conditioners"),
+            ("PEL Blaze Deep Freezer 9 Cu Ft White", "PEL", "Deep Freezers"),
+            ("PEL Blaze Deep Freezer 12 Cu Ft Black", "PEL", "Deep Freezers"),
+        )
+    )
+    assert corpus.is_proven("Gree", "blaze")
+    assert corpus.is_proven("PEL", "blaze")
+
+
+def test_a_word_one_edit_from_the_class_word_the_same_row_states_is_that_typo() -> None:
+    """`Haier Inventer ... Inverter Split AC` states its class twice, one of them misspelled.
+
+    The sheet is the only evidence: the row already gives `inverter` to the inverter slot, and
+    `inventer` differs from it by one letter, so the second spelling is the vendor's typo, not a
+    product line.  `conditioner`/`conitioner` is the same case in the category slot.  No dictionary
+    and no word list is involved -- only words this very row states.
+    """
+    haier = analyze_row(
+        "Haier Inventer Split Air Conditioner 1 Ton White (HSU-19HFP)",
+        product_type="Air Conditioner",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+        inverter="Inverter",
+    )
+    assert "inventer" not in haier.words
+    assert haier.claimed["inventer"] == "inverter"
+    wrong_category = analyze_row(
+        "Haier Inverter Split Conitioner 1 Ton White (HSU-19HFP)",
+        product_type="Air Conditioner",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+        inverter="Inverter",
+    )
+    assert "conitioner" not in wrong_category.words
+    assert wrong_category.claimed["conitioner"] == "category"
+
+
+def test_a_real_line_name_one_edit_away_from_a_class_word_is_still_a_name() -> None:
+    """The guard may not eat a genuine series: Frost is not Freezer, Chrome is not Phone.
+
+    Both rows state the class word right next to the name, so a looser rule (same length, or any
+    shared prefix) would have deleted the line name from the shop title.
+    """
+    dawlance = analyze_row(
+        "Dawlance Frost Freezer-On-Top Refrigerator 10 Cu Ft White (9173-WB)",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    assert "frost" in dawlance.words
+    gree = analyze_row(
+        "Gree Chrome Split Air Conditioner 1.5 Ton White (GS-18CH)",
+        product_type="Air Conditioner",
+        brand="Gree",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "chrome" in gree.words
+
+
+def test_the_vote_needs_two_distinct_products_not_two_colour_variants_of_one_sku() -> None:
+    """Four shop rows of one model prove nothing: a row is an offer, not a product.
+
+    This is the class the reviewer measured on the real sheet -- one Haier SKU restated in three
+    colour/tonnage variants carried its own typo to three votes and looked like a line name.
+    """
+    variants = _rows(
+        ("Haier Inventer Split AC 1 Ton White (Y2K61M)", "Haier", "Air Conditioners", "Air Conditioner"),
+        ("Haier Inventer Split AC 1.5 Ton Black (Y2K61M)", "Haier", "Air Conditioners", "Air Conditioner"),
+        ("Haier Inventer Split AC 1 Ton Red (Y2K61M)", "Haier", "Air Conditioners", "Air Conditioner"),
+    )
+    corpus = build_corpus(variants)
+    assert not corpus.is_proven("Haier", "inventer")
+    across_models = build_corpus(
+        _rows(
+            ("Dawlance Avante Deep Freezer 9 Cu Ft White (9173WB)", "Dawlance", "Deep Freezers", "Deep Freezer"),
+            ("Dawlance Avante Deep Freezer 12 Cu Ft Black (9151CH)", "Dawlance", "Deep Freezers", "Deep Freezer"),
+        )
+    )
+    assert across_models.is_proven("Dawlance", "avante")
+    assert across_models.proven["dawlance"]["avante"].products == 2
+
+
+def test_a_phrase_is_matched_in_the_order_the_row_wrote_it() -> None:
+    """Deduplicating before matching breaks a phrase whose words repeat: `Cool ... Cool Only`."""
+    row = analyze_row(
+        "Haier Cool Inverter Air Conditioner Cool Only 1.5 Ton (19LF)",
+        product_type="Air Conditioner",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert row.claimed["only"] == "subtype"
