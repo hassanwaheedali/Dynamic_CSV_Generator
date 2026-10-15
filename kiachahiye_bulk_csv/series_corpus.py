@@ -39,7 +39,7 @@ state claims nothing.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from types import MappingProxyType
@@ -135,7 +135,7 @@ def category_vocabulary() -> frozenset[str]:
     words |= _flatten(categories.CATEGORY_ALFA_IDS)
     words |= _flatten(categories.DIGI_SEGMENT_ALIASES)
     words |= _flatten(categories.ALFA_SEGMENT_ALIASES)
-    words |= set(categories.STOP_SEGMENTS)
+    words |= _flatten(categories.STOP_SEGMENTS)
     return frozenset(words)
 
 
@@ -242,22 +242,44 @@ def normalize_shape(raw_title: str) -> str:
     return title
 
 
-
 # --------------------------------------------------------------------------- #
 # [1] claims and [2] residue
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class WordPosition:
+    """Where one free word sat in one row -- the evidence stage [4] votes on.
+
+    A line name and a code suffix can recur exactly as often, so the vote reads position
+    instead of counting: which brand stood in front of the word, which code pieces touched
+    it, and whether the row states a longer class word the word abbreviates.  A bare number
+    is deliberately NOT one of those code pieces: `Frost 30` names a line next to a size,
+    while `013W USDC` is one part number read aloud.
+    """
+
+    brand_adjacent: bool = False
+    class_prefixed: bool = False
+    beside: frozenset[str] = frozenset()
+
+    @property
+    def code_adjacent(self) -> bool:
+        return bool(self.beside)
+
+
 @dataclass(frozen=True)
 class RowAnalysis:
     """One row read once: its pieces, the slot that owns each, and the free residue."""
 
     title: str
+    brand: str
     title_words: tuple[str, ...]
     claimed: Mapping[str, str] = field(default_factory=dict)
+    positions: Mapping[str, WordPosition] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # The dict handed in is the builder's working copy; freezing it here is what makes
-        # one analysis safe to hand to both pipeline passes.
+        # The dicts handed in are the builder's working copies; freezing them here is what
+        # makes one analysis safe to hand to both pipeline passes and to the corpus vote.
         object.__setattr__(self, "claimed", MappingProxyType(dict(self.claimed)))
+        object.__setattr__(self, "positions", MappingProxyType(dict(self.positions)))
 
     @property
     def words(self) -> tuple[str, ...]:
@@ -282,6 +304,7 @@ class _Vocabulary:
     warranty: frozenset[str]
     structural: frozenset[str]
     colors: frozenset[str]
+    row_class_words: frozenset[str]
 
 
 def _pieces(title: str) -> tuple[list[str], frozenset[str], frozenset[str]]:
@@ -452,6 +475,7 @@ def analyze_row(
         warranty=warranty_vocabulary(),
         structural=frozenset(noise_vocabulary() | row_context),
         colors=color_vocabulary(),
+        row_class_words=frozenset(row_context),
     )
 
     # A chunk of a token that carries a digit is part of that label, whatever it looks like
@@ -471,7 +495,71 @@ def analyze_row(
             # A size+word glue (`20FROST`, `13HFAB`) is a name candidate the row cannot
             # prove, so it waits in the revivable slot rather than reaching the residue.
             claimed[piece] = REVIVABLE_SLOT
-    return RowAnalysis(title=normalized, title_words=tuple(present), claimed=claimed)
+    return RowAnalysis(
+        title=normalized,
+        brand=_alnum(row_brand_raw).lower(),
+        title_words=tuple(present),
+        claimed=claimed,
+        positions=_positions(pieces, present, claimed, code_parts, vocabulary),
+    )
+
+
+def _positions(
+    pieces: list[str],
+    present: dict[str, None],
+    claimed: Mapping[str, str],
+    code_parts: frozenset[str],
+    vocabulary: _Vocabulary,
+) -> dict[str, WordPosition]:
+    """Record where each free word stood, once per word, across the whole row.
+
+    Words a slot already claimed get no record: they are not candidates.  A word that occurs
+    twice in one row keeps the strongest reading it got -- standing free of codes somewhere in
+    the row is what the vote needs to see.
+
+    The two directions of a bare number are NOT the same fact.  A number BEFORE a word is the
+    rest of a part number the sheet split with a space (`HRF 418 IFP`, `013W USDC`), so it is
+    code evidence.  A number AFTER a word is the size that word sells in (`Frost 30`,
+    `Infinity Pro 15`), which is how the stock rows write their identity -- treating it as code
+    evidence would delete every name+size pair in the catalogue.
+    """
+    free = [
+        piece
+        for piece in present
+        if piece not in claimed and _LETTER_RE.search(piece) and not _DIGIT_RE.search(piece)
+    ]
+    codes = {
+        piece
+        for piece in present
+        if _has_digit_and_letter(piece) or (piece in code_parts and _LETTER_RE.search(piece))
+    }
+    # The class words this row states -- in its columns, and in its own title wherever a slot
+    # recognised one. A sheet that writes "Split AC" instead of a breadcrumb still states
+    # Air Conditioner in the title, and the abbreviation guard has to read what the row says.
+    classes = frozenset(
+        set(vocabulary.row_class_words)
+        | {piece for piece, slot in claimed.items() if slot in ("category", "subtype", REVIVABLE_SLOT)}
+    )
+    positions: dict[str, WordPosition] = {}
+    for index, piece in enumerate(pieces):
+        if piece not in free:
+            continue
+        previous = pieces[index - 1] if index else ""
+        following = pieces[index + 1] if index + 1 < len(pieces) else ""
+        beside = {part for part in (previous, following) if part in codes}
+        if previous.isdigit():
+            beside.add(previous)
+        brand_adjacent = previous in vocabulary.row_brand_words or previous == vocabulary.row_brand
+        class_prefixed = any(
+            word.startswith(piece) and len(word) >= len(piece) + 2 for word in classes
+        )
+        earlier = positions.get(piece)
+        positions[piece] = WordPosition(
+            brand_adjacent=brand_adjacent or bool(earlier and earlier.brand_adjacent),
+            class_prefixed=class_prefixed or bool(earlier and earlier.class_prefixed),
+            beside=frozenset(beside | set(earlier.beside if earlier else ())),
+        )
+    return positions
 
 
 def _subtype_words(product_type: str) -> set[str]:
@@ -483,3 +571,111 @@ def _subtype_words(product_type: str) -> set[str]:
             for alias in aliases:
                 words |= _words(alias)
     return words
+
+
+# --------------------------------------------------------------------------- #
+# [4] the corpus vote
+# --------------------------------------------------------------------------- #
+#: How many brands must share a word before it decorates rather than names.  Two is the
+#: tie the vote cannot break, so two brands leave the word undecided -- and undecided words
+#: are never printed.
+BLACKLIST_BRANDS = 3
+
+
+@dataclass(frozen=True)
+class WordEvidence:
+    """What the whole run said about one residue word, kept so a decision is reviewable."""
+
+    rows: int
+    brands: frozenset[str]
+    brand_adjacent: int
+    code_adjacent: int
+    class_prefixed: int
+    codes: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Corpus:
+    """The run's verdict on every residue word: proven, disqualified, or not decided."""
+
+    proven: Mapping[str, WordEvidence]
+    blacklisted: Mapping[str, WordEvidence]
+    undecided: Mapping[str, WordEvidence]
+
+    def is_proven(self, word: str) -> bool:
+        """True when this run proved the word names a line -- stage [5]'s only gate."""
+        return word in self.proven
+
+
+@dataclass
+class _Tally:
+    """One word's running count while the run is walked."""
+
+    rows: int = 0
+    brands: set[str] = field(default_factory=set)
+    brand_adjacent: int = 0
+    code_adjacent: int = 0
+    class_prefixed: int = 0
+    codes: set[str] = field(default_factory=set)
+
+    def record(self, word: str, analysis: RowAnalysis) -> None:
+        self.rows += 1
+        if analysis.brand:
+            self.brands.add(analysis.brand)
+        position = analysis.positions.get(word, WordPosition())
+        self.brand_adjacent += int(position.brand_adjacent)
+        self.code_adjacent += int(position.code_adjacent)
+        self.class_prefixed += int(position.class_prefixed)
+        self.codes |= position.beside
+
+    def evidence(self) -> WordEvidence:
+        return WordEvidence(
+            rows=self.rows,
+            brands=frozenset(self.brands),
+            brand_adjacent=self.brand_adjacent,
+            code_adjacent=self.code_adjacent,
+            class_prefixed=self.class_prefixed,
+            codes=frozenset(self.codes),
+        )
+
+
+def build_corpus(analyses: Iterable[RowAnalysis]) -> Corpus:
+    """Vote over a whole run's residue: which words name a line, which decorate one.
+
+    Every signal comes from the rows, not from a word list: how many rows state the word, how
+    many brands do, whether it ever stands away from a part number or against two different
+    part numbers, and whether the rows state a longer class word it abbreviates.
+
+    - abbreviates its own class in every row, or shared by three brands: disqualified.
+    - one brand, two rows, and free of a code somewhere or beside two different codes: a name.
+    - one brand, one row, introduced by the brand and touched by no code: a name -- the
+      thin-sheet rescue, because a run of two rows has no sibling to compare with.
+    - anything else: undecided, and an undecided word prints nothing.  The vote's silence is
+      the safe answer, not a gap to fill with a guess.
+    """
+    tallies: dict[str, _Tally] = {}
+    for analysis in analyses:
+        for word in analysis.words:
+            tallies.setdefault(word, _Tally()).record(word, analysis)
+
+    proven: dict[str, WordEvidence] = {}
+    blacklisted: dict[str, WordEvidence] = {}
+    undecided: dict[str, WordEvidence] = {}
+    for word, tally in tallies.items():
+        evidence = tally.evidence()
+        single = len(evidence.brands) == 1
+        disqualified = evidence.class_prefixed == evidence.rows or len(evidence.brands) >= BLACKLIST_BRANDS
+        # Two or more rows of one brand, and the word stands clear of every part number in at
+        # least one of them.  Recurrence is NOT the signal: `USDC` recurs in three rows and
+        # names nothing, because it is the tail of one part number read aloud.
+        siblings = single and evidence.rows >= 2 and evidence.rows > evidence.code_adjacent
+        # One row only: believed when the brand itself introduces the word and no code touches
+        # it, which is how a two-row sheet can still state ECO.
+        brand_position = single and evidence.brand_adjacent == 1 and not evidence.code_adjacent
+        if disqualified:
+            blacklisted[word] = evidence
+        elif siblings or brand_position:
+            proven[word] = evidence
+        else:
+            undecided[word] = evidence
+    return Corpus(proven=proven, blacklisted=blacklisted, undecided=undecided)

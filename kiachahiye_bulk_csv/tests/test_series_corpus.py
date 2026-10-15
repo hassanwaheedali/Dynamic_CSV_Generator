@@ -15,7 +15,9 @@ reading layer that guessed would erase real variants it cannot see.
 
 from __future__ import annotations
 
+import csv
 import re
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +33,8 @@ from series_corpus import (
     _pieces,
     analyze_row,
     brand_words,
+    build_corpus,
+    category_vocabulary,
     noise_vocabulary,
     normalize_shape,
 )
@@ -488,3 +492,272 @@ def test_row_analysis_is_an_immutable_value() -> None:
         analysis.claimed["frost"] = "model"  # type: ignore[misc]
     with pytest.raises(AttributeError):
         analysis.title = "edited"  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------- #
+# [3]-[4]: the corpus vote -- what the whole run says about a residue word
+# --------------------------------------------------------------------------- #
+def _rows(*rows: tuple[str, str, str]) -> list[RowAnalysis]:
+    """Read (title, brand, breadcrumb) triples the way the pipeline will."""
+    return [analyze_row(title, brand=brand, breadcrumb=breadcrumb) for title, brand, breadcrumb in rows]
+
+
+def test_a_residue_word_is_recorded_with_where_it_sat_in_its_row() -> None:
+    """The vote needs more than the word: the position is the evidence."""
+    midea = analyze_row(
+        "MIDEA ECO - WALL MOUNTED DC INVERTER MSAG2B-12HRDN1-QC0",
+        product_type="Air Conditioner",
+        brand="Midea",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert midea.positions["eco"].brand_adjacent
+    assert not midea.positions["eco"].code_adjacent
+    haier = analyze_row(
+        "HAIER HSU 19HFPCAA 013W USDC (G) INVERTER SPLIT AC",
+        product_type="Air Conditioner",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert haier.positions["usdc"].beside == frozenset({"013w"})
+    assert not haier.positions["usdc"].brand_adjacent
+    dawlance = analyze_row(
+        "Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton",
+        product_type="Air Conditioner",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    # `30` is a size the row states, not a part number, so `Frost` stands free of codes.
+    assert dawlance.positions["frost"].brand_adjacent
+    assert not dawlance.positions["frost"].code_adjacent
+
+
+def test_a_word_one_brand_states_in_several_rows_is_a_proven_name() -> None:
+    corpus = build_corpus(
+        _rows(
+            ("Gree Avante 9173 Inverter Split Air Conditioner 1.5 Ton", "Gree", "Air Conditioners"),
+            ("Gree Avante Plus 12354 Inverter Split Air Conditioner 1.5 Ton", "Gree", "Air Conditioners"),
+            ("Gree Chrome 8841 Split Air Conditioner 2 Ton", "Gree", "Air Conditioners"),
+        )
+    )
+    assert set(corpus.proven) == {"avante", "chrome"}
+    assert corpus.proven["avante"].rows == 2
+    assert corpus.proven["avante"].brands == frozenset({"gree"})
+
+
+def test_a_word_three_brands_share_is_a_modifier_not_a_name() -> None:
+    """Decorating three brands is exactly what no product line can do."""
+    corpus = build_corpus(
+        _rows(
+            ("Dawlance Ultra Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
+            ("Haier Ultra Inverter Split Air Conditioner 1 Ton", "Haier", "Air Conditioners"),
+            ("PEL Ultra Deep Freezer 9 Cu Ft", "PEL", "Deep Freezers"),
+            ("Dawlance Infinity Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
+            ("Dawlance Infinity Split Air Conditioner 1 Ton", "Dawlance", "Air Conditioners"),
+        )
+    )
+    assert "ultra" in corpus.blacklisted
+    assert "infinity" in corpus.proven
+
+
+def test_a_word_that_abbreviates_the_class_every_row_states_is_noise() -> None:
+    """The 26-row `DAW REF 9101` class: `ref` abbreviates the row's own Refrigerator."""
+    corpus = build_corpus(
+        _rows(
+            ("DW9101-DAW REF 9101", "Dawlance", "Electronics / Home appliances / Refrigerators"),
+            ("DAW REF 9173WB AVANTE GD INV", "Dawlance", "Electronics / Home appliances / Refrigerators"),
+            ("DAW REF 9151CH AVANTE CQ INV", "Dawlance", "Electronics / Home appliances / Refrigerators"),
+        )
+    )
+    assert "ref" in corpus.blacklisted
+    assert corpus.blacklisted["ref"].class_prefixed == 3
+    # In these two rows `avante` sits against a part number every single time, so the vote
+    # cannot yet tell it from a code tail -- the real sheet proves it because 9 of its 20
+    # rows state avante away from any code.
+    assert "avante" in corpus.undecided
+    assert corpus.undecided["avante"].code_adjacent == 2
+    standing_free = build_corpus(
+        _rows(
+            ("DAW REF 9173WB AVANTE GD INV", "Dawlance", "Electronics / Home appliances / Refrigerators"),
+            ("DAW REF 9151CH AVANTE CQ INV", "Dawlance", "Electronics / Home appliances / Refrigerators"),
+            ("Dawlance Avante Deep Freezer 9 Cu Ft White", "Dawlance", "Electronics / Deep Freezers"),
+        )
+    )
+    assert "avante" in standing_free.proven
+
+
+def test_a_word_that_only_ever_sits_next_to_a_code_is_never_a_name() -> None:
+    """`USDC` in `HSU 19HFPCAA 013W USDC (G)` recurs three times and names nothing.
+
+    This is the reviewer's case: recurrence alone is not proof, because a code suffix
+    recurs as much as a line name does.  A line name appears somewhere away from the code.
+    """
+    corpus = build_corpus(
+        _rows(
+            ("HAIER HSU 19HFPCAA 013W USDC (G) INVERTER SPLIT AC", "Haier", "Air Conditioners"),
+            ("HAIER HSU 19HFPCAA 013W USDC (B) INVERTER SPLIT AC", "Haier", "Air Conditioners"),
+            ("HAIER HSU 19HFPCAA 013W USDC (S) INVERTER SPLIT AC", "Haier", "Air Conditioners"),
+        )
+    )
+    assert "usdc" not in corpus.proven
+    assert corpus.undecided["usdc"].code_adjacent == 3
+
+
+def test_a_single_row_word_is_proven_only_when_the_brand_introduces_it() -> None:
+    """The thin-sheet rescue: one row, but the brand puts the word in front of the class."""
+    corpus = build_corpus(
+        _rows(
+            ("MIDEA ECO - WALL MOUNTED DC INVERTER MSAG2B-12HRDN1-QC0", "Midea", "Air Conditioners"),
+            ("MIDEA MSAG2B-12HRDN1-QC0 WALL MOUNTED INVERTER", "Midea", "Air Conditioners"),
+        )
+    )
+    assert "eco" in corpus.proven
+
+
+def test_a_word_a_row_only_writes_glued_to_its_size_is_not_a_candidate() -> None:
+    """A sheet that only ever writes `20FROST` proves nothing; one bare `Frost` does.
+
+    The glued tail waits in the revivable slot, so it never reaches the vote.  The row that
+    writes the word on its own, straight after the brand, is what proves it -- and then
+    stage [5] is allowed to take `frost` back out of the revivable slot on the glued rows.
+    """
+    glued_only = build_corpus(
+        _rows(
+            ("DAWLANCE 20FROST INVERTER", "Dawlance", "Air Conditioners"),
+            ("DAWLANCE 30FROST INVERTER", "Dawlance", "Air Conditioners"),
+        )
+    )
+    assert "frost" not in glued_only.proven
+    with_one_bare = build_corpus(
+        _rows(
+            ("DAWLANCE 20FROST INVERTER", "Dawlance", "Air Conditioners"),
+            ("DAWLANCE 30FROST INVERTER", "Dawlance", "Air Conditioners"),
+            ("Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
+        )
+    )
+    assert "frost" in with_one_bare.proven
+
+
+def test_the_vote_reads_both_sheets_and_proves_the_names_the_shop_uses() -> None:
+    """The real 752-row sheet, not a sample: the shipped names must be in the proven set."""
+    path = Path(__file__).resolve().parents[1] / "data/input/Products.csv"
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        analyses = [
+            analyze_row(
+                (row.get("Title") or "").strip(),
+                brand=(row.get("Brand") or "").strip(),
+                breadcrumb=(row.get("Categories") or "").strip(),
+            )
+            for row in csv.DictReader(handle)
+        ]
+    corpus = build_corpus(analyses)
+    for name in ("avante", "chrome", "pular", "acce", "icemax", "glory", "persona", "zeno"):
+        assert name in corpus.proven, name
+    for noise in ("ultra", "classic", "mega", "wifi", "iot", "solo", "grill", "wash"):
+        assert noise not in corpus.proven, noise
+
+
+def test_a_number_before_a_word_is_code_evidence_and_a_number_after_it_is_not() -> None:
+    """The two directions of a bare number state different facts.
+
+    `HRF 418 IFP` is one part number the sheet wrote with a space, so `418` proves IFP is a
+    code tail.  `Frost 30` is how the stock rows write their identity -- the size follows the
+    name -- and reading `30` as code evidence would delete every name+size pair in the file.
+    """
+    suffix = analyze_row(
+        "HAIER HRF 418 IFP NO FROST REFRIGERATOR",
+        product_type="Refrigerator",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Refrigerators",
+    )
+    assert suffix.positions["ifp"].beside == frozenset({"418"})
+    identity = analyze_row(
+        "Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton",
+        product_type="Air Conditioner",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert identity.positions["frost"].beside == frozenset()
+
+
+def test_a_code_suffix_stays_unproven_even_when_its_code_varies() -> None:
+    """Recurrence is not proof: `USDC` sits against a part number in every row that states it.
+
+    The draft rule also believed a word whose neighbouring codes differed, which turned
+    `toploader`, `grill` and `classic` into product lines and proved USDC as soon as one of
+    its three rows carried a different size.
+    """
+    corpus = build_corpus(
+        _rows(
+            ("HAIER HSU 19HFPCAA 013W USDC (G) INVERTER SPLIT AC", "Haier", "Air Conditioners"),
+            ("HAIER HSU 19HFPCAA 021W USDC (B) INVERTER SPLIT AC", "Haier", "Air Conditioners"),
+            ("HAIER HSU 19HFPCAA 013W USDC (S) INVERTER SPLIT AC", "Haier", "Air Conditioners"),
+        )
+    )
+    assert "usdc" not in corpus.proven
+    assert corpus.undecided["usdc"].code_adjacent == 3
+
+
+def test_one_free_standing_word_in_one_row_is_not_a_name() -> None:
+    """A word that appears once, in no informative position, must not be printed.
+
+    Loosening the sibling rule from two rows to one is the cheapest way to turn every typo in
+    the sheet into a product line, so the thin-sheet path is reached only through the brand.
+    """
+    corpus = build_corpus(
+        _rows(
+            ("Gree Split Divine Air Conditioner 2 Ton White (GS-24DW)", "Gree", "Air Conditioners"),
+            ("Gree Inverter Split Air Conditioner 1.5 Ton White (GS-18NW)", "Gree", "Air Conditioners"),
+        )
+    )
+    assert "divine" not in corpus.proven
+    assert corpus.undecided["divine"].rows == 1
+
+
+def test_the_rescue_needs_both_the_brand_position_and_no_code_touch() -> None:
+    """One row is believed when the brand introduces the word AND no part number touches it."""
+    corpus = build_corpus(
+        _rows(
+            ("GREE 24DW PULSE INVERTER SPLIT AIR CONDITIONER", "Gree", "Air Conditioners"),
+            ("GREE 18DW INVERTER SPLIT AIR CONDITIONER", "Gree", "Air Conditioners"),
+        )
+    )
+    assert "pulse" not in corpus.proven
+
+
+def test_two_brands_sharing_a_word_leave_the_vote_undecided() -> None:
+    """Two brands is a tie this layer must not resolve -- and must not call a modifier either."""
+    corpus = build_corpus(
+        _rows(
+            ("Dawlance Magnum Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
+            ("Dawlance Magnum Split Air Conditioner 1 Ton White", "Dawlance", "Air Conditioners"),
+            ("Haier Magnum Deep Freezer 9 Cu Ft White", "Haier", "Deep Freezers"),
+        )
+    )
+    assert "magnum" not in corpus.proven
+    assert "magnum" not in corpus.blacklisted
+    assert corpus.undecided["magnum"].brands == frozenset({"dawlance", "haier"})
+
+
+def test_a_class_abbreviation_is_disqualified_only_when_every_row_states_the_class() -> None:
+    """`REF` is noise when the row says Refrigerator; a row that says nothing cannot disprove it."""
+    every_row = build_corpus(
+        _rows(
+            ("DW9101-DAW REF 9101", "Dawlance", "Electronics / Home appliances / Refrigerators"),
+            ("DAW REF 9106", "Dawlance", "Electronics / Home appliances / Refrigerators"),
+        )
+    )
+    assert "ref" in every_row.blacklisted
+    one_row_silent = build_corpus(
+        _rows(
+            ("Dawlance Ref Inverter Split Air Conditioner 1.5 Ton", "Dawlance", "Air Conditioners"),
+            ("Dawlance Ref Split Air Conditioner 1 Ton White", "Dawlance", "Air Conditioners"),
+        )
+    )
+    assert "ref" in one_row_silent.proven
+
+
+def test_the_category_table_contributes_the_words_of_its_multi_word_entries() -> None:
+    """A table read as whole strings can never match a word -- so those words were not covered."""
+    vocabulary = category_vocabulary()
+    for word in ("green", "energy", "audio", "visuals", "sound", "bars"):
+        assert word in vocabulary, word
