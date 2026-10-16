@@ -129,6 +129,12 @@ class ProductRecord:
     warranty_source: str = "none"
     variant_suffix: str = ""
     handle_deduped: bool = False
+    series_token: str = ""
+    title_strategy: str = ""
+    capacity_token: str = ""
+    color_token: str = ""
+    inverter_token: str = ""
+    dropped_words: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

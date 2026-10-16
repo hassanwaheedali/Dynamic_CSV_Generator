@@ -488,8 +488,18 @@ def build_seo_title(
         for token in feature_tokens:
             if len(trimmed) <= budget:
                 break
-            if token and token in trimmed:
-                trimmed = re.sub(r"\s*" + re.escape(token), "", trimmed, count=1)
+            # Only a token that stands as its own word may be removed: cutting `Etech` out of the
+            # part number `Etech-12` shipped `Air Conditioner --12` -- a mutilated code and a hole.
+            pattern = rf"(?<!\S){re.escape(token)}(?!\S)"
+            if token and re.search(pattern, trimmed):
+                trimmed = re.sub(pattern, "", trimmed, count=1)
+                # A deleted token can empty a whole ` - ` segment; the segment goes with it, or the
+                # shop's search result reads "Dispenser - - 3 Year Compressor Warranty".
+                trimmed = " - ".join(
+                    part.strip(" -,")
+                    for part in re.split(r"\s+-\s+", trimmed)
+                    if part.strip(" -,")
+                )
                 trimmed = re.sub(r"\s{2,}", " ", trimmed).strip(" -,")
         if len(trimmed) > budget:
             trimmed = trimmed[:budget].rsplit(" ", 1)[0].rstrip(" -,")

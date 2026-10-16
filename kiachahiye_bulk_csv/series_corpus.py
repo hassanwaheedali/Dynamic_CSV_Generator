@@ -934,6 +934,17 @@ def _names_a_class(pair_key: str) -> bool:
     return " ".join(pair_key.split("-")) in _class_phrases()
 
 
+def names_a_class(text: str) -> bool:
+    """Whether this text is a product TYPE the platform's own attribute tables enumerate.
+
+    Exposed for the Title builder: the words that say what a machine IS -- `Freezer-On-Top`,
+    `Multi Door`, `Table Top` -- are exactly the words the DigiMall Type columns are matched from,
+    so a rebuild that moves one out of the Title empties a platform cell.  Reading the tables is
+    how the builder knows that, instead of a hand-kept list of type words living twice in the repo.
+    """
+    return _names_a_class(re.sub(r"\s+", "-", text.strip().lower()))
+
+
 def _written_span(title: str, pieces: tuple[str, ...]) -> tuple[int, int] | None:
     """Where the row wrote these pieces, in this order, or None when it never wrote them together.
 

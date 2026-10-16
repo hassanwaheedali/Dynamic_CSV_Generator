@@ -17,7 +17,7 @@ import csv
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import config as CONFIG
 from attributes import build_attributes
@@ -48,6 +48,7 @@ from qc_report import (
     CAT_WEIGHT_UNREADABLE,
     QCFlagCollector,
 )
+from series_corpus import analyze_row, build_corpus, normalize_shape
 from sku_handle import (
     ModelExtraction,
     UniqueRegistry,
@@ -90,6 +91,9 @@ DIGI_OUTPUT = CONFIG.DIGI_OUTPUT
 ALFA_OUTPUT = CONFIG.ALFA_OUTPUT
 QC_REPORT = CONFIG.QC_REPORT
 TITLE_SAMPLE = CONFIG.TITLE_SAMPLE
+
+if TYPE_CHECKING:
+    from series_corpus import Corpus, RowAnalysis
 
 # The only columns the sheet must supply.  "Vendor" is deliberately NOT here:
 # neither file's Vendor is ever taken from the sheet (the two literals live in
@@ -209,20 +213,63 @@ def resolve_weight(
 # ---------------------------------------------------------------------------
 # Per-row resolution
 # ---------------------------------------------------------------------------
+def read_rows(rows: list[InputRow]) -> tuple[list[RowAnalysis], Corpus]:
+    """Read the whole sheet once and vote which words name a product line, for which brand.
+
+    The vote is a property of the RUN, not of a row: `ECO` is a name because Midea rows stand it
+    clear of a part number, and no single row can see that across the sheet.  So every row is read
+    here, before any Title is built, and the verdict is handed down to each row.
+
+    Only brand and Product Type are resolved first, because the vote is keyed by both -- and both
+    resolvers are pure, so this pre-pass raises no QC flag and cannot double-count one.  Model,
+    capacity, colour and inverter are deliberately NOT resolved here: the corpus the measurements
+    were made against is the sheet's own columns, and a name must earn its place from what the shop
+    wrote, not from what a later rule guessed.
+    """
+    analyses: list[RowAnalysis] = []
+    for row in rows:
+        brand = resolve_brand(row.brand, row.title).raw
+        text = f"{row.title}\n{row.description}"
+        product_type = resolve_product_type(resolve_category(row.categories, text, text), brand)[0]
+        analyses.append(
+            analyze_row(
+                row.title.strip(),
+                brand=brand,
+                product_type=product_type,
+                breadcrumb=row.categories.strip(),
+                description=row.description.strip(),
+            )
+        )
+    return analyses, build_corpus(analyses)
+
+
 def resolve_row(
     row: InputRow,
     flags: QCFlagCollector,
     sku_registry: UniqueRegistry,
     handle_registry: UniqueRegistry,
     finalise: bool,
+    analysis: RowAnalysis | None = None,
+    corpus: Corpus | None = None,
 ) -> ProductRecord:
     """Resolve one input row into a single shared ProductRecord.
 
     Runs twice: first pass counts SKU/Handle collisions, second pass assigns the
     final unique values.  The two passes share every other rule, so nothing is
-    resolved twice differently.
+    resolved twice differently.  `analysis` and `corpus` are this row's reading and the run's
+    verdict, both built once by :func:`read_rows` and handed to both passes, so the passes can
+    never print two different series for one row.
     """
     text = f"{row.title}\n{row.description}"
+
+    # The corpus vote is keyed by the brand and product type THIS row was read with, so the reading
+    # handed down must be this row's.  `run()` builds both lists from the same `rows`, in order;
+    # this makes a threading mistake fail at the row that broke instead of printing another
+    # product's name on this one.
+    if analysis is not None:
+        assert analysis.title == normalize_shape(row.title.strip()), (
+            f"row {row.row_number}: analysis does not belong to this row"
+        )
 
     brand = resolve_brand(row.brand, row.title)
     effective_brand = brand.raw
@@ -288,7 +335,8 @@ def resolve_row(
         used = extraction
 
     title_result = build_title(
-        effective_brand, used, product_type, row.title, row.description
+        effective_brand, used, product_type, row.title, row.description,
+        analysis=analysis, corpus=corpus,
     )
     if title_result.strategy == "kept-with-light-cleanup":
         flags.flag(
@@ -301,7 +349,8 @@ def resolve_row(
             row.row_number, row.title, CAT_TITLE_DROPPED_WORDS,
             "Rebuilt Title dropped source word(s): "
             + ", ".join(title_result.dropped_words[:8])
-            + " -- add any real series name to SERIES_WORDS in sku_handle.py",
+            + " -- if one of them names this brand's line, the corpus has to prove it "
+            "(series_corpus.py); SERIES_WORDS in sku_handle.py is only the thin-sheet fallback.",
         )
 
     warranty_rows, warranty_headline, warranty_source = resolve_warranty(
@@ -448,6 +497,12 @@ def resolve_row(
         model_confidence=used.confidence,
         warranty_source=warranty_source,
         variant_suffix=variant_suffix,
+        series_token=title_result.series_token,
+        title_strategy=title_result.strategy,
+        capacity_token=title_result.capacity_token,
+        color_token=title_result.color_token,
+        inverter_token=title_result.inverter_token,
+        dropped_words=title_result.dropped_words,
     )
 
 
@@ -465,19 +520,28 @@ def run(rows: list[InputRow], flags: QCFlagCollector) -> list[ProductRecord]:
 
     sku_registry = UniqueRegistry(upper_sku_normaliser)
     handle_registry = UniqueRegistry(handle_normaliser)
+    analyses, corpus = read_rows(rows)
     # The counting pass exists only so pass two can see which models collide.
     # It runs the same row code, so it must NOT report: a scratch collector
     # swallows those flags and the QC report keeps exactly one row per real
     # finding.  SKU/Handle dedupe flags are raised in pass two only, so nothing
     # is lost by the swap.
     scratch = QCFlagCollector()
-    for row in rows:
-        resolve_row(row, scratch, sku_registry, handle_registry, finalise=False)
+    for index, row in enumerate(rows):
+        resolve_row(
+            row, scratch, sku_registry, handle_registry, finalise=False,
+            analysis=analyses[index], corpus=corpus,
+        )
     records: list[ProductRecord] = []
     for index, row in enumerate(rows, start=1):
         if index % 100 == 0 or index == len(rows):
             print(f"  ... resolved {index}/{len(rows)} rows", flush=True)
-        records.append(resolve_row(row, flags, sku_registry, handle_registry, finalise=True))
+        records.append(
+            resolve_row(
+                row, flags, sku_registry, handle_registry, finalise=True,
+                analysis=analyses[index - 1], corpus=corpus,
+            )
+        )
     return records
 
 
@@ -494,21 +558,13 @@ def write_title_sample(path: Path, records: list[ProductRecord]) -> None:
         )
         quotas: Counter[str] = Counter()
         for record in records:
-            strategy = (
-                "kept-with-light-cleanup"
-                if record.model_confidence == "none"
-                else "rebuilt"
-            )
+            strategy = record.title_strategy
             if quotas[strategy] >= 10:
                 continue
             quotas[strategy] += 1
-            title_result = build_title(
-                record.source.brand,
-                ModelExtraction(record.model, record.model_source, record.model_confidence),
-                record.product_type,
-                record.source.title,
-                record.source.description,
-            )
+            # Every column here is read off the record the run actually shipped.  Rebuilding the
+            # Title a second time without the corpus would review a different row than the one the
+            # shop gets -- the same product, two answers, and the sample would be the misleading one.
             writer.writerow(
                 [
                     record.row_number,
@@ -516,11 +572,11 @@ def write_title_sample(path: Path, records: list[ProductRecord]) -> None:
                     record.source.title,
                     record.title,
                     record.model,
-                    title_result.capacity_token,
-                    title_result.color_token,
-                    title_result.series_token,
-                    title_result.inverter_token,
-                    ", ".join(title_result.dropped_words),
+                    record.capacity_token,
+                    record.color_token,
+                    record.series_token,
+                    record.inverter_token,
+                    ", ".join(record.dropped_words),
                 ]
             )
 

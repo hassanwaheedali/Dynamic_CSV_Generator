@@ -228,3 +228,36 @@ def test_short_description_filters_lead_in_and_title_boilerplate() -> None:
     assert "Solo Series" not in bundle.short_description
     assert "Solo Function." in bundle.short_description
     assert "Mechanical Control." in bundle.short_description
+
+
+def test_trimming_a_long_seo_title_never_leaves_an_empty_segment() -> None:
+    """A word deleted to fit 90 characters must not leave the shelf reading `Dispenser - - 3 Year`.
+
+    The trim loop removes a whole feature token, and when that token was an entire ` - ` segment the
+    separator survived on both sides of the hole.  The segment, not just the spaces, has to go.
+    """
+    seo = build_seo_title(
+        "Orient 3 Taps Purple Water Dispenser Glass Door with Heating - Velvet - 3 Year Compressor Warranty",
+        "Water Dispenser",
+        "Orient",
+        ["Velvet", "Heating", "Glass Door"],
+    )
+    assert " - - " not in seo
+    assert not seo.startswith("-")
+
+
+def test_trimming_never_mutilates_a_part_number_to_buy_room() -> None:
+    """`Etech-12` is the model code; deleting the letters `Etech` out of it leaves `--12` and a lie.
+
+    The trim loop matched a feature token as a substring, so on this real Orient row it cut the head
+    off the code and shipped `Air Conditioner --12`.  A token is only ever removable when it stands
+    as its own word.
+    """
+    seo = build_seo_title(
+        "Orient 1 Ton White Inverter Heat & Cool Air Conditioner - Etech-12 - 10 Year Compressor Warranty",
+        "Air Conditioner",
+        "Orient",
+        ["Etech", "Heat and Cool", "Imprint", "1.0 Ton"],
+    )
+    assert "Etech-12" in seo
+    assert "--" not in seo

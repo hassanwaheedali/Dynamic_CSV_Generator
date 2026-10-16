@@ -275,6 +275,25 @@ def test_washing_machine_title_no_fully_and_correct_warranty() -> None:
 
 
 
+def test_a_name_the_row_wrote_prints_even_when_its_letters_are_inside_the_code() -> None:
+    """`K85 Series` is the row's own name, so it prints -- even though `H40K85EFX` already contains it.
+
+    The rebuild used to drop any feature word whose letters appeared inside a word already printed.
+    That is why `Kenwood … (KEL-2470S)` shipped as `Luxury Pro`: the `E` of the name was inside the
+    code, and a row lost the line it sells.  The rule is now words, not letters; the cost is that
+    7 rows read redundantly (`H40K85EFX K85`), which is a presentation question for the owner, not
+    a reason to hide a name no other rule can see.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="H40K85EFX", source="title-parenthetical", confidence="high"),
+        product_type="LED TV",
+        source_title="Haier 40 Inch FHD K85 Series Smart Google LED TV (H40K85EFX)",
+        source_description="Haier 40 inch FHD Smart Google LED TV.",
+    )
+    assert " K85" in result.title
+
+
 def test_geyser_capacity_ignores_inline_weight_and_keeps_nasgas() -> None:
     extraction = ModelExtraction(code="MEH-30", source="title-parenthetical", confidence="high")
     result = build_title(

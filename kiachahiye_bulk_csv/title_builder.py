@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+import series_corpus
 from config import (
     OMIT_TITLE_COLOR_CATEGORIES as OMIT_TITLE_COLOR_CATEGORIES,
 )
@@ -29,6 +30,7 @@ from config import (
 from config import (
     TITLE_MAX as TITLE_MAX,
 )
+from series_corpus import Corpus, RowAnalysis
 from sku_handle import ModelExtraction, find_series_token, parse_capacity
 from textutils import clean_inline, find_full_color
 from warranty import resolve_main_warranty
@@ -275,16 +277,22 @@ def extract_feature(
     inverter: str = "",
     model: str = "",
     description: str = "",
+    series: str | None = None,
 ) -> str:
-    """Extract series and prominent feature keywords dynamically from text."""
+    """Extract series and prominent feature keywords dynamically from text.
+
+    `series` is the name the corpus proved for this row's brand; when the caller has one, it IS
+    the series half of the slot and `extract_series` is not asked -- the curated path stays as the
+    fallback for a corpus that proved nothing, so wiring the vote in can never shorten a Title.
+    """
     full_text = f"{source_title}\n{description}" if (source_title or description) else text
     if not source_title and text:
         source_title = text.splitlines()[0]
 
-    series = extract_series(full_text)
     candidates: list[str] = []
-    if series:
-        candidates.append(series)
+    chosen = series if series is not None else extract_series(full_text)
+    if chosen:
+        candidates.append(chosen)
 
     # Air Fryer special check
     if re.search(r"\bair\s*fryer\b", full_text, re.IGNORECASE) and "Air Fryer" not in candidates:
@@ -309,6 +317,8 @@ def build_title(
     source_description: str,
     warranty: str | None = None,
     strict_rebuild: bool | None = None,
+    analysis: RowAnalysis | None = None,
+    corpus: Corpus | None = None,
 ) -> TitleResult:
     """Build one Title using our formula.
 
@@ -319,6 +329,11 @@ def build_title(
 
     When strict_rebuild is False, Step A rebuilds if a confident model code
     exists, and Step B keeps the source Title with light cleanup otherwise.
+
+    `analysis` and `corpus` are the row's reading and the run's per-brand verdict, both produced by
+    `series_corpus`; they arrive together or not at all.  A name the corpus proved for this brand
+    fills the series slot in the row's own spelling; a corpus that proved nothing leaves the
+    curated path in charge, so a Title can never be shortened by the vote being silent.
     """
     if strict_rebuild is None:
         strict_rebuild = STRICT_TITLE_REBUILD
@@ -337,6 +352,19 @@ def build_title(
     if product_type in INVERTER_CONCEPT_CATEGORIES:
         inverter = extract_inverter(text)
 
+    corpus_series: str | None = None
+    carried_subtype = ""
+    if analysis is not None and corpus is not None:
+        corpus_series = series_corpus.pick_series(brand, analysis, corpus) or None
+        if corpus_series:
+            curated = extract_series(text)
+            if curated and curated != corpus_series and series_corpus.names_a_class(curated):
+                # The old series guesser sold this row's TYPE as its series name.  The corpus
+                # replaced it with the real name, but the word still says what the machine is --
+                # and DigiMall's `Attribute_... Type` cell is matched out of this Title, so
+                # dropping it would empty a platform column.  It belongs in the [Subtype] slot.
+                carried_subtype = curated
+
     feature = extract_feature(
         text=text,
         product_type=product_type,
@@ -347,13 +375,14 @@ def build_title(
         inverter=inverter,
         model=extraction.code,
         description=source_description,
+        series=corpus_series,
     )
 
     should_rebuild = strict_rebuild or (extraction.confidence in ("high", "medium"))
 
     if should_rebuild:
         title_color = "" if product_type in OMIT_TITLE_COLOR_CATEGORIES else color
-        subtype = extract_subtype(product_type, source_title)
+        subtype = extract_subtype(product_type, source_title) or carried_subtype
         part1_pieces: list[str] = []
         for raw_piece in (brand, capacity, title_color, inverter, subtype, product_type):
             piece = clean_inline(raw_piece)
@@ -376,10 +405,26 @@ def build_title(
                 part2_pieces.append(clean_code)
         if feature:
             clean_feat = clean_inline(feature)
+            printed = f"{part1} {' '.join(part2_pieces)}".lower()
+
+            def already_printed(word: str) -> bool:
+                """Whether this word already stands in the Title as a word of its own.
+
+                A substring test used to drop the `E` of `E Luxury Pro` because `E` is inside
+                `Kenwood`, and sold the row as somebody else's line.  A name is repeated by a
+                dedupe, never by its letters -- so a row whose name is ALSO a run inside its own
+                part number (`H40K85EFX` + `K85 Series`) prints the name and reads redundant.  Seven
+                rows do this; hiding the name to avoid the redundancy would repeat the very defect
+                the reading layer was built to kill.  Shortlist for T8, not a rule here.
+                """
+                return (
+                    re.search(rf"(?<![a-z0-9]){re.escape(word.lower())}(?![a-z0-9])", printed)
+                    is not None
+                )
+
             feat_words = [
                 w for w in clean_feat.split()
-                if w.lower() not in part1.lower()
-                and w.lower() not in " ".join(part2_pieces).lower()
+                if not already_printed(w)
                 and not (product_type in OMIT_TITLE_COLOR_CATEGORIES and color and w.lower() == color.lower())
             ]
             if feat_words:
