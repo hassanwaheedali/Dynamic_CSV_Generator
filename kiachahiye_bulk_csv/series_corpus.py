@@ -52,6 +52,7 @@ from functools import lru_cache
 from types import MappingProxyType
 from typing import Any
 
+import attributes
 import categories
 import sku_handle
 import textutils
@@ -87,6 +88,9 @@ _SPACES_RE = re.compile(r"\s+")
 _LABEL_RE = re.compile(r"[A-Za-z0-9]+")
 #: The dashes a sheet actually writes between two halves of one label.
 _SHAPE_DASHES = frozenset("-\u2013\u2014")
+#: What may sit between the two halves of a name the sheet wrote: a space, or one dash.
+#: A slash or a dot would mean the second run starts a part number, not a level.
+_PAIR_SEPARATORS = frozenset({"", *_SHAPE_DASHES})
 #: A word run as written, for the spelling a shop may print.
 _RUN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+]*")
 #: One letter, one separator the sheet writes, one word: the shape every `E-Star` row has.
@@ -94,8 +98,8 @@ _RUN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+]*")
 #: the tail of a written abbreviation (`W/O REF`, `R/C Remote`), not the start of a name.
 _SP = r"[ \t\u00a0]"
 _INITIAL_RE = re.compile(
-    rf"(?<![A-Za-z0-9/.])([A-Za-z])(?:{_SP}*[-\u2013\u2014/.]{_SP}*|{_SP}+)"
-    r"([A-Za-z][A-Za-z0-9+]{2,})(?![A-Za-z0-9])"
+    rf"(?<![A-Za-z0-9/.])([A-Za-z])(?:{_SP}*[-‒–—/.]{_SP}*|{_SP}+)"
+    r"([A-Za-z][A-Za-z0-9]{2,})\+?(?![A-Za-z0-9])"
 )
 
 
@@ -309,6 +313,13 @@ class ResidueCandidate:
     one-letter initial to the word it introduces (``e-star``, ``e-chrome``) so the line the
     vendor wrote is the line the corpus is asked about.  ``pieces`` records every piece the
     candidate covers, which is what keeps the row's pieces partitioned: claimed XOR covered.
+
+    ``offers`` are a different object and are deliberately NOT a partition: a row puts a name
+    forward on its own AND, when the very next piece is a level word, forward again with that
+    word attached (``chrome``, ``chrome pro``).  The pair re-covers its head on purpose -- the
+    vote has to be asked about both, and :func:`pick_series` then takes the longest one the run
+    proved.  What is pinned over offers instead is fidelity: every piece of every offer must be
+    contiguous in the row, and ``source`` must be letters the row itself wrote.
     """
 
     key: str
@@ -327,6 +338,7 @@ class RowAnalysis:
     claimed: Mapping[str, str] = field(default_factory=dict)
     positions: Mapping[str, WordPosition] = field(default_factory=dict)
     candidates: tuple[ResidueCandidate, ...] = ()
+    offers: tuple[ResidueCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         # The dicts handed in are the builder's working copies; freezing them here is what
@@ -336,8 +348,8 @@ class RowAnalysis:
 
     @property
     def words(self) -> tuple[str, ...]:
-        """The residue as the vote sees it: candidate keys, in title order."""
-        return tuple(candidate.key for candidate in self.candidates)
+        """What the vote is asked about: every name this row offers, one or two words."""
+        return tuple(offer.key for offer in self.offers)
 
 
 @dataclass(frozen=True)
@@ -570,6 +582,7 @@ def analyze_row(
     candidates, absorbed = _candidates(normalized, pieces, residue, unnamed)
     for letter in absorbed:
         claimed.pop(letter, None)
+    offers = _offers(normalized, pieces, candidates, claimed)
     # The class words this row states -- in its columns, and in its own title wherever a slot
     # recognised one. A sheet that writes "Split AC" instead of a breadcrumb still states Air
     # Conditioner, and the abbreviation guard has to read what the row itself says.
@@ -586,9 +599,204 @@ def analyze_row(
         product_key=code_parts_key or "|".join(sorted(present)),
         title_words=tuple(present),
         claimed=claimed,
-        positions=_positions(pieces, present, candidates, code_parts, class_words, vocabulary),
+        positions=_positions(pieces, present, offers, code_parts, class_words, vocabulary),
         candidates=candidates,
+        offers=offers,
     )
+
+
+def pick_series(brand: str, analysis: RowAnalysis, corpus: Corpus) -> str:
+    """The series word for this row: the longest name the run proved for its brand, as written.
+
+    `Chrome` and `Chrome Pro` are two models, so both are asked of the corpus and the row's own
+    words decide which applies.  Length is counted in name words, so a row that wrote `AVANTE
+    PLUS` or `AVANTE+` takes the Plus model over the plain one; a head joined from an initial may
+    make the label three words long (`E Luxury Plus`), and the cap that holds is the one in
+    :func:`_offers` -- one name plus at most one level word.  A row whose words the run never
+    proved prints nothing: silence is the safe output, not a gap to fill with a guess.
+    """
+    proven = [offer for offer in analysis.offers if corpus.is_proven(brand, offer.key)]
+    if not proven:
+        return ""
+    return max(proven, key=lambda offer: len(offer.key.split())).source
+
+
+def _offers(
+    title: str,
+    pieces: list[str],
+    candidates: tuple[ResidueCandidate, ...],
+    claimed: Mapping[str, str],
+) -> tuple[ResidueCandidate, ...]:
+    """Every name the row puts forward: each free word, and each free word plus a level word.
+
+    A pair forms only when the two are ADJACENT pieces and the second passes
+    :func:`_is_level_tail` -- `Chrome Pro`, `Acce Pro`, `Avante Plus`.  A word owned by the model,
+    category, colour, brand or capacity slot always breaks a pair, and so does a FREE word:
+    measured on the sheets, letting free words be tails invented `ECO WALL` from the very row
+    this project was opened for, plus `Flat Glass` and `REF AVANTE` -- two facts written side by
+    side, not one name.
+
+    A trailing ``+`` IS the word ``plus`` -- the rule as `image_pipeline` writes it, with the sign
+    in its punctuation set and `plus` in its tail stopwords -- so `AVANTE+`, `Avante Plus` and
+    plain `Avante` offer one identity and their evidence votes together, while each row keeps the
+    form it printed.
+
+    Nothing here chooses between the offers: that is :func:`build_corpus`, then
+    :func:`pick_series`.  A bare level word is never offered alone, because a row that wrote only
+    `Pro` wrote a decoration, not a name.
+    """
+    found: list[ResidueCandidate] = []
+    seen: set[str] = set()
+
+    def emit(key: str, source: str, span: tuple[str, ...]) -> None:
+        if key not in seen:
+            seen.add(key)
+            found.append(ResidueCandidate(key=key, source=source, pieces=span))
+
+    for candidate in candidates:
+        emit(candidate.key, candidate.source, candidate.pieces)
+        head = _written_span(title, candidate.pieces)
+        if head is not None:
+            written = title[head[0] : head[1]]
+            # The sign is either glued to the run the row wrote or spaced off it; both are `plus`.
+            if written.endswith("+") or re.match(r"[ \t\u00a0]*\+", title[head[1] :]):
+                emit(f"{candidate.key} plus", written.rstrip("+") + "+", candidate.pieces)
+        end = _span_end(pieces, candidate.pieces)
+        if (
+            end is not None
+            and end < len(pieces)
+            and _is_level_tail(pieces[end], claimed)
+            and not _names_a_class(f"{candidate.key} {pieces[end]}")
+        ):
+            following = pieces[end]
+            pair = _written_span(title, (*candidate.pieces, following))
+            if pair is not None:
+                emit(
+                    f"{candidate.key} {following}",
+                    title[pair[0] : pair[1]],
+                    (*candidate.pieces, following),
+                )
+    return tuple(found)
+
+
+@lru_cache(maxsize=1)
+def _class_phrases() -> frozenset[str]:
+    """Every two-or-more-word value the platform's own attribute tables enumerate.
+
+    `Multi Door`, `Table Top`, `Side-By-Side`, `Twin Tub`, `Freezer-On-Top`, `Mini LED`: the
+    shop's per-category attribute lists say what a product IS, and none of them lists `pro`,
+    `plus` or `max`.  Reading those tables is what lets a class phrase be refused as a name
+    without authoring a list of banned words here.
+    """
+    found: set[str] = set()
+    for column, values in attributes.ALLOWED.items():
+        if not column.endswith((" Type", " Category")):
+            continue
+        for variant in (*values, *attributes.ALIASES.get(column, {})):
+            words = _WORD_RE.findall(variant.lower())
+            if len(words) >= 2:
+                found.add(" ".join(words))
+    return frozenset(found)
+
+
+def _names_a_class(pair_key: str) -> bool:
+    """Whether the two words, read together, are what the attribute tables call a product type."""
+    return " ".join(pair_key.split("-")) in _class_phrases()
+
+
+def _written_span(title: str, pieces: tuple[str, ...]) -> tuple[int, int] | None:
+    """Where the row wrote these pieces, in this order, or None when it never wrote them together.
+
+    The halves of one label may be split by a space or by a single dash, and a ``+`` may hang off
+    either of them, because that is how these sheets spell ``E STAR PRO``, ``AVANTE-PRO`` and
+    ``AVANTE+``.  A slash or a dot between them means two facts side by side, and a name the row
+    never spelt is not offered at all: synthesising ``AVANTE PRO`` from ``AVANTE/PRO`` would put a
+    spelling on the shop shelf that no sheet ever used.
+    """
+    runs = list(_RUN_RE.finditer(title))
+    for index in range(len(runs) - len(pieces) + 1):
+        window = runs[index : index + len(pieces)]
+        if [run.group().lower().rstrip("+") for run in window] != list(pieces):
+            continue
+        gaps = [
+            title[window[i].end() : window[i + 1].start()].strip(" \t\u00a0")
+            for i in range(len(window) - 1)
+        ]
+        if all(gap in _PAIR_SEPARATORS for gap in gaps):
+            return window[0].start(), window[-1].end()
+    return None
+
+
+#: How long a level word may be.  `pro`, `plus`, `max` fit; `mounted`, `cooling`, `series` do not.
+_MAX_LEVEL_LENGTH = 4
+
+
+def _is_level_tail(piece: str, claimed: Mapping[str, str]) -> bool:
+    """Whether this piece may be the SECOND word of an offered name -- the shape of `Chrome Pro`.
+
+    This is the row-local *shape* test only, three facts about this row: the word is one the
+    generic tables borrowed (``REVIVABLE_SLOT``) rather than one this row's category, colour,
+    brand, capacity, model or warranty column owns; it is short, because the level words these
+    sheets use are `pro`, `plus`, `max` while the descriptors that merely sit beside a name are
+    long (`mounted`, `cooling`, `cooking`); and it is not a word the builder itself refuses to
+    print (`title_builder._STOPWORDS` holds `series`, `model`, `new`, `price`, `warranty`),
+    because `Persona Series` sells `Persona`.
+
+    It is deliberately not a verdict.  The generic table also holds `load`, `cool` and `door` next
+    to `pro` and `plus`, so shape alone would call `Bottom Load` and `Multi Door` names -- measured
+    on the real sheets, that is exactly what it did.  Three more facts, each read from a table that
+    already exists, settle it: a colour or colour-modifier word never marks a level
+    (:func:`_colour_words`, and `textutils.COLOR_NON_MODIFIERS` is the repo's own statement that
+    `pro`, `plus`, `door` and `top` are NOT colours), a word that abbreviates a longer word in the
+    same vocabulary is that word shortened, not a level (:func:`_abbreviates_noise_word`:
+    `inv`/inverter, `load`/loading, `cool`/cooler), and a phrase the shop enumerates as an
+    attribute value names what the product IS (:func:`_names_a_class`).
+
+    A FREE word is never a tail: `wall`, `glass` and `blaze` are names in their own right, and
+    letting them be tails is what invented `eco wall` on the anchor row and `flat blaze` for PEL.
+    """
+    return (
+        claimed.get(piece) == REVIVABLE_SLOT
+        and _MIN_NAME_LENGTH <= len(piece) <= _MAX_LEVEL_LENGTH
+        and piece not in _title_stopwords()
+        and piece not in _colour_words()
+        and not _abbreviates_noise_word(piece)
+    )
+
+
+@lru_cache(maxsize=1)
+def _colour_words() -> frozenset[str]:
+    """Base colours and their modifiers: `Pearl`, `Mist`, `Gold` never name a level.
+
+    :data:`textutils.COLOR_NON_MODIFIERS` is deliberately NOT used -- the repo's own table puts
+    `pro`, `plus`, `door` and `top` in it, which is that table saying these are not colours.
+    """
+    return frozenset(
+        word.lower() for word in (*textutils.BASE_COLORS, *textutils.COLOR_MODIFIERS)
+    )
+
+
+def _abbreviates_noise_word(piece: str) -> bool:
+    """Whether a longer word in the same generic vocabulary is what this short one abbreviates.
+
+    `INV` for inverter, `LOAD` for loading, `COOL` for cooler/cooling: measured on the two sheets
+    these three were exactly the tails that made `Dual INV`, `Bottom Load` and `Emperor Cool` look
+    like series names.  The gap of two letters is what keeps `PRO` (no longer word in the table
+    starts with it) and `MAX` in play.
+    """
+    return any(
+        known.startswith(piece) and len(known) >= len(piece) + 2
+        for known in noise_vocabulary()
+    )
+
+
+def _span_end(pieces: list[str], span: tuple[str, ...]) -> int | None:
+    """Where this candidate's pieces finish in the row, or None when they never appear together."""
+    target = list(span)
+    for index in range(len(pieces) - len(target) + 1):
+        if pieces[index : index + len(target)] == target:
+            return index + len(target)
+    return None
 
 
 def _candidates(
@@ -646,10 +854,15 @@ def _candidates(
 
 
 def _source_run(title: str, piece: str) -> str:
-    """The row's own letters for a folded piece: what a shop title may print for it."""
+    """The row's own letters for a folded piece: what a shop title may print for it.
+
+    A run may carry the ``+`` the sheet glued to the word -- `AVANTE+` is this row's spelling of
+    `avante`, and the sign is kept because stage [5] renders the sheet's own form, not "Plus".
+    """
     for match in _RUN_RE.finditer(title):
-        if match.group().lower() == piece:
-            return match.group()
+        run = match.group()
+        if run.lower() == piece or run.lower() == f"{piece}+":
+            return run
     return piece
 
 
@@ -691,12 +904,12 @@ def _claim_class_typos(present: dict[str, None], class_words: dict[str, str]) ->
 def _positions(
     pieces: list[str],
     present: dict[str, None],
-    candidates: tuple[ResidueCandidate, ...],
+    offers: tuple[ResidueCandidate, ...],
     code_parts: frozenset[str],
     class_words: frozenset[str],
     vocabulary: _Vocabulary,
 ) -> dict[str, WordPosition]:
-    """Record where each candidate stood, once per candidate, across the whole row.
+    """Record where each offered name stood, once per name, across the whole row.
 
     A word a slot claimed for a reason that can be taken back (see REVIVABLE_SLOT) is still a
     candidate: the vote has to see it to decide.  A candidate that occurs twice in one row keeps
@@ -719,7 +932,7 @@ def _positions(
         if _has_digit_and_letter(piece) or (piece in code_parts and _LETTER_RE.search(piece))
     }
     positions: dict[str, WordPosition] = {}
-    for candidate in candidates:
+    for candidate in offers:
         span = list(candidate.pieces)
         for index in range(len(pieces) - len(span) + 1):
             if pieces[index : index + len(span)] != span:
@@ -892,7 +1105,12 @@ def build_corpus(analyses: Iterable[RowAnalysis]) -> Corpus:
             and evidence.rows >= 2
             and evidence.rows > evidence.code_adjacent
         )
-        brand_position = evidence.brand_adjacent == 1 and not evidence.code_adjacent
+        # A single word standing right after its own brand is the cleanest name a thin sheet can
+        # state (`Midea ECO - ...`).  Two words seen once are not: the second may be borrowed, so a
+        # pair needs the sibling evidence above, and a row that states it once stays undecided.
+        brand_position = (
+            len(word.split()) == 1 and evidence.brand_adjacent == 1 and not evidence.code_adjacent
+        )
         if siblings or brand_position:
             proven.setdefault(brand, {})[word] = evidence
             earned.add(word)

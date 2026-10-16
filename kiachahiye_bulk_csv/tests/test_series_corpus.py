@@ -37,6 +37,7 @@ from series_corpus import (
     category_vocabulary,
     noise_vocabulary,
     normalize_shape,
+    pick_series,
 )
 
 
@@ -205,12 +206,13 @@ def test_the_model_code_is_claimed_and_never_offered_as_a_name() -> None:
 
 
 def test_the_residue_keeps_words_in_title_order() -> None:
+    """Each name the row puts forward, in the order it wrote them: the word, then the pair."""
     analysis = analyze_row(
         "KENWOOD 1267S COMFORT PRO INVERTER",
         product_type="Air Conditioner",
         brand="Kenwood",
     )
-    assert analysis.words == ("comfort",)
+    assert analysis.words == ("comfort", "comfort pro")
 
 
 def test_a_tier_word_claimed_as_a_type_word_stays_recoverable() -> None:
@@ -1214,9 +1216,355 @@ def test_every_piece_of_every_real_row_is_claimed_or_covered_by_exactly_one_cand
         assert len(keys) == len(set(keys)), analysis.title
 
 
+def test_every_offered_name_is_letters_the_row_wrote() -> None:
+    """The vote reads `offers`, so it is the offers a real sheet has to be checked against.
+
+    Nothing may be printed that the sheet did not spell, and every piece of a name must stand
+    together in the row -- an offer that skipped a word would be a label the row never made.  The
+    one shape change allowed is gluing a stray space off a `+`, because the sign is the word
+    `plus` written as punctuation; a slash, a dot or a re-spelled separator is not.
+    """
+    shape_a, stock = _real_rows()
+    for analysis in [*shape_a, *stock]:
+        written = re.sub(r"[ \t\u00a0]+\+", "+", analysis.title)
+        pieces = _pieces(analysis.title)[0]
+        for offer in analysis.offers:
+            assert offer.source in written, (analysis.title, offer)
+            span = [
+                index
+                for index in range(len(pieces) - len(offer.pieces) + 1)
+                if pieces[index : index + len(offer.pieces)] == list(offer.pieces)
+            ]
+            assert span, (analysis.title, offer)
+
+
+def test_a_name_and_the_level_word_written_after_it_are_one_candidate() -> None:
+    """`Chrome` and `Chrome Pro` are two models, so both are offered and the vote decides.
+
+    The pair is not authored: `pro` is a word `sku_handle.TYPE_WORDS` borrows (so it is neither
+    this row's category, colour, brand nor code) and the row states it directly after a name.
+    """
+    dawlance = analyze_row(
+        "Dawlance Chrome Pro Inverter Freezer-On-Top Refrigerator 7 Cu Ft Golden (9169-WB)",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+        inverter="Inverter",
+    )
+    assert "chrome" in dawlance.words
+    assert "chrome pro" in dawlance.words
+
+
+def test_a_spaced_plus_still_prints_the_sign() -> None:
+    """`AVANTE + GD` is the sheet writing `plus` with a stray space; the sign IS the name.
+
+    Offering that row as plain `AVANTE` sells a 9193LF as a 9193 -- the one thing the `+` ruling
+    exists to prevent.  Gluing a spaced sign onto the word it follows is shape, not spelling:
+    every letter is still the row's own.
+    """
+    spaced = analyze_row(
+        "DAW REF 9193LF AVANTE + GD INV",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+        inverter="Inverter",
+    )
+    assert source_of(spaced, "avante plus") == "AVANTE+"
+
+
+def test_the_proven_plus_beats_the_proven_single_word() -> None:
+    """A Dawlance row that wrote `AVANTE+` sells the Plus model, so `AVANTE` is the wrong shelf.
+
+    Both keys are proven for this brand on Shape A, so the row's own words decide, and the longer
+    name is taken: a trailing sign is the level word `plus`, written as punctuation, and the sheet
+    that spelled it out gets the same treatment in its own letters.
+    """
+    shape_a, _ = _real_rows()
+    corpus = build_corpus(shape_a)
+    glued = next(r for r in shape_a if r.title.startswith("Dawlance AVANTE+ Freezer-On-Top"))
+    assert pick_series("Dawlance", glued, corpus) == "AVANTE+"
+    spelled = next(r for r in shape_a if r.title.startswith("Dawlance Avante Plus Special"))
+    assert pick_series("Dawlance", spelled, corpus) == "Avante Plus"
+
+
+def test_a_pair_is_offered_only_when_the_row_wrote_it() -> None:
+    """`AVANTE/PRO` states two facts side by side, so the row offers no two-word name.
+
+    Reading the pair anyway printed `AVANTE PRO` -- a spelling no sheet ever used, which is the
+    same rule that stops the builder inventing a word.  A head joined from an initial
+    (`E STAR`) is still the row's own letters, so its pair must survive the same check.
+    """
+    slashed = analyze_row(
+        "DAWLANCE AVANTE/PRO 1.5 TON SPLIT INVERTER AC (FT125)",
+        product_type="Split AC",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Air Conditioners / Split",
+        inverter="Inverter",
+    )
+    assert "avante pro" not in slashed.words
+
+    joined_head = analyze_row(
+        "HAIER E STAR PRO INVERTER SPLIT AC 1.5 TON (HSU-18)",
+        product_type="Split AC",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Air Conditioners / Split",
+        inverter="Inverter",
+    )
+    assert source_of(joined_head, "e-star pro") == "E STAR PRO"
+
+
+@pytest.mark.parametrize(
+    ("title", "product_type", "brand", "pair"),
+    [
+        (
+            "HAIER MULTI DOOR REFRIGERATOR 308/328 L GREY (HRS-308D)",
+            "Refrigerator",
+            "Haier",
+            "multi door",
+        ),
+        ("PEL Table Top Water Dispenser White (PWD-316)", "Water Dispenser", "PEL", "table top"),
+    ],
+)
+def test_a_pair_that_names_what_the_product_is_is_never_a_name(
+    title: str, product_type: str, brand: str, pair: str
+) -> None:
+    """`Multi Door` and `Table Top` are the platform's own attribute values: they say what the
+    product IS, so they cannot also be the line it belongs to.
+
+    The rejection reads `attributes.ALLOWED` / `ALIASES`, which lists these phrases per product
+    type and does NOT list `pro`, `plus` or `max` -- no new word list is authored here.
+    """
+    analysis = analyze_row(
+        title,
+        product_type=product_type,
+        brand=brand,
+        breadcrumb=f"Electronics / Home appliances / {product_type}",
+    )
+    assert pair not in analysis.words
+
+
+def test_a_pair_keeps_the_separator_the_sheet_wrote() -> None:
+    """`AVANTE-PRO` is offered as `AVANTE-PRO`, never re-spelled `AVANTE PRO`.
+
+    The series slot shows the shop shelf a customer compares against, so the rendering comes off
+    the row's own letters.  The vote key is still `avante pro`, which is what lets the dashed,
+    spaced and `+` forms of one name share a single proof.
+    """
+    dawlance = analyze_row(
+        "DAWLANCE AVANTE-PRO 1.5 TON SPLIT INVERTER AC (FT125)",
+        product_type="Split AC",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Air Conditioners / Split",
+        inverter="Inverter",
+    )
+    assert source_of(dawlance, "avante pro") == "AVANTE-PRO"
+
+
+def test_two_free_words_are_never_one_name() -> None:
+    """The anchor bug, pinned: `MIDEA ECO - WALL MOUNTED DC INVERTER MSAG2B-12HRDN1-QC0`.
+
+    Joining any two adjacent free words proved `eco wall` for Midea on the real sheet -- the
+    series this project exists to print became a mounting statement.  A pair is only a name when
+    its second word is a bare generic the type table borrowed, so `wall`, a free word like `eco`,
+    breaks it and the row offers `eco` alone.
+    """
+    midea = analyze_row(
+        "MIDEA ECO - WALL MOUNTED DC INVERTER MSAG2B-12HRDN1-QC0",
+        product_type="Air Conditioner",
+        brand="Midea",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "eco" in midea.words
+    assert "eco wall" not in midea.words
+    assert "wall mounted" not in midea.words
+    mega = analyze_row(
+        "DAWLANCE MEGA FLEX INVERTER 15",
+        product_type="Air Conditioner",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "mega flex" not in mega.words
+
+
+def test_words_with_a_claimed_word_between_them_are_never_one_name() -> None:
+    """Measured junk from the sheets: `Flat ... Blaze` and `REF ... AVANTE+` are not names.
+
+    Pairing consecutive FREE words was the first attempt and it invented `flat blaze` (7 products)
+    for PEL, because `Glass Door Freezer-On-Top` sits between them.  Adjacency in the TITLE is the
+    rule, so anything the slots claimed -- or a code -- breaks a pair.
+    """
+    pel = analyze_row(
+        "PEL InverterOn Flat Glass Door Freezer-on-top Refrigerator 12 Cu Ft Blaze (PRF-2550)",
+        product_type="Refrigerator",
+        brand="PEL",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    assert "flat blaze" not in pel.words
+    assert "glass door" not in pel.words
+    stock = analyze_row(
+        "DAW REF 9173WB AVANTE+ GD INV",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Refrigerators",
+    )
+    assert "ref avante" not in stock.words
+    assert "avante gd" not in stock.words
+
+
+def test_a_level_word_a_table_already_names_only_attaches_to_a_name() -> None:
+    """`pro` and `plus` are in `sku_handle.TYPE_WORDS`: that IS the lookup, no learner needed.
+
+    Chrome and Chrome Pro are two different models, so `chrome pro` is one candidate.  But `pro`
+    on its own is never offered as a series -- that is the defect this project opened for: 20
+    titles carrying a bare decoration word.
+    """
+    assert "pro" in sku_handle.TYPE_WORDS and "plus" in sku_handle.TYPE_WORDS
+    dawlance = analyze_row(
+        "Dawlance Chrome Pro Inverter Freezer-On-Top Refrigerator 7 Cu Ft Golden (9169-WB)",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+        inverter="Inverter",
+    )
+    assert "chrome pro" in dawlance.words
+    assert "pro" not in dawlance.words
+
+
+def test_the_plus_sign_and_the_word_plus_are_the_same_name() -> None:
+    """`AVANTE+`, `Avante Plus` and `Avante +` fold to one candidate, rendered as each row wrote it.
+
+    This is `image_pipeline`'s rule ported as a shape, not a list: the sign is the word (its
+    `TAIL_STOPWORDS` holds `plus` and its punctuation set holds `+`).  One identity is what makes
+    the sheet's variants vote together instead of splitting their evidence.
+    """
+    glued = analyze_row(
+        "Dawlance AVANTE+ Inverter Freezer-On-Top Refrigerator 16 Cu Ft Luxe Brown (9193-WB)",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    written = analyze_row(
+        "Kenwood Classic Plus BHL Freezer-On-Top Refrigerator 18 Cu Ft (KRF-26657-VCM)",
+        product_type="Refrigerator",
+        brand="Kenwood",
+        breadcrumb="Electronics / Home appliances / Refrigerators / Freezer-On-Top",
+    )
+    assert "avante plus" in glued.words
+    assert "avante" in glued.words
+    assert "avante+" not in glued.words
+    assert source_of(glued, "avante plus") == "AVANTE+"
+    assert source_of(written, "classic plus") == "Classic Plus"
+
+
+def test_pick_series_gives_the_longest_proven_name_in_the_rows_own_spelling() -> None:
+    """The one question stage [5] answers, and the answer stays inside the reading layer.
+
+    Proven `chrome` + proven `chrome pro`: a row writing both words gets `Chrome Pro`, a row
+    writing one gets `Chrome`, and a row whose words the run never proved gets nothing.
+    """
+    rows = _rows(
+        ("Dawlance Chrome Pro Inverter Freezer-On-Top Refrigerator 7 Cu Ft (9169-WB)", "Dawlance", "Refrigerators"),
+        ("Dawlance Chrome Pro Inverter Freezer-On-Top Refrigerator 9 Cu Ft (9173-WB)", "Dawlance", "Refrigerators"),
+        ("Dawlance Chrome Freezer-On-Top Refrigerator 10 Cu Ft (9160-WB)", "Dawlance", "Refrigerators"),
+        ("Dawlance Chrome Freezer-On-Top Refrigerator 11 Cu Ft (9149-WB)", "Dawlance", "Refrigerators"),
+    )
+    corpus = build_corpus(rows)
+    pair_row, single_row = rows[0], rows[2]
+    assert pick_series("Dawlance", pair_row, corpus) == "Chrome Pro"
+    assert pick_series("Dawlance", single_row, corpus) == "Chrome"
+    unproven = analyze_row(
+        "Dawlance Zzzz Qqqq Freezer-On-Top Refrigerator (9999-WB)",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Refrigerators",
+    )
+    assert pick_series("Dawlance", unproven, corpus) == ""
+
+
+def test_a_pair_tail_is_refused_when_a_table_already_owns_the_word() -> None:
+    """`Load`, `Inv` and `Cool` sit in the same generic table as `Pro` -- three facts split them.
+
+    Review finding, measured on the real sheets: a per-row "is this word borrowed-generic?" test
+    made `bottom load`, `dual inv` and `emperor cool` series names, because TYPE_WORDS holds the
+    mounting, the inverter shorthand and the mode right next to `pro`/`plus`.  What tells them
+    apart is read from tables this repo already keeps, never from a verdict on this run: a word
+    that shortens a longer word of the same vocabulary is that word (`load`/`loading`,
+    `inv`/`inverter`, `cool`/`cooler`), a colour never marks a level, and a phrase the shop's own
+    attribute lists enumerate says what the product IS.
+    """
+    rows = _rows(
+        ("Dawlance Bottom Load Glass Door Dispenser (DBD-1035)", "Dawlance", "Water Dispensers", "Water Dispenser"),
+        ("Dawlance Bottom Load Glass Door Dispenser (DBD-1035F)", "Dawlance", "Water Dispensers", "Water Dispenser"),
+        ("Dawlance Chrome Pro Inverter Freezer Refrigerator (9169-WB)", "Dawlance", "Refrigerators", "Refrigerator"),
+        ("Dawlance Chrome Pro Inverter Freezer Refrigerator (9173-WB)", "Dawlance", "Refrigerators", "Refrigerator"),
+        ("Dawlance Acce Pro Inverter Freezer Refrigerator (9149-WB)", "Dawlance", "Refrigerators", "Refrigerator"),
+        ("Dawlance Acce Pro Inverter Freezer Refrigerator (9151-WB)", "Dawlance", "Refrigerators", "Refrigerator"),
+    )
+    corpus = build_corpus(rows)
+    assert corpus.is_proven("Dawlance", "chrome pro")
+    assert corpus.is_proven("Dawlance", "acce pro")
+    assert not corpus.is_proven("Dawlance", "bottom load")
+    assert not any(row.words and "bottom load" in row.words for row in rows[:2])
+
+
+def test_the_plus_never_comes_from_inside_a_part_number() -> None:
+    """`9160LFAAVANTE+` is a code with a sign on it; it does not make the row's `Avante` a `Plus`.
+
+    Review finding: searching the title for the word found the `+` seven characters inside a
+    longer token, so the row offered `avante plus` with a spelling the sheet never wrote.  The
+    sign counts only when it is attached to this word's own written run.
+    """
+    stock = analyze_row(
+        "9160LFAAVANTE+ - DAWLANCE 9160 AVANTE RUBY RED",
+        product_type="Refrigerator",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Refrigerators",
+    )
+    assert "avante plus" not in stock.words
+    assert all(offer.source in stock.title for offer in stock.offers), [
+        (offer.key, offer.source) for offer in stock.offers
+    ]
+
+
+def test_the_plus_stays_with_the_initial_that_belongs_to_the_name() -> None:
+    """`E-STAR+` is the E-Star line at its plus level: both stay, and `star` is never offered.
+
+    Review finding: the sign was swallowed by the word group, so the initial stopped matching and
+    the row offered `star` and `star plus` -- the exact split ruling 3 closed.
+    """
+    haier = analyze_row(
+        "HAIER E-STAR+ INVERTER SPLIT AC 15",
+        product_type="Air Conditioner",
+        brand="Haier",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "e-star" in haier.words
+    assert "e-star plus" in haier.words
+    assert "star" not in haier.words
+    assert "star plus" not in haier.words
+    assert source_of(haier, "e-star plus") == "E-STAR+"
+
+
+def test_the_initial_rule_never_eats_a_match_it_should_not_take() -> None:
+    """The word after an initial keeps its three-letter floor, or the match is stolen.
+
+    Regression found while fixing the review: widening the initial rule's word group to a single
+    letter let `... A5FSY25FR-M F-STAND` match `M F` first, so the row never offered `f-stand`
+    while its two sibling rows did -- the same label splitting across a run, silently.
+    """
+    acson = analyze_row(
+        "A5FSY25FR-M-ACSON A5FSY25FR-M F-STAND",
+        product_type="Air Conditioner",
+        brand="Acson",
+        breadcrumb="Electronics / Home appliances / Air Conditioners",
+    )
+    assert "f-stand" in acson.words
+    assert "m-f" not in acson.words
+
+
 def source_of(analysis: RowAnalysis, key: str) -> str:
-    """The row's own spelling of one candidate, looked up by its vote key."""
-    return {candidate.key: candidate.source for candidate in analysis.candidates}[key]
+    """The row's own spelling of one offered name, looked up by its vote key."""
+    return {offer.key: offer.source for offer in analysis.offers}[key]
 
 
 def _real_rows() -> tuple[list[RowAnalysis], list[RowAnalysis]]:
