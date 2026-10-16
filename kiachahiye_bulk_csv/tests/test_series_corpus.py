@@ -500,10 +500,11 @@ def test_row_analysis_is_an_immutable_value() -> None:
 # [3]-[4]: the corpus vote -- what the whole run says about a residue word
 # --------------------------------------------------------------------------- #
 def _rows(*rows: tuple[str, ...]) -> list[RowAnalysis]:
-    """Read (title, brand, breadcrumb, product_type) rows the way the pipeline will.
+    """Read (title, brand, breadcrumb, product_type[, description]) rows as the pipeline will.
 
     The product type is not decoration: `No Frost` is a type only for a Refrigerator row, and a
-    test that forgets it is testing a different contract than main.py will run.
+    test that forgets it is testing a different contract than main.py will run.  The description is
+    optional because most rows in this file are about what the Title states.
     """
     return [
         analyze_row(
@@ -511,6 +512,7 @@ def _rows(*rows: tuple[str, ...]) -> list[RowAnalysis]:
             brand=row[1],
             breadcrumb=row[2],
             product_type=row[3] if len(row) > 3 else "",
+            description=row[4] if len(row) > 4 else "",
         )
         for row in rows
     ]
@@ -1581,6 +1583,7 @@ def _real_rows() -> tuple[list[RowAnalysis], list[RowAnalysis]]:
                     f"{(row.get('Title') or '').strip()} {(row.get('Description') or '').strip()}",
                 ),
                 breadcrumb=(row.get("Categories") or "").strip(),
+                description=(row.get("Description") or "").strip(),
             )
             for row in csv.DictReader(handle)
         ]
@@ -1609,3 +1612,353 @@ def _real_rows() -> tuple[list[RowAnalysis], list[RowAnalysis]]:
 def _product_type(brand: str, breadcrumb: str, text: str) -> str:
     category = categories.resolve_category(breadcrumb, text, text)
     return categories.resolve_product_type(category, brand)[0]
+
+
+# --------------------------------------------------------------------------- #
+# T3 slice 5 -- the Description column as a second source of evidence
+# --------------------------------------------------------------------------- #
+def test_a_series_the_description_names_and_the_title_omits_is_still_stated_by_the_row() -> None:
+    """`Dawlance Single Door Chest Freezer White (DF-200P)` states "Series: Stucco" and stops there.
+
+    The shop row is both columns: the Title is what the shelf prints, the Description is what the
+    vendor wrote about the same product.  So a line the Description names joins the row's evidence
+    while the Title keeps the sole right to be the spelling that prints.
+    """
+    dawlance = analyze_row(
+        "Dawlance Single Door Chest Freezer White (DF-200P)",
+        product_type="Deep Freezer",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Freezers / Chest",
+        description="Key Specifications:\nModel: DF-200P\nSeries: Stucco\nCapacity: 7.2 Cu Ft",
+    )
+    assert "stucco" not in dawlance.words
+    assert "stucco" in dawlance.evidence
+    assert {candidate.key: candidate.source for candidate in dawlance.described}["stucco"] == "Stucco"
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "This Inverter Series Split AC cools a 150 sq ft room fast.",
+        "Crystal 3 Taps Purple Glass Door Water Dispenser (Glass Door Series).",
+        "New Arrival, Cooling Series unit with a 1 Year Warranty.",
+        "Key Specifications:\nType: Series Top Loading\nSpin Speed: 1400 RPM",
+    ],
+)
+def test_a_description_word_a_slot_already_owns_is_never_evidence(description: str) -> None:
+    """Marketing prose is not a line name: `Inverter Series` states the inverter, not a series.
+
+    The Description is the loudest text in the row and it repeats the brand, the category, the
+    capacity and the warranty.  Every one of those already has a slot, so the same claims that read
+    a Title are run over the label phrase before any word of it can join the vote -- and a `series`
+    that a colon stands in front of is somebody else's answer, not a marker of a name.
+    """
+    homage = analyze_row(
+        "Homage Classic Split Inverter Air Conditioner 1.5 Ton (HCS-1811S)",
+        product_type="Split AC",
+        brand="Homage",
+        breadcrumb="Electronics / Home appliances / Air Conditioners / Split",
+        description=description,
+    )
+    assert homage.described == ()
+
+
+def test_two_rows_that_name_one_line_only_in_their_descriptions_prove_it() -> None:
+    """The vote reads both columns, so a line stated twice in prose is a line -- and it prints.
+
+    Measured on Shape A this is how 42 rows come to carry Description evidence and how 2 of them
+    print a name their Title never stated.  The rendered word still comes from the column that
+    carries it, and one row still counts once whichever column wrote the word.
+    """
+    rows = _rows(
+        (
+            "Dawlance Single Door Chest Freezer White (DF-200P)",
+            "Dawlance",
+            "Electronics / Home appliances / Freezers / Chest",
+            "Deep Freezer",
+            "Key Specifications:\nModel: DF-200P\nSeries: Stucco\nCapacity: 7.2 Cu Ft",
+        ),
+        (
+            "Dawlance Single Door Chest Freezer White (DF-300P)",
+            "Dawlance",
+            "Electronics / Home appliances / Freezers / Chest",
+            "Deep Freezer",
+            "Key Specifications:\nModel: DF-300P\nSeries: Stucco\nCapacity: 11 Cu Ft",
+        ),
+    )
+    corpus = build_corpus(rows)
+    assert corpus.is_proven("Dawlance", "stucco")
+    assert pick_series("Dawlance", rows[0], corpus) == "Stucco"
+
+
+def test_one_description_mention_alone_stays_undecided_and_prints_nothing() -> None:
+    """Scenario D: a line named once is not a line.
+
+    Widening the evidence is not widening the verdict -- the sibling rule is the same one the Title
+    is held to, so a vendor's one-off prose stays silent instead of reaching a shop title.
+    """
+    rows = _rows(
+        (
+            "Dawlance Single Door Chest Freezer White (DF-200P)",
+            "Dawlance",
+            "Electronics / Home appliances / Freezers / Chest",
+            "Deep Freezer",
+            "Key Specifications:\nModel: DF-200P\nSeries: Stucco\nCapacity: 7.2 Cu Ft",
+        ),
+    )
+    corpus = build_corpus(rows)
+    assert not corpus.is_proven("Dawlance", "stucco")
+    assert pick_series("Dawlance", rows[0], corpus) == ""
+
+
+def test_the_two_columns_that_spell_one_line_differently_vote_it_once_and_print_the_title() -> None:
+    """`E Luxury Pro` in the Title and `E-Luxury Pro Series` in the Description are one label.
+
+    The key is built the same way for both columns, so they corroborate each other instead of
+    splitting the evidence -- and when the Title states the name, the Title's own letters are what
+    prints, never the prose spelling next to it.
+    """
+    rows = _rows(
+        (
+            "Kenwood E Luxury Pro Inverter Air Conditioner 2.0 Ton (KEL-2470S)",
+            "Kenwood",
+            "Electronics / Home appliances / Air Conditioners / Split",
+            "Split AC",
+            "The Kenwood 2 Ton E-Luxury Pro Series Split Air Conditioner is an inverter unit.",
+        ),
+        (
+            "Kenwood E Luxury Pro Inverter Air Conditioner 1.0 Ton (KEL-1270S)",
+            "Kenwood",
+            "Electronics / Home appliances / Air Conditioners / Split",
+            "Split AC",
+            "The Kenwood 1 Ton E-Luxury Pro Series Split Air Conditioner is an inverter unit.",
+        ),
+    )
+    assert rows[0].evidence.count("e-luxury pro") == 1
+    corpus = build_corpus(rows)
+    assert corpus.is_proven("Kenwood", "e-luxury pro")
+    assert pick_series("Kenwood", rows[0], corpus) == "E Luxury Pro"
+
+
+def test_a_row_that_states_nothing_in_its_title_never_borrows_a_description_spelling_into_the_offers() -> None:
+    """`offers` stay the Title's, because the fidelity test that guards every real row reads them.
+
+    A Description name is a separate channel and it is checked as one: its letters must come off the
+    Description, and it may only print when the Title has nothing proven to print.
+    """
+    dawlance = analyze_row(
+        "Dawlance Single Door Chest Freezer White (DF-200P)",
+        product_type="Deep Freezer",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Freezers / Chest",
+        description="Key Specifications:\nModel: DF-200P\nSeries: Stucco\nCapacity: 7.2 Cu Ft",
+    )
+    assert dawlance.described and all(c.source in dawlance.description for c in dawlance.described)
+    kenwood = analyze_row(
+        "Kenwood E Luxury Pro Inverter Air Conditioner 2.0 Ton (KEL-2470S)",
+        product_type="Split AC",
+        brand="Kenwood",
+        breadcrumb="Electronics / Home appliances / Air Conditioners / Split",
+        description="The Kenwood 2 Ton E-Luxury Pro Series Split Air Conditioner is an inverter unit.",
+    )
+    assert kenwood.offers and all(offer.source in kenwood.title for offer in kenwood.offers)
+    assert all(c.source in kenwood.description for c in kenwood.described)
+
+
+def test_an_acronym_the_sheet_also_writes_inside_a_part_number_stays_a_code() -> None:
+    """`VCM` is the guard the Title already applies, kept, and recorded as a measured leftover.
+
+    14 Shape-A rows across PEL, Kenwood and Orient write VCM, and the same 3 letters sit inside
+    `KRF-23357-VCM` and `PRINVOVCM-2000` -- so the vowel-less run is read as a code fragment here
+    exactly as it is in the Title, and a word shared by three brands would be disqualified by the
+    vote anyway.  The safe output for those rows is silence, not a guess.
+    """
+    orient = analyze_row(
+        "Orient Icon 3 Taps Water Dispenser Black",
+        product_type="Water Dispenser",
+        brand="Orient",
+        breadcrumb="Electronics / Home appliances / Water Dispensers",
+        description="Icon 2 Taps Black Water Dispenser (VCM Series) Featuring Easy Water Dispensing.",
+    )
+    assert orient.described == ()
+
+
+def test_a_description_name_inside_a_part_number_is_refused_like_a_title_one() -> None:
+    """`Model: DW-9132USDC` plus `Series: USDC` is one part number read aloud, not a line.
+
+    The Title refuses this every day: a chunk of a token that carries a digit is code, and the
+    vote disqualifies a word that only ever stands beside one.  The Description's evidence must
+    carry the same position facts, or prose would let a code suffix earn a shop title.
+    """
+    rows = _rows(
+        (
+            "Dawlance Chest Freezer White (DW-9132)",
+            "Dawlance",
+            "Electronics / Home appliances / Freezers / Chest",
+            "Deep Freezer",
+            "Brand: Dawlance\nModel: DW-9132USDC\nSeries: USDC",
+        ),
+        (
+            "Dawlance Chest Freezer Black (DW-9142)",
+            "Dawlance",
+            "Electronics / Home appliances / Freezers / Chest",
+            "Deep Freezer",
+            "Brand: Dawlance\nModel: DW-9142USDC\nSeries: USDC",
+        ),
+    )
+    corpus = build_corpus(rows)
+    assert not corpus.is_proven("Dawlance", "usdc")
+    assert pick_series("Dawlance", rows[0], corpus) == ""
+
+
+def test_the_series_label_reads_only_its_own_value() -> None:
+    """`Capacity: 200 liters/ 7 Cubic Feet` then `Series: Stucco` names Stucco, not `cubic feet`.
+
+    A label already carries its own answer: when the sheet writes `Series:`, the name is what
+    follows it.  Reading backwards as well reached over the line break and took the capacity.
+    """
+    dawlance = analyze_row(
+        "Dawlance Single Door Chest Freezer White (DF-200P)",
+        product_type="Deep Freezer",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Freezers / Chest",
+        description="Brand: Dawlance\nEnergy Saving: Up to 45%\nCapacity: 200 liters/ 7 Cubic Feet\nSeries: Stucco",
+    )
+    assert tuple(candidate.key for candidate in dawlance.described) == ("stucco",)
+
+
+def test_a_prose_word_in_front_of_the_word_series_is_not_a_name() -> None:
+    """`…during voltage fluctuations. The Kenwood Glory Pro…` names nothing before its marker.
+
+    The window is a NAME label, so it stops at any punctuation between its first word and the
+    word `series` -- checking only the gaps BETWEEN window words let a whole sentence walk in.
+    """
+    kenwood = analyze_row(
+        "Kenwood Glory Pro Split Inverter Air Conditioner 1.0 Ton (KGP-12C01S)",
+        product_type="Split AC",
+        brand="Kenwood",
+        breadcrumb="Electronics / Home appliances / Air Conditioners / Split",
+        description="The Kenwood 1 Ton GLORY PRO Series handles surges during voltage fluctuations. "
+        "Copper winding. 1.0 Ton capacity.",
+    )
+    assert {candidate.key for candidate in kenwood.described} == {"glory", "glory pro"}
+
+
+def test_a_label_keeps_the_dash_the_sheet_wrote() -> None:
+    """A name read off the Description keeps the Description's own letters, dash and all.
+
+    Re-joining the window with a space invented `E Luxury Pro` for a sheet that wrote
+    `E-Luxury Pro` -- the same rule `_written_span` holds for the Title, measured here because
+    the Description carries 94 en dashes and 58 em dashes of its own.
+    """
+    kenwood = analyze_row(
+        "Kenwood Air Conditioner 1.5 Ton White (KEL-1870S)",
+        product_type="Split AC",
+        brand="Kenwood",
+        breadcrumb="Electronics / Home appliances / Air Conditioners / Split",
+        description="The Kenwood 1.5 Ton E–Luxury Pro Series Split Air Conditioner cools fast.",
+    )
+    candidate = next(c for c in kenwood.described if c.key == "e-luxury pro")
+    assert candidate.source == "E–Luxury Pro"
+    assert candidate.source in kenwood.description
+
+
+def test_a_one_line_spec_sheet_still_names_its_series() -> None:
+    """`Model: DF-200P, Series: Stucco` on ONE line still states its series.
+
+    Skipping any `series` whose line holds a colon threw the label away with the other column's
+    label on the same line; only a colon in front of the word itself makes `series` an answer.
+    """
+    dawlance = analyze_row(
+        "Dawlance Single Door Chest Freezer White (DF-200P)",
+        product_type="Deep Freezer",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Freezers / Chest",
+        description="Key Specifications: Model: DF-200P, Series: Stucco, Capacity: 7 Cu Ft",
+    )
+    assert "stucco" in {candidate.key for candidate in dawlance.described}
+
+
+def test_a_name_only_the_prose_makes_brand_adjacent_is_not_rescued() -> None:
+    """`Series: Pular. Dawlance Pular offers fast cooling.` proves nothing about `Pular`.
+
+    The label is what earns the evidence, so the position facts the vote guards on are read OFF
+    THE LABEL, not off the paragraph: the brand standing in front of a second, ordinary mention of
+    the word would otherwise hand a one-row sheet the single-word rescue and print a name the run
+    never proved.
+    """
+    rows = _rows(
+        (
+            "Dawlance Split Inverter Air Conditioner 1.0 Ton (DA-12AP)",
+            "Dawlance",
+            "Electronics / Home appliances / Air Conditioners / Split",
+            "Split AC",
+            "Series: Pular. Dawlance Pular offers fast cooling.",
+        ),
+    )
+    corpus = build_corpus(rows)
+    assert not corpus.is_proven("Dawlance", "pular")
+    assert pick_series("Dawlance", rows[0], corpus) == ""
+
+
+def test_a_clean_label_is_not_damaged_by_a_code_in_the_rest_of_the_prose() -> None:
+    """The same rule the other way: a name the label writes freely stays provable when the
+    paragraph also uses it beside a part number.
+
+    Reading positions over the whole Description made every row code-adjacent on a prose mention
+    and refused a clean two-product label -- `rows > code_adjacent` never held.
+    """
+    rows = _rows(
+        (
+            "Dawlance Split Inverter Air Conditioner 1.0 Ton (DA-12AP)",
+            "Dawlance",
+            "Electronics / Home appliances / Air Conditioners / Split",
+            "Split AC",
+            "Series: Pular. Ask the Pular X9 dealer first.",
+        ),
+        (
+            "Dawlance Split Inverter Air Conditioner 1.5 Ton (DA-18AP)",
+            "Dawlance",
+            "Electronics / Home appliances / Air Conditioners / Split",
+            "Split AC",
+            "Series: Pular. Ask the Pular X9 dealer first.",
+        ),
+    )
+    corpus = build_corpus(rows)
+    assert corpus.is_proven("Dawlance", "pular")
+    assert pick_series("Dawlance", rows[0], corpus) == "Pular"
+
+
+def test_a_name_the_prose_writes_first_is_still_taken_from_the_label() -> None:
+    """Prose mentioning the word BEFORE the label must not steal the label's evidence.
+
+    The letters are looked for from the start of the text, so the earlier ordinary mention won and
+    the candidate was dropped for sitting outside every window -- the row lost the one fact the
+    vendor wrote as a name.
+    """
+    dawlance = analyze_row(
+        "Dawlance Single Door Chest Freezer White (DF-200P)",
+        product_type="Deep Freezer",
+        brand="Dawlance",
+        breadcrumb="Electronics / Home appliances / Freezers / Chest",
+        description="Stucco finish is durable.\nModel: DF-200P\nSeries: Stucco",
+    )
+    assert {candidate.key for candidate in dawlance.described} == {"stucco"}
+
+
+def test_the_description_is_read_as_the_sheet_wrote_it() -> None:
+    """The Title's shape normaliser is a Title rule, so it is not run over the Description.
+
+    `normalize_shape` collapses a `LABEL-CODE LABEL-CODE` head to one half -- correct for a stock
+    Title, and a silent rewrite of a paragraph the evidence layer then swears is the row's own
+    letters.
+    """
+    written = "PEL Premier 316 - PEL Premier 316 Water Dispenser. Series: Premier"
+    pel = analyze_row(
+        "PEL Water Dispenser Black (PWD-316)",
+        product_type="Water Dispenser",
+        brand="PEL",
+        breadcrumb="Electronics / Home appliances / Water Dispensers",
+        description=written,
+    )
+    assert pel.description == written.strip()

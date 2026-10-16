@@ -97,6 +97,13 @@ _RUN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+]*")
 #: The lookbehind rejects a letter that itself follows a slash or a dot, because that letter is
 #: the tail of a written abbreviation (`W/O REF`, `R/C Remote`), not the start of a name.
 _SP = r"[ \t\u00a0]"
+#: How many words of a Description are allowed to sit in the place a series name goes.  Three
+#: covers every label these sheets write (`E-Luxury Pro Series`, `Turbo Cool Series`) and a longer
+#: window would read the sentence into the vote.
+_SERIES_WINDOW = 3
+_DESC_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:[ \t\u00a0]*[-/][A-Za-z0-9]+)*")
+#: The only reason to claim a Description at all: the sheet wrote the word `series` in it.
+_SERIES_MARKER_RE = re.compile(r"\bseries\b", re.IGNORECASE)
 _INITIAL_RE = re.compile(
     rf"(?<![A-Za-z0-9/.])([A-Za-z])(?:{_SP}*[-‒–—/.]{_SP}*|{_SP}+)"
     r"([A-Za-z][A-Za-z0-9]{2,})\+?(?![A-Za-z0-9])"
@@ -339,6 +346,8 @@ class RowAnalysis:
     positions: Mapping[str, WordPosition] = field(default_factory=dict)
     candidates: tuple[ResidueCandidate, ...] = ()
     offers: tuple[ResidueCandidate, ...] = ()
+    description: str = ""
+    described: tuple[ResidueCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         # The dicts handed in are the builder's working copies; freezing them here is what
@@ -348,8 +357,18 @@ class RowAnalysis:
 
     @property
     def words(self) -> tuple[str, ...]:
-        """What the vote is asked about: every name this row offers, one or two words."""
+        """What the Title alone puts forward: every name it offers, one or two words."""
         return tuple(offer.key for offer in self.offers)
+
+    @property
+    def evidence(self) -> tuple[str, ...]:
+        """Every name this row states, in either column -- what the vote is actually asked about.
+
+        One row counts ONCE per name, whichever column wrote it: the Title and the Description of
+        the same product are not two sellers, and the sibling rule that proves a line depends on
+        distinct products, not on how many times one row restated a word.
+        """
+        return tuple(dict.fromkeys([*self.words, *(candidate.key for candidate in self.described)]))
 
 
 @dataclass(frozen=True)
@@ -507,21 +526,34 @@ def _claim_brand_phrases(present: dict[str, None], vocabulary: _Vocabulary) -> d
     return claimed
 
 
-def analyze_row(
-    title: str,
+@dataclass(frozen=True)
+class _Read:
+    """One text claimed by this row's slots: its pieces, what owns each, and the names left over."""
+
+    pieces: list[str]
+    code_parts: frozenset[str]
+    claimed: dict[str, str]
+    candidates: tuple[ResidueCandidate, ...]
+
+
+def _vocabulary(
     *,
-    brand: str = "",
-    product_type: str = "",
-    breadcrumb: str = "",
-    model: str = "",
-    capacity: str = "",
-    color: str = "",
-    inverter: str = "",
-) -> RowAnalysis:
-    """Read one row once: normalise its shape, let the slots claim it, return the residue."""
-    normalized = normalize_shape(title)
-    pieces, code_parts, glued_tails = _pieces(normalized)
-    present = dict.fromkeys(pieces)
+    pieces: tuple[str, ...],
+    brand: str,
+    product_type: str,
+    breadcrumb: str,
+    model: str,
+    capacity: str,
+    color: str,
+    inverter: str,
+) -> tuple[_Vocabulary, str]:
+    """The word sets one text brings to the claim test, built from the row's own columns.
+
+    Returned with the row's brand so :func:`_read` can claim it without re-resolving it.  Each
+    column of the row gets its own copy, built from that column's own words: the slots that decide
+    a Title are the same slots, but a Description states category words the Title never writes, and
+    a row may not lend a claim from one column to the other.
+    """
     row_brand_raw = resolve_brand(brand, "").raw or brand
     row_words = _words(row_brand_raw)
     row_context = _words(product_type) | _words(breadcrumb)
@@ -532,7 +564,7 @@ def analyze_row(
             "color": _value_words(color),
             "inverter": _value_words(inverter),
         },
-        subtype=_subtype_words(product_type, tuple(pieces)),
+        subtype=_subtype_words(product_type, pieces),
         category=frozenset(category_vocabulary() | row_context),
         brands=brand_words() | frozenset(row_words),
         row_brand=_alnum(row_brand_raw).lower(),
@@ -542,7 +574,17 @@ def analyze_row(
         colors=color_vocabulary(),
         row_class_words=frozenset(row_context),
     )
+    return vocabulary, row_brand_raw
 
+
+def _read(normalized: str, vocabulary: _Vocabulary) -> _Read:
+    """Let this row's slots claim one text, and return what is left that could be a name.
+
+    This is the whole reading rule, run over the Title and over any label phrase the Description
+    states, so the same claims decide both.  Nothing in here knows which column it read.
+    """
+    pieces, code_parts, glued_tails = _pieces(normalized)
+    present = dict.fromkeys(pieces)
     # A chunk of a token that carries a digit is part of that label, whatever it looks like
     # on its own, so it is claimed before any slot gets a chance to read it as a name.  A
     # bare number is the exception: it stays for the slots, so the Capacity column owns the
@@ -582,7 +624,175 @@ def analyze_row(
     candidates, absorbed = _candidates(normalized, pieces, residue, unnamed)
     for letter in absorbed:
         claimed.pop(letter, None)
-    offers = _offers(normalized, pieces, candidates, claimed)
+    return _Read(pieces, code_parts, claimed, candidates)
+
+
+def _described(
+    description: str, vocabulary: _Vocabulary, class_words: frozenset[str]
+) -> tuple[tuple[ResidueCandidate, ...], dict[str, WordPosition]]:
+    """The names this row's Description states AS names, and where each of them stood.
+
+    The whole Description is read once by :func:`_read` and offered by :func:`_offers` -- the same
+    two functions that read the Title, so a chunk of a part number, a colour, a category word and
+    a misspelt class word are refused here for exactly the reason they are refused there -- and
+    only the offers whose own letters fall inside a window of :func:`_series_windows` survive.
+    The candidates are gated by the WHOLE Description -- a `USDC` that also lives inside
+    `Model: DW-9132USDC` is a chunk of a part number wherever it is written, and only the full text
+    shows that -- but each survivor's letters and its position facts are read from the window that
+    justified it.  That split is the whole point: a brand standing in front of some later, ordinary
+    mention of the same word must not hand the label the vote's single-word rescue, and a code
+    touching a prose mention must not disqualify a label that wrote the name clean.
+
+    These candidates never enter ``offers``, because the Title is the only column a shop prints;
+    they join the vote as evidence, and :func:`pick_series` reaches for one only when the Title has
+    nothing proven to print.
+    """
+    read = _read(description, vocabulary)
+    # A word the SAME text also writes glued behind digits -- `Series: USDC` next to
+    # `Model: DW-9132USDC` -- is that part number's tail read aloud, not a name the label grants.
+    # Scoped to one text on purpose: a Title word must never be disowned by a code in the other
+    # column, which is why this rule does not exist for the Title path.
+    code_tails = {
+        tail
+        for piece in read.code_parts
+        if _DIGIT_RE.search(piece) and not piece.isdigit()
+        for tail in [re.sub(r"^[0-9]+", "", piece)]
+        if len(tail) >= _MIN_NAME_LENGTH
+    }
+    candidates = {
+        offer.key: offer
+        for offer in _offers(description, read.pieces, read.candidates, read.claimed)
+        if not all(piece in code_tails for piece in offer.pieces)
+    }
+    survivors: dict[str, ResidueCandidate] = {}
+    positions: dict[str, WordPosition] = {}
+    for start, stop in _series_windows(description):
+        window = description[start:stop]
+        window_read = _read(window, vocabulary)
+        for key, offer in candidates.items():
+            if key in survivors:
+                continue
+            span = _written_span(window, offer.pieces)
+            if span is None:
+                continue
+            placed = ResidueCandidate(key=key, source=window[span[0] : span[1]], pieces=offer.pieces)
+            survivors[key] = placed
+            here = _positions(
+                window_read.pieces,
+                dict.fromkeys(window_read.pieces),
+                (placed,),
+                window_read.code_parts,
+                class_words,
+                vocabulary,
+            ).get(key, WordPosition())
+            earlier = positions.get(key)
+            positions[key] = WordPosition(
+                brand_adjacent=here.brand_adjacent or bool(earlier and earlier.brand_adjacent),
+                class_prefixed=here.class_prefixed or bool(earlier and earlier.class_prefixed),
+                beside=here.beside | (earlier.beside if earlier else frozenset()),
+            )
+    return tuple(survivors.values()), positions
+
+
+def _series_windows(description: str) -> tuple[tuple[int, int], ...]:
+    """The spans of the Description where it writes a series NAME, not a sentence.
+
+    Three facts about a specification sheet decide the shape, both of them read off the text:
+
+    - `Series:` or `Series=` is a label, so the name is what FOLLOWS it and never what precedes
+      it.  Reading backwards as well reached over the line break and took the previous
+      specification's own value -- `Capacity: 200 liters/ 7 Cubic Feet` became a name.
+    - a `series` that a colon stands in front of is somebody else's answer: `Type: Series Top
+      Loading` says the machine top-loads, it names no line.
+    - the window in front of a bare `series` is at most :data:`_SERIES_WINDOW` words, and it
+      breaks on any punctuation, on the line's own bullet, and on a word that heads a label --
+      a name label is not a sentence, so `…during voltage fluctuations. Copper Series…` names
+      nothing.
+
+    Spans, not strings: the name keeps the sheet's own letters, dash included, exactly as
+    :func:`_written_span` holds the Title to.
+    """
+    words = [(m.group(), m.start(), m.end()) for m in _DESC_WORD_RE.finditer(description)]
+    spans: list[tuple[int, int]] = []
+
+    def heads_a_label(index: int) -> bool:
+        """Whether this word is written as `Word:` -- a column label, so it names nothing."""
+        return description[words[index][2] : words[index][2] + 1] == ":"
+
+    def gap_after(index: int) -> str:
+        """What sits between this word and the one written before it."""
+        return description[words[index - 1][2] : words[index][1]]
+
+    for index, (text, start, end) in enumerate(words):
+        if text.lower() != "series":
+            continue
+        if re.match(r"[ \t\u00a0]*[:=]", description[end : end + 4]):
+            first, cursor = index + 1, index + 1
+            while cursor < len(words) and cursor - first < _SERIES_WINDOW:
+                if heads_a_label(cursor) or (cursor > first and not _is_label_gap(gap_after(cursor))):
+                    break
+                cursor += 1
+            last = cursor - 1
+            if first <= last < len(words):
+                spans.append((words[first][1], words[last][2]))
+            continue
+        if start > 0 and description[:start].rstrip(" \t\u00a0").endswith(":"):
+            continue
+        last, cursor = index - 1, index - 1
+        while (
+            cursor >= 0
+            and index - cursor <= _SERIES_WINDOW
+            and not heads_a_label(cursor)
+            and _is_label_gap(gap_after(cursor))
+        ):
+            cursor -= 1
+        first = cursor + 1
+        if first <= last:
+            spans.append((words[first][1], words[last][2]))
+    return tuple(spans)
+
+
+def _is_label_gap(gap: str) -> bool:
+    """Whether what sits between two words of a label is nothing but a space or a dash."""
+    return bool(re.fullmatch(r"[ \t\u00a0\-–—/]*", gap))
+
+
+def analyze_row(
+    title: str,
+    *,
+    brand: str = "",
+    product_type: str = "",
+    breadcrumb: str = "",
+    model: str = "",
+    capacity: str = "",
+    color: str = "",
+    inverter: str = "",
+    description: str = "",
+) -> RowAnalysis:
+    """Read one row once: normalise its shape, let the slots claim it, return the residue.
+
+    The Title is the only column that can be *printed* as this row's name, so it is the only
+    column `offers` come from.  The Description is read by the same two functions over its own
+    text and joins the vote as evidence -- see :func:`_described`.
+    """
+    normalized = normalize_shape(title)
+    # `normalize_shape` is a Title rule -- it collapses the `LABEL-CODE LABEL-CODE` head a stock
+    # Title repeats -- and running it over a paragraph would silently rewrite the very letters this
+    # channel swears to render faithfully.
+    described_text = description.strip()
+    row_inputs = {
+        "brand": brand,
+        "product_type": product_type,
+        "breadcrumb": breadcrumb,
+        "model": model,
+        "capacity": capacity,
+        "color": color,
+        "inverter": inverter,
+    }
+    vocabulary, row_brand_raw = _vocabulary(pieces=tuple(_pieces(normalized)[0]), **row_inputs)
+    read = _read(normalized, vocabulary)
+    pieces, claimed = read.pieces, read.claimed
+    offers = _offers(normalized, pieces, read.candidates, claimed)
     # The class words this row states -- in its columns, and in its own title wherever a slot
     # recognised one. A sheet that writes "Split AC" instead of a breadcrumb still states Air
     # Conditioner, and the abbreviation guard has to read what the row itself says.
@@ -590,18 +800,33 @@ def analyze_row(
         set(vocabulary.row_class_words)
         | {piece for piece, slot in claimed.items() if slot in ("category", "subtype", REVIVABLE_SLOT)}
     )
+    described: tuple[ResidueCandidate, ...] = ()
+    described_positions: dict[str, WordPosition] = {}
+    if _SERIES_MARKER_RE.search(described_text):
+        # The marker is what makes a Description worth claiming at all: 86 of the 752 Shape-A rows
+        # write the word `series`, and reading the other 666 would cost the pipeline three times
+        # the time for the evidence in 42 of them.
+        described_vocabulary, _ = _vocabulary(pieces=tuple(_pieces(described_text)[0]), **row_inputs)
+        described, described_positions = _described(described_text, described_vocabulary, class_words)
     # The product this row offers: its part numbers if it states any, else its whole word set.
     # Colour and tonnage variants share it, which is the point.
-    code_parts_key = "|".join(sorted(piece for piece in present if _has_digit_and_letter(piece)))
+    code_parts_key = "|".join(
+        sorted({piece for piece in read.pieces if _has_digit_and_letter(piece)})
+    )
+    positions = _positions(pieces, dict.fromkeys(pieces), offers, read.code_parts, class_words, vocabulary)
+    for key, position in described_positions.items():
+        positions.setdefault(key, position)
     return RowAnalysis(
         title=normalized,
+        description=described_text,
         brand=_alnum(row_brand_raw).lower(),
-        product_key=code_parts_key or "|".join(sorted(present)),
-        title_words=tuple(present),
+        product_key=code_parts_key or "|".join(sorted(set(pieces))),
+        title_words=tuple(dict.fromkeys(pieces)),
         claimed=claimed,
-        positions=_positions(pieces, present, offers, code_parts, class_words, vocabulary),
-        candidates=candidates,
+        positions=positions,
+        candidates=read.candidates,
         offers=offers,
+        described=described,
     )
 
 
@@ -616,6 +841,11 @@ def pick_series(brand: str, analysis: RowAnalysis, corpus: Corpus) -> str:
     proved prints nothing: silence is the safe output, not a gap to fill with a guess.
     """
     proven = [offer for offer in analysis.offers if corpus.is_proven(brand, offer.key)]
+    if not proven:
+        # The Title states nothing this run proved, so a name the row wrote only in its
+        # Description may be printed -- in the Description's own letters.  It stays distinguishable
+        # from a Title name because it is not in `offers`, which is what a caller records it under.
+        proven = [candidate for candidate in analysis.described if corpus.is_proven(brand, candidate.key)]
     if not proven:
         return ""
     return max(proven, key=lambda offer: len(offer.key.split())).source
@@ -1084,7 +1314,7 @@ def build_corpus(analyses: Iterable[RowAnalysis]) -> Corpus:
     whole_run: dict[str, _Tally] = {}
     per_brand: dict[tuple[str, str], _Tally] = {}
     for analysis in analyses:
-        for word in analysis.words:
+        for word in analysis.evidence:
             whole_run.setdefault(word, _Tally()).record(word, analysis)
             per_brand.setdefault((analysis.brand, word), _Tally()).record(word, analysis)
 
