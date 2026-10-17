@@ -38,6 +38,7 @@ from qc_report import (
     CAT_PRODUCT_TYPE_INFERRED,
     CAT_QTY_DEFAULTED,
     CAT_SEO_DESCRIPTION_LENGTH,
+    CAT_SERIES_SINGLE_ROW,
     CAT_SHORT_DESCRIPTION_THIN,
     CAT_SKU_DEDUPED,
     CAT_THIN_DESCRIPTION,
@@ -93,7 +94,7 @@ QC_REPORT = CONFIG.QC_REPORT
 TITLE_SAMPLE = CONFIG.TITLE_SAMPLE
 
 if TYPE_CHECKING:
-    from series_corpus import Corpus, RowAnalysis
+    from series_corpus import Corpus, RowAnalysis, WordEvidence
 
 # The only columns the sheet must supply.  "Vendor" is deliberately NOT here:
 # neither file's Vendor is ever taken from the sheet (the two literals live in
@@ -350,7 +351,14 @@ def resolve_row(
             "Rebuilt Title dropped source word(s): "
             + ", ".join(title_result.dropped_words[:8])
             + " -- if one of them names this brand's line, the corpus has to prove it "
-            "(series_corpus.py); SERIES_WORDS in sku_handle.py is only the thin-sheet fallback.",
+            "(series_corpus.py); SERIES_WORDS in title_builder.py is only the thin-sheet fallback.",
+        )
+    if title_result.series_earned_by == "brand-position":
+        flags.flag(
+            row.row_number, row.title, CAT_SERIES_SINGLE_ROW,
+            f"Series {title_result.series_name!r} for {effective_brand} is believed from ONE row "
+            "-- the vote's weakest proof, not two products stating it. "
+            "Confirm it is a real line before uploading.",
         )
 
     warranty_rows, warranty_headline, warranty_source = resolve_warranty(
@@ -509,7 +517,76 @@ def resolve_row(
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-def run(rows: list[InputRow], flags: QCFlagCollector) -> list[ProductRecord]:
+def corpus_report_lines(corpus: Corpus) -> list[str]:
+    """What this run proved, brand by brand -- the block a human audits instead of the output CSV.
+
+    A verdict without its evidence is only a claim: `avante` says nothing until the reader knows 32
+    rows across 30 products stated it.  A name believed from a single row is called out on its own
+    line, because that is the only kind of verdict a human has to act on, and 25 names on one wrapped
+    line is a wall nobody reads.  Words print as the vote keys them (folded); the shop's own spelling
+    is in the Titles.
+    """
+    lines: list[str] = []
+    for brand in sorted(corpus.proven):
+        names = corpus.proven[brand]
+        rescued = sorted(word for word in names if names[word].earned_by == "brand-position")
+        stated = sorted(set(names) - set(rescued))
+        lines.extend(
+            _pack_report(f"  {brand:12} ", [_report_name(w, names[w]) for w in stated])
+        )
+        if rescued:
+            lines.extend(
+                _pack_report(
+                    f"  {'':12} needs a human: ",
+                    [_report_name(w, names[w]) for w in rescued],
+                )
+            )
+    if not corpus.proven:
+        lines.append("  nothing -- this run proved no name for any brand")
+    if corpus.blacklisted:
+        lines.extend(_pack_report("  refused as noise : ", sorted(corpus.blacklisted)))
+    lines.append(f"  undecided words  : {len(corpus.undecided)}")
+    return lines
+
+
+def _pack_report(label: str, items: list[str]) -> list[str]:
+    """Lay the names out within the report's own 78 columns, breaking only between names.
+
+    A line that wrapped mid-item would read `pular [3 rows /`, and the whole point of this block is
+    that a person can trust the number printed under each name.  The label heads the group once:
+    repeating `needs a human:` on every wrapped line would shout the same thing four times.  One
+    name longer than the budget overflows it rather than being split -- names are never broken.
+    """
+    lines: list[str] = []
+    current = ""
+    for index, item in enumerate(items):
+        piece = item + ("" if index == len(items) - 1 else ",")
+        candidate = f"{current} {piece}" if current else piece
+        if current and len(label) + len(candidate) > 78:
+            lines.append(current)
+            current = piece
+            continue
+        current = candidate
+    if current:
+        lines.append(current)
+    if not lines:
+        return [label.rstrip()]
+    pad = " " * len(label)
+    return [f"{label}{lines[0]}"] + [f"{pad}{line}" for line in lines[1:]]
+
+
+def _report_name(word: str, evidence: WordEvidence) -> str:
+    """`avante [32 rows / 30 products]` -- the evidence counted out for whoever reads it."""
+    rows = f"{evidence.rows} row" + ("s" if evidence.rows != 1 else "")
+    products = f"{evidence.products} product" + ("s" if evidence.products != 1 else "")
+    return f"{word} [{rows} / {products}]"
+
+
+def run(
+    rows: list[InputRow],
+    flags: QCFlagCollector,
+    prepared: tuple[list[RowAnalysis], Corpus] | None = None,
+) -> list[ProductRecord]:
     # The SKU registry upper-cases everything it hands out; the Handle registry
     # slugs it.  Both are applied inside the registry, so a suffix can never
     # leak a raw Title spelling (" -Water Dispenser") into a live handle.
@@ -520,7 +597,18 @@ def run(rows: list[InputRow], flags: QCFlagCollector) -> list[ProductRecord]:
 
     sku_registry = UniqueRegistry(upper_sku_normaliser)
     handle_registry = UniqueRegistry(handle_normaliser)
-    analyses, corpus = read_rows(rows)
+    if prepared is None:
+        analyses, corpus = read_rows(rows)
+    else:
+        analyses, corpus = prepared
+    # The vote is a fact about THIS sheet: a corpus read from another one would print its brands'
+    # names here with no error, and the row-identity check below compares Titles only.  So the
+    # reading carries the number of rows it was voted from.
+    if len(analyses) != len(rows) or corpus.rows != len(rows):
+        raise ValueError(
+            f"run() was handed a reading for {corpus.rows} rows / {len(analyses)} analyses "
+            f"but got {len(rows)} rows -- read the sheet and vote it in one call"
+        )
     # The counting pass exists only so pass two can see which models collide.
     # It runs the same row code, so it must NOT report: a scratch collector
     # swallows those flags and the QC report keeps exactly one row per real
@@ -586,6 +674,7 @@ def print_summary(
     flags: QCFlagCollector,
     digi_path: Path,
     alfa_path: Path,
+    corpus: Corpus | None = None,
 ) -> None:
     total = len(records)
     print()
@@ -630,6 +719,7 @@ def print_summary(
         (CAT_THIN_DESCRIPTION, "Description thin (no filler rows added)"),
         (CAT_TITLE_FALLBACK, "Title kept from source"),
         (CAT_TITLE_DROPPED_WORDS, "Rebuilt Title dropped extra source words"),
+        (CAT_SERIES_SINGLE_ROW, "Series name believed from a single row"),
         (CAT_PRODUCT_TYPE_INFERRED, "Product Type inferred from breadcrumb"),
     ):
         print(f"  {label:60} {flags.count(category):5} rows")
@@ -646,6 +736,14 @@ def print_summary(
             category_misses["digi"][record.category.raw] += 1
         if record.category.alfa_id is None:
             category_misses["alfa"][record.category.raw] += 1
+
+    print()
+    print("SERIES NAMES THIS RUN PROVED")
+    if corpus is None:
+        print("  no corpus was read for this run")
+    else:
+        for line in corpus_report_lines(corpus):
+            print(line)
 
     print()
     print("BRAND NOT FOUND IN LOOKUP TABLE")
@@ -731,7 +829,8 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(ALFA_HEADER)} Alfa columns")
 
     flags = QCFlagCollector()
-    records = run(rows, flags)
+    prepared = read_rows(rows)
+    records = run(rows, flags, prepared)
 
     print("Writing output files")
     write_csv(args.digi, DIGI_HEADER, [build_digi_row(r).values for r in records])
@@ -739,7 +838,7 @@ def main(argv: list[str] | None = None) -> int:
     flags.write_csv(args.qc)
     write_title_sample(args.sample_titles, records)
 
-    print_summary(records, flags, args.digi, args.alfa)
+    print_summary(records, flags, args.digi, args.alfa, prepared[1])
     print()
     print(f"  QC report        : {args.qc}")
     print(f"  Title sample     : {args.sample_titles}")

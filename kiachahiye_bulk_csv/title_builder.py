@@ -98,6 +98,14 @@ class TitleResult:
     inverter_token: str
     dropped_words: tuple[str, ...]
     warranty_token: str = ""
+    series_name: str = ""
+    """The name this row prints in its series slot, exactly as the run's vote chose it.
+
+    Not :attr:`series_token`, which is the whole feature slot and may carry a feature word the vote
+    never believed (`Blaze Google`).  A human asked to confirm a name must be shown the name.
+    """
+
+    series_earned_by: series_corpus.SeriesProof = ""
 
 
 # ---------------------------------------------------------------------------
@@ -354,9 +362,13 @@ def build_title(
 
     corpus_series: str | None = None
     carried_subtype = ""
+    series_earned_by: series_corpus.SeriesProof = ""
     if analysis is not None and corpus is not None:
-        corpus_series = series_corpus.pick_series(brand, analysis, corpus) or None
-        if corpus_series:
+        chosen = series_corpus.pick_candidate(brand, analysis, corpus)
+        if chosen is not None:
+            corpus_series = chosen.source
+            evidence = corpus.evidence(brand, chosen.key)
+            series_earned_by = "" if evidence is None else evidence.earned_by
             curated = extract_series(text)
             if curated and curated != corpus_series and series_corpus.names_a_class(curated):
                 # The old series guesser sold this row's TYPE as its series name.  The corpus
@@ -379,6 +391,7 @@ def build_title(
     )
 
     should_rebuild = strict_rebuild or (extraction.confidence in ("high", "medium"))
+    slot_printed = False
 
     if should_rebuild:
         title_color = "" if product_type in OMIT_TITLE_COLOR_CATEGORIES else color
@@ -429,6 +442,15 @@ def build_title(
             ]
             if feat_words:
                 part2_pieces.append(" ".join(feat_words))
+            # The voted name counts as printed only when EVERY one of its words survived the dedupe
+            # above.  On the Orient `Icon` rows the name is a word of the model code, so the slot
+            # empties and a substring test on the finished Title would still hit; on the Kenwood
+            # `eLuxury Pro` rows the code swallows `Pro` and only half the name is left.  A half
+            # name is not the name, and QC would ask a human to confirm something the shelf never
+            # read.
+            slot_printed = all(
+                word in feat_words for word in clean_inline(corpus_series or "").split()
+            ) and bool(clean_inline(corpus_series or ""))
         part2 = " ".join(part2_pieces)
 
         part3 = ""
@@ -462,6 +484,12 @@ def build_title(
         title = clean_inline(_trim_to_limit(base_title, TITLE_MAX))
         strategy = "kept-with-light-cleanup"
 
+    # The name reached the series slot; this is the other half of the question -- did it survive the
+    # length limit?  `_trim_to_limit` runs after the assembly, so a Title cut down to TITLE_MAX would
+    # otherwise report a name the shop never actually sees.
+    name_printed = slot_printed and all(
+        word.lower() in title.lower() for word in clean_inline(corpus_series or "").split()
+    )
     return TitleResult(
         title=title,
         strategy=strategy,
@@ -469,6 +497,10 @@ def build_title(
         color_token=color,
         series_token=feature,
         inverter_token=inverter,
+        # Recorded only when the voted name really reached the shelf's series slot: a word the
+        # dedupe swallowed, or a Title kept from source, is not a name the shop read from the vote.
+        series_name=corpus_series if name_printed and corpus_series else "",
+        series_earned_by=series_earned_by if name_printed else "",
         dropped_words=dropped_words(source_title, title),
         warranty_token=warranty,
     )

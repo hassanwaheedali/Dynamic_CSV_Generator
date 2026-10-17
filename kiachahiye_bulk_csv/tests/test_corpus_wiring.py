@@ -7,10 +7,22 @@ nothing else about a Title moves.  Every case is a real row from the sheets, not
 
 from __future__ import annotations
 
+import csv
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from series_corpus import Corpus, analyze_row, build_corpus, pick_series
+import pytest
+
+import main
+from qc_report import QCFlagCollector
+from series_corpus import (
+    Corpus,
+    RowAnalysis,
+    analyze_row,
+    build_corpus,
+    pick_candidate,
+)
 from sku_handle import ModelExtraction
 from title_builder import build_title, extract_series
 
@@ -20,6 +32,65 @@ ANCHOR_DESCRIPTION = (
     "with copper condenser and a 12 Year Compressor Warranty."
 )
 ANCHOR_BREADCRUMB = "Electronics / Home appliances / Air Conditioners / Split"
+
+
+def printed(brand: str, row: RowAnalysis, corpus: Corpus) -> str:
+    """The series name `build_title` would ship for this row, as the row wrote it."""
+    chosen = pick_candidate(brand, row, corpus)
+    return "" if chosen is None else chosen.source
+
+
+def _write_input_csv(tmp_path: Path, rows: list[dict[str, str]]) -> Path:
+    """A real sheet on disk, so `main.read_input` -- not a fixture stand-in -- is what gets tested."""
+    path = tmp_path / "input.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]), quoting=csv.QUOTE_ALL)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def _rows_for_report() -> list[object]:
+    return [
+        analyze_row(
+            "Gree Pular Split Inverter Air Conditioner 1.5 Ton (GS-18PW)",
+            brand="Gree",
+            product_type="Air Conditioner",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+        analyze_row(
+            # The SAME product stated twice, on purpose: if rows and products came out equal here,
+            # the report could print either count swapped and no test would notice.
+            "Gree Pular Split Inverter Air Conditioner 1.5 Ton Black (GS-18PW)",
+            brand="Gree",
+            product_type="Air Conditioner",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+        analyze_row(
+            "Gree Pular Split Inverter Air Conditioner 2.0 Ton (GS-24PW)",
+            brand="Gree",
+            product_type="Air Conditioner",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+        analyze_row(
+            "Gree Zeno Split Inverter Air Conditioner 1.0 Ton (GS-12ZN)",
+            brand="Gree",
+            product_type="Air Conditioner",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+    ]
+
+
+def _midea_rows() -> list:
+    return [
+        analyze_row(
+            ANCHOR_TITLE,
+            brand="Midea",
+            product_type="Air Conditioner",
+            breadcrumb=ANCHOR_BREADCRUMB,
+            description=ANCHOR_DESCRIPTION,
+        )
+    ]
 
 
 def _anchor() -> tuple[object, Corpus]:
@@ -49,7 +120,7 @@ def test_the_wired_builder_ships_the_series_the_corpus_proves() -> None:
     the name is EARNED by the vote from the sheet's own letters, not from `SERIES_WORDS`.
     """
     analysis, corpus = _anchor()
-    assert pick_series("Midea", analysis, corpus) == "ECO"
+    assert printed("Midea", analysis, corpus) == "ECO"
     assert corpus.is_proven("Midea", "eco")
     result = build_title(
         brand="Midea",
@@ -91,6 +162,295 @@ def test_a_corpus_that_proved_nothing_leaves_the_title_exactly_as_it_is_today() 
     assert with_empty_corpus.strategy == without.strategy
 
 
+def test_the_title_records_how_strongly_its_name_was_believed() -> None:
+    """A printed name says which rule carried it, so the report and QC can tell the two apart.
+
+    `ECO` on a two-row Midea sheet is believed from ONE row standing right after the brand;
+    `eComfort` on two Kenwood rows is stated by two products.  Both print, and a human reviewing
+    the run needs to see that difference without recomputing the vote.
+    """
+    rescued, thin_corpus = _anchor()
+    result = build_title(
+        brand="Midea",
+        extraction=ModelExtraction(code="MSAG2B-12HRDN1-QC0", source="title-code-token", confidence="high"),
+        product_type="Air Conditioner",
+        source_title=ANCHOR_TITLE,
+        source_description=ANCHOR_DESCRIPTION,
+        analysis=rescued,
+        corpus=thin_corpus,
+    )
+    assert result.series_earned_by == "brand-position"
+
+    kenwood = [
+        analyze_row(
+            "Kenwood eComfort Inverter Air Conditioner 1.5 Ton (KEC-1868S)",
+            product_type="Air Conditioner",
+            brand="Kenwood",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+        analyze_row(
+            "Kenwood eComfort Inverter Air Conditioner 2.0 Ton (KEC-2468S)",
+            product_type="Air Conditioner",
+            brand="Kenwood",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+    ]
+    full_corpus = build_corpus(kenwood)
+    stated = build_title(
+        brand="Kenwood",
+        extraction=ModelExtraction(code="KEC-1868S", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title=kenwood[0].title,
+        source_description="",
+        analysis=kenwood[0],
+        corpus=full_corpus,
+    )
+    assert stated.series_earned_by == "siblings"
+
+
+def test_a_name_believed_from_one_row_is_flagged_for_a_human(pipeline: Pipeline) -> None:
+    """The thin-sheet rescue prints a Title; it must also raise a row a human can confirm.
+
+    Two products stating a line is evidence nobody needs to re-check.  One row putting a word right
+    after its brand is the vote's weakest answer -- and today it prints silently, so a lucky guess
+    would never surface in the QC report.
+    """
+    rescued = pipeline([_sheet(ANCHOR_TITLE, ANCHOR_DESCRIPTION, "Midea")])
+    assert any(
+        flag.category == "series_believed_from_one_row" for flag in rescued["flags"].flags
+    ), rescued["flags"].flags
+
+    stated = pipeline(
+        [
+            _sheet(
+                "Kenwood eComfort Inverter Air Conditioner 1.5 Ton (KEC-1868S)",
+                "Kenwood 1.5 Ton DC Inverter Split Air Conditioner.",
+                "Kenwood",
+            ),
+            _sheet(
+                "Kenwood eComfort Inverter Air Conditioner 2.0 Ton (KEC-2468S)",
+                "Kenwood 2 Ton DC Inverter Split Air Conditioner.",
+                "Kenwood",
+            ),
+        ]
+    )
+    assert not any(
+        flag.category == "series_believed_from_one_row" for flag in stated["flags"].flags
+    )
+
+
+def test_the_run_reports_what_it_proved_per_brand() -> None:
+    """A verdict you cannot read is a verdict you cannot trust, so the run prints its own answers.
+
+    Per brand: the names it proved, how many rows and products stated each, and a mark on the ones
+    believed from a single row.  The report is built from the recorded evidence, so it can never
+    disagree with the vote that printed the Titles -- and it prints the folded key the vote speaks
+    in, not an invented shop spelling the run never stored.
+    """
+    lines = main.corpus_report_lines(build_corpus(_rows_for_report()))
+    body = "\n".join(lines)
+    # The counts are asserted exactly, and rows differ from products in the fixture, so a report
+    # that mixed the two up or dropped one of them fails here instead of reading plausibly.
+    assert "pular [3 rows / 2 products]" in body
+    assert "needs a human: zeno [1 row / 1 product]" in body
+    assert "undecided words" in body
+
+    rescued = main.corpus_report_lines(build_corpus(_midea_rows()))
+    assert any("needs a human" in line and "eco [1 row / 1 product]" in line for line in rescued)
+
+
+def test_a_name_the_dedupe_swallowed_is_not_reported_as_printed() -> None:
+    """`Icon` is Orient's believed name AND a word of this row's model code, so the slot empties.
+
+    QC must not ask a human to confirm a name the shelf never read.  A substring test on the finished
+    Title hits here (the code still carries the word), which is exactly the false flag this pins out.
+    """
+    analysis = analyze_row(
+        "Orient Icon 3 Taps Water Dispenser Black",
+        brand="Orient",
+        product_type="Water Dispenser",
+        breadcrumb="Electronics / Home appliances / Water Dispensers",
+    )
+    result = build_title(
+        brand="Orient",
+        extraction=ModelExtraction(
+            code="Icon 3 Taps Water Dispenser", source="description-model-line", confidence="high"
+        ),
+        product_type="Water Dispenser",
+        source_title="Orient Icon 3 Taps Water Dispenser Black",
+        source_description="Orient 3 Taps Water Dispenser Black with a 3 Year Warranty.",
+        analysis=analysis,
+        corpus=build_corpus([analysis]),
+    )
+    assert "icon" in result.title.lower()  # the letters are on the shelf...
+    assert result.series_name == ""  # ...but not as the series name
+    assert result.series_earned_by == ""
+
+
+def test_the_shipped_file_carries_the_verdict_block(tmp_path: Path, capsys) -> None:
+    """`main()` must hand the run's own verdict to the summary, and print it, on a real sheet.
+
+    Unit-testing `corpus_report_lines` and calling `print_summary` by hand both leave the actual
+    wiring unguarded: drop the argument and the console quietly says `no corpus was read`, with
+    every test still green.  This runs the real entry point end to end.
+    """
+    path = _write_input_csv(
+        tmp_path,
+        [
+            _sheet(
+                "Gree Pular Split Inverter Air Conditioner 1.5 Ton (GS-18PW)",
+                "Gree 1.5 Ton DC Inverter Split Air Conditioner with a 10 Year Compressor Warranty.",
+                "Gree",
+            ),
+            _sheet(
+                "Gree Pular Split Inverter Air Conditioner 2.0 Ton (GS-24PW)",
+                "Gree 2 Ton DC Inverter Split Air Conditioner with a 10 Year Compressor Warranty.",
+                "Gree",
+            ),
+        ],
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    main.main(
+        [
+            "--input", str(path),
+            "--digi", str(out_dir / "digi.csv"),
+            "--alfa", str(out_dir / "alfa.csv"),
+            "--qc", str(out_dir / "qc.csv"),
+            "--sample-titles", str(out_dir / "titles.csv"),
+        ]
+    )
+    printed_out = capsys.readouterr().out
+    assert "SERIES NAMES THIS RUN PROVED" in printed_out
+    assert "no corpus was read" not in printed_out
+    assert "pular" in printed_out
+
+
+def test_a_name_cut_off_by_the_length_limit_is_not_reported_as_printed() -> None:
+    """The limit runs after the slot is assembled, so a cut name is not a name the shop sees.
+
+    A Title over `TITLE_MAX` is trimmed at the end, and when the trim takes the series slot with it
+    the row still *proved* the name -- it just never reaches the shelf.  Recording it anyway would
+    send a reviewer to confirm a name that appears nowhere in the file they are checking.
+    """
+    row = analyze_row(
+        "Orient Zephyr Split Air Conditioner 1.5 Ton (ACA-1500)",
+        brand="Orient",
+        product_type="Air Conditioner",
+        breadcrumb=ANCHOR_BREADCRUMB,
+    )
+    result = build_title(
+        brand="Orient",
+        # A part number long enough that the assembled Title exceeds the limit and is cut back.
+        extraction=ModelExtraction(
+            code="ACA-" + "X" * 250, source="title-parenthetical", confidence="high"
+        ),
+        product_type="Air Conditioner",
+        source_title=row.title,
+        source_description="Orient 1.5 Ton DC Inverter Split Air Conditioner.",
+        warranty="",
+        analysis=row,
+        corpus=build_corpus([row]),
+    )
+    assert "Zephyr" not in result.title
+    assert result.series_name == ""
+    assert result.series_earned_by == ""
+
+
+def test_a_run_that_proved_nothing_says_so() -> None:
+    """Silence is a result too, and the report has to state it instead of printing nothing."""
+    assert any("proved no name" in line for line in main.corpus_report_lines(build_corpus([])))
+
+
+def test_a_half_printed_name_is_not_reported_as_the_name() -> None:
+    """`Glory Pro` with only `Glory` left in the slot is NOT the name `Glory Pro`.
+
+    The model code `GL-PRO-15` owns the word `Pro` as a token of its own, so the dedupe drops it
+    from the series slot and only half the voted name prints.  A guard that asked `any` instead of
+    `all` would report the full name here, and the two real rows this mirrors (Kenwood
+    `eLuxury Pro`, whose code swallows `Pro`) would get a QC line asking someone to confirm a label
+    the shelf never carried.
+    """
+    rows = [
+        # One row states the name with no part number beside it, which is what lets the pair earn
+        # its proof; the second row is a different product of the same line.
+        analyze_row(
+            "Kenwood Glory Pro Inverter Air Conditioner 1.5 Ton",
+            brand="Kenwood",
+            product_type="Air Conditioner",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+        analyze_row(
+            "Kenwood Glory Pro Inverter Air Conditioner 2.0 Ton (GL-20)",
+            brand="Kenwood",
+            product_type="Air Conditioner",
+            breadcrumb=ANCHOR_BREADCRUMB,
+        ),
+    ]
+    corpus = build_corpus(rows)
+    assert printed("Kenwood", rows[0], corpus) == "Glory Pro"
+    result = build_title(
+        brand="Kenwood",
+        extraction=ModelExtraction(code="GL-PRO-15", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title=rows[0].title,
+        source_description="Kenwood 1.5 Ton DC Inverter Split Air Conditioner.",
+        analysis=rows[0],
+        corpus=corpus,
+    )
+    assert " Glory" in result.title
+    assert "Glory Pro" not in result.title
+    assert result.series_name == ""
+
+
+def test_the_flag_names_only_the_word_the_vote_believed(pipeline: Pipeline) -> None:
+    """The reviewer is asked to confirm a name, not the feature word sitting beside it.
+
+    `Blaze Google` is what the whole series slot reads; `Blaze` is what the vote believed.  Showing
+    the composite would send a human to check a phrase the run never proved.
+    """
+    rows = [
+        _sheet(
+            "PEL Blaze Inverter Water Dispenser White (PWD-316)",
+            "PEL water dispenser with Google feature and a 1 Year Warranty.",
+            "PEL",
+        )
+    ]
+    run = pipeline(rows)
+    flagged = [
+        flag for flag in run["flags"].flags if flag.category == "series_believed_from_one_row"
+    ]
+    assert flagged, "this row is the single-row rescue path"
+    for flag in flagged:
+        assert "Blaze" in flag.message
+        assert "Google" not in flag.message
+
+
+def test_run_refuses_a_reading_voted_from_another_sheet(tmp_path: Path) -> None:
+    """A corpus voted from a different sheet would print its brands' names here, silently.
+
+    So the reading carries how many rows it was voted from, and `run()` refuses a pair whose counts
+    do not match the rows in front of it.  The Titles still render either way, which is exactly why
+    this has to be a raised error and not something a reviewer catches by glancing at the file.
+    """
+    here = _write_input_csv(
+        tmp_path,
+        [
+            _sheet(ANCHOR_TITLE, ANCHOR_DESCRIPTION, "Midea"),
+            _sheet(
+                "Kenwood eComfort Inverter Air Conditioner 1.5 Ton (KEC-1868S)",
+                "Kenwood 1.5 Ton DC Inverter Split Air Conditioner.",
+                "Kenwood",
+            ),
+        ],
+    )
+    rows = main.read_input(here)
+    analyses, _own = main.read_rows(rows)
+    foreign = build_corpus([_midea_rows()[0]])  # voted from ONE row
+    with pytest.raises(ValueError, match="read the sheet and vote it in one call"):
+        main.run(rows, QCFlagCollector(), (analyses, foreign))
+
+
 def test_the_name_is_rendered_the_way_the_row_spells_it() -> None:
     """`eComfort` and `eSmart` are the shop's words, so the Title shows them, not `Ecomfort`.
 
@@ -115,7 +475,7 @@ def test_the_name_is_rendered_the_way_the_row_spells_it() -> None:
             ),
         ]
     )
-    assert pick_series("Kenwood", kenwood, corpus) == "eComfort"
+    assert printed("Kenwood", kenwood, corpus) == "eComfort"
 
 
 # --------------------------------------------------------------------------- #

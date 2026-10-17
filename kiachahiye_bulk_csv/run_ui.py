@@ -273,6 +273,7 @@ FLAG_LABELS = {
     "handle_deduplicated": "Handles made unique (shared titles)",
     "title_kept_from_source": "Titles kept as supplied",
     "title_dropped_words": "Rebuilt titles (dropped extra words)",
+    "series_believed_from_one_row": "Series names believed from one row",
     "attribute_empty": "Attribute values outside the vocabulary",
     "sku_disambiguated": "SKUs made unique",
     "fallback_sku": "SKUs built without a model code",
@@ -442,7 +443,15 @@ def main() -> int:
             width_label = 44
             max_n = max(flag_totals.values())
             flag_lines = []
-            for ftype, n in flag_totals.most_common(8):
+            queue = flag_totals.most_common(8)
+            # A category with a label here exists because a human has to act on it, so it is shown
+            # even when its volume would push it off the top eight.  Kept in descending order so the
+            # panel still reads as a ranking.
+            for needed in FLAG_LABELS:
+                if needed in flag_totals and all(ftype != needed for ftype, _ in queue):
+                    queue.append((needed, flag_totals[needed]))
+            queue.sort(key=lambda pair: pair[1], reverse=True)
+            for ftype, n in queue:
                 label = FLAG_LABELS.get(ftype, ftype.replace("_", " ").capitalize())
                 bar_n = max(1, round(18 * n / max_n))
                 bar = t.paint(t.full * bar_n, t.yellow) + t.paint(t.empty * (18 - bar_n), t.grey)

@@ -47,10 +47,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 import attributes
 import categories
@@ -324,7 +324,7 @@ class ResidueCandidate:
     ``offers`` are a different object and are deliberately NOT a partition: a row puts a name
     forward on its own AND, when the very next piece is a level word, forward again with that
     word attached (``chrome``, ``chrome pro``).  The pair re-covers its head on purpose -- the
-    vote has to be asked about both, and :func:`pick_series` then takes the longest one the run
+    vote has to be asked about both, and :func:`pick_candidate` then takes the longest one the run
     proved.  What is pinned over offers instead is fidelity: every piece of every offer must be
     contiguous in the row, and ``source`` must be letters the row itself wrote.
     """
@@ -644,7 +644,7 @@ def _described(
     touching a prose mention must not disqualify a label that wrote the name clean.
 
     These candidates never enter ``offers``, because the Title is the only column a shop prints;
-    they join the vote as evidence, and :func:`pick_series` reaches for one only when the Title has
+    they join the vote as evidence, and :func:`pick_candidate` reaches for one only when the Title has
     nothing proven to print.
     """
     read = _read(description, vocabulary)
@@ -830,8 +830,10 @@ def analyze_row(
     )
 
 
-def pick_series(brand: str, analysis: RowAnalysis, corpus: Corpus) -> str:
-    """The series word for this row: the longest name the run proved for its brand, as written.
+def pick_candidate(
+    brand: str, analysis: RowAnalysis, corpus: Corpus
+) -> ResidueCandidate | None:
+    """The name this row prints: the longest one the run proved for its brand, as the row wrote it.
 
     `Chrome` and `Chrome Pro` are two models, so both are asked of the corpus and the row's own
     words decide which applies.  Length is counted in name words, so a row that wrote `AVANTE
@@ -839,6 +841,11 @@ def pick_series(brand: str, analysis: RowAnalysis, corpus: Corpus) -> str:
     make the label three words long (`E Luxury Plus`), and the cap that holds is the one in
     :func:`_offers` -- one name plus at most one level word.  A row whose words the run never
     proved prints nothing: silence is the safe output, not a gap to fill with a guess.
+
+    One entry point, returning the candidate rather than a string: the caller gets the letters a
+    Title renders (`.source`) and the key the vote decided on (`.key`, which is what
+    :meth:`Corpus.evidence` reports the strength of the proof under), so nothing has to re-derive
+    one from the other.
     """
     proven = [offer for offer in analysis.offers if corpus.is_proven(brand, offer.key)]
     if not proven:
@@ -847,8 +854,8 @@ def pick_series(brand: str, analysis: RowAnalysis, corpus: Corpus) -> str:
         # from a Title name because it is not in `offers`, which is what a caller records it under.
         proven = [candidate for candidate in analysis.described if corpus.is_proven(brand, candidate.key)]
     if not proven:
-        return ""
-    return max(proven, key=lambda offer: len(offer.key.split())).source
+        return None
+    return max(proven, key=lambda offer: len(offer.key.split()))
 
 
 def _offers(
@@ -872,7 +879,7 @@ def _offers(
     form it printed.
 
     Nothing here chooses between the offers: that is :func:`build_corpus`, then
-    :func:`pick_series`.  A bare level word is never offered alone, because a row that wrote only
+    :func:`pick_candidate`.  A bare level word is never offered alone, because a row that wrote only
     `Pro` wrote a decoration, not a name.
     """
     found: list[ResidueCandidate] = []
@@ -1232,6 +1239,12 @@ def _contains_run(words: tuple[str, ...], run: tuple[str, ...]) -> bool:
 #: own rows -- it only means the word is not yet obviously a type word.
 BLACKLIST_BRANDS = 3
 
+#: How strongly the run believed a word, spelled once here and read everywhere else.  `siblings` is
+#: two products of one brand stating it; `brand-position` is the thin-sheet rescue -- one row, the
+#: word standing right after its brand, no part number touching it.  The alternatives are named once
+#: so the vote, the report and the QC flag cannot each spell the rule their own way.
+SeriesProof = Literal["", "siblings", "brand-position"]
+
 
 @dataclass(frozen=True)
 class WordEvidence:
@@ -1244,6 +1257,13 @@ class WordEvidence:
     code_adjacent: int
     class_prefixed: int
     codes: frozenset[str]
+    earned_by: SeriesProof = ""
+    """Which rule carried a PROVEN word: `siblings` or `brand-position`.
+
+    Recorded at the decision, never re-derived later: the run report and the QC flag both have to
+    tell a human how strong a name's evidence was, and a second copy of that arithmetic is exactly
+    how the two would start disagreeing.  Empty for a word the run did not prove.
+    """
 
 
 @dataclass(frozen=True)
@@ -1261,10 +1281,26 @@ class Corpus:
     proven: Mapping[str, Mapping[str, WordEvidence]]
     blacklisted: Mapping[str, WordEvidence]
     undecided: Mapping[str, WordEvidence]
+    rows: int = 0
+    """How many rows this verdict was voted from.
+
+    Travels with the vote so a caller can tell whether a reading belongs to the sheet it is about
+    to print: a corpus from another sheet rewrites Titles silently, because nothing else in the
+    verdict says where it came from.
+    """
 
     def is_proven(self, brand: str, word: str) -> bool:
         """True when THIS run proved this word names a line for this brand."""
         return word in self.proven.get(_alnum(brand).lower(), {})
+
+    def evidence(self, brand: str, word: str) -> WordEvidence | None:
+        """How strongly this run believed the word, or None when it never proved it.
+
+        The proof travels with the verdict, so a caller that printed a name can report the rule
+        that earned it -- which is the difference between a line two products state and a word the
+        thin-sheet rescue believed from one row.
+        """
+        return self.proven.get(_alnum(brand).lower(), {}).get(word)
 
 
 @dataclass
@@ -1324,7 +1360,9 @@ def build_corpus(analyses: Iterable[RowAnalysis]) -> Corpus:
     """
     whole_run: dict[str, _Tally] = {}
     per_brand: dict[tuple[str, str], _Tally] = {}
+    voted = 0
     for analysis in analyses:
+        voted += 1
         for word in analysis.evidence:
             whole_run.setdefault(word, _Tally()).record(word, analysis)
             per_brand.setdefault((analysis.brand, word), _Tally()).record(word, analysis)
@@ -1353,7 +1391,9 @@ def build_corpus(analyses: Iterable[RowAnalysis]) -> Corpus:
             len(word.split()) == 1 and evidence.brand_adjacent == 1 and not evidence.code_adjacent
         )
         if siblings or brand_position:
-            proven.setdefault(brand, {})[word] = evidence
+            proven.setdefault(brand, {})[word] = replace(
+                evidence, earned_by="siblings" if siblings else "brand-position"
+            )
             earned.add(word)
 
     undecided = {
@@ -1361,4 +1401,6 @@ def build_corpus(analyses: Iterable[RowAnalysis]) -> Corpus:
         for word, tally in whole_run.items()
         if word not in blacklisted and word not in earned
     }
-    return Corpus(proven=proven, blacklisted=blacklisted, undecided=undecided)
+    return Corpus(
+        proven=proven, blacklisted=blacklisted, undecided=undecided, rows=voted
+    )

@@ -29,6 +29,7 @@ import warranty_terms
 from brands import BRAND_ALIASES, BRAND_DISPLAY_MAP, BRANDS_ALFA, BRANDS_DIGI
 from series_corpus import (
     REVIVABLE_SLOT,
+    Corpus,
     RowAnalysis,
     _pieces,
     analyze_row,
@@ -37,8 +38,18 @@ from series_corpus import (
     category_vocabulary,
     noise_vocabulary,
     normalize_shape,
-    pick_series,
+    pick_candidate,
 )
+
+
+def printed(brand: str, row: RowAnalysis, corpus: Corpus) -> str:
+    """The name `build_title` would put in this row's series slot, as the row wrote it.
+
+    `pick_candidate` is the production entry point -- it also carries the proof -- and a Title only
+    ever renders the candidate's own letters, so the test reads the same way the shelf does.
+    """
+    chosen = pick_candidate(brand, row, corpus)
+    return "" if chosen is None else chosen.source
 
 
 def test_duplicate_halves_collapse_to_the_fuller_label() -> None:
@@ -1284,9 +1295,9 @@ def test_the_proven_plus_beats_the_proven_single_word() -> None:
     shape_a, _ = _real_rows()
     corpus = build_corpus(shape_a)
     glued = next(r for r in shape_a if r.title.startswith("Dawlance AVANTE+ Freezer-On-Top"))
-    assert pick_series("Dawlance", glued, corpus) == "AVANTE+"
+    assert printed("Dawlance", glued, corpus) == "AVANTE+"
     spelled = next(r for r in shape_a if r.title.startswith("Dawlance Avante Plus Special"))
-    assert pick_series("Dawlance", spelled, corpus) == "Avante Plus"
+    assert printed("Dawlance", spelled, corpus) == "Avante Plus"
 
 
 def test_a_pair_is_offered_only_when_the_row_wrote_it() -> None:
@@ -1458,7 +1469,7 @@ def test_the_plus_sign_and_the_word_plus_are_the_same_name() -> None:
     assert source_of(written, "classic plus") == "Classic Plus"
 
 
-def test_pick_series_gives_the_longest_proven_name_in_the_rows_own_spelling() -> None:
+def test_a_row_prints_the_longest_proven_name_in_its_own_spelling() -> None:
     """The one question stage [5] answers, and the answer stays inside the reading layer.
 
     Proven `chrome` + proven `chrome pro`: a row writing both words gets `Chrome Pro`, a row
@@ -1472,15 +1483,15 @@ def test_pick_series_gives_the_longest_proven_name_in_the_rows_own_spelling() ->
     )
     corpus = build_corpus(rows)
     pair_row, single_row = rows[0], rows[2]
-    assert pick_series("Dawlance", pair_row, corpus) == "Chrome Pro"
-    assert pick_series("Dawlance", single_row, corpus) == "Chrome"
+    assert printed("Dawlance", pair_row, corpus) == "Chrome Pro"
+    assert printed("Dawlance", single_row, corpus) == "Chrome"
     unproven = analyze_row(
         "Dawlance Zzzz Qqqq Freezer-On-Top Refrigerator (9999-WB)",
         product_type="Refrigerator",
         brand="Dawlance",
         breadcrumb="Refrigerators",
     )
-    assert pick_series("Dawlance", unproven, corpus) == ""
+    assert printed("Dawlance", unproven, corpus) == ""
 
 
 def test_a_pair_tail_is_refused_when_a_table_already_owns_the_word() -> None:
@@ -1688,7 +1699,7 @@ def test_two_rows_that_name_one_line_only_in_their_descriptions_prove_it() -> No
     )
     corpus = build_corpus(rows)
     assert corpus.is_proven("Dawlance", "stucco")
-    assert pick_series("Dawlance", rows[0], corpus) == "Stucco"
+    assert printed("Dawlance", rows[0], corpus) == "Stucco"
 
 
 def test_one_description_mention_alone_stays_undecided_and_prints_nothing() -> None:
@@ -1708,7 +1719,7 @@ def test_one_description_mention_alone_stays_undecided_and_prints_nothing() -> N
     )
     corpus = build_corpus(rows)
     assert not corpus.is_proven("Dawlance", "stucco")
-    assert pick_series("Dawlance", rows[0], corpus) == ""
+    assert printed("Dawlance", rows[0], corpus) == ""
 
 
 def test_the_two_columns_that_spell_one_line_differently_vote_it_once_and_print_the_title() -> None:
@@ -1737,7 +1748,7 @@ def test_the_two_columns_that_spell_one_line_differently_vote_it_once_and_print_
     assert rows[0].evidence.count("e-luxury pro") == 1
     corpus = build_corpus(rows)
     assert corpus.is_proven("Kenwood", "e-luxury pro")
-    assert pick_series("Kenwood", rows[0], corpus) == "E Luxury Pro"
+    assert printed("Kenwood", rows[0], corpus) == "E Luxury Pro"
 
 
 def test_a_row_that_states_nothing_in_its_title_never_borrows_a_description_spelling_into_the_offers() -> None:
@@ -1808,7 +1819,7 @@ def test_a_description_name_inside_a_part_number_is_refused_like_a_title_one() -
     )
     corpus = build_corpus(rows)
     assert not corpus.is_proven("Dawlance", "usdc")
-    assert pick_series("Dawlance", rows[0], corpus) == ""
+    assert printed("Dawlance", rows[0], corpus) == ""
 
 
 def test_the_series_label_reads_only_its_own_value() -> None:
@@ -1898,7 +1909,7 @@ def test_a_name_only_the_prose_makes_brand_adjacent_is_not_rescued() -> None:
     )
     corpus = build_corpus(rows)
     assert not corpus.is_proven("Dawlance", "pular")
-    assert pick_series("Dawlance", rows[0], corpus) == ""
+    assert printed("Dawlance", rows[0], corpus) == ""
 
 
 def test_a_clean_label_is_not_damaged_by_a_code_in_the_rest_of_the_prose() -> None:
@@ -1926,7 +1937,7 @@ def test_a_clean_label_is_not_damaged_by_a_code_in_the_rest_of_the_prose() -> No
     )
     corpus = build_corpus(rows)
     assert corpus.is_proven("Dawlance", "pular")
-    assert pick_series("Dawlance", rows[0], corpus) == "Pular"
+    assert printed("Dawlance", rows[0], corpus) == "Pular"
 
 
 def test_a_name_the_prose_writes_first_is_still_taken_from_the_label() -> None:
@@ -1962,3 +1973,73 @@ def test_the_description_is_read_as_the_sheet_wrote_it() -> None:
         description=written,
     )
     assert pel.description == written.strip()
+
+
+def test_a_verdict_believed_from_one_row_says_so_on_its_evidence() -> None:
+    """The thin-sheet rescue has to be visible after the fact, not only inside the rule.
+
+    A word believed from a single row is a different kind of answer from a line two products
+    state: it is the vote's weakest proof, and a shop Title is already being printed from it.  So
+    the rule that carried a verdict travels on the verdict, and the report and the QC flag read
+    that fact instead of re-deriving the arithmetic somewhere else.
+    """
+    corpus = build_corpus(
+        _rows(
+            (
+                "MIDEA ECO - WALL MOUNTED DC INVERTER MSAG2B-12HRDN1-QC0",
+                "Midea",
+                "Electronics / Home appliances / Air Conditioners",
+                "Split AC",
+            ),
+        )
+    )
+    assert corpus.proven["midea"]["eco"].earned_by == "brand-position"
+
+
+def test_a_verdict_earned_by_its_siblings_says_so_on_its_evidence() -> None:
+    """Two products of one brand stating the word is the strong answer, and it says so.
+
+    `rows >= 2` and `products >= 2` is exactly the evidence a human does NOT need to re-check, so
+    it must be distinguishable from the rescue without recomputing the rule.
+    """
+    corpus = build_corpus(
+        _rows(
+            (
+                "Gree Pular Split Inverter Air Conditioner 1.5 Ton (GS-18PW)",
+                "Gree",
+                "Electronics / Home appliances / Air Conditioners / Split",
+                "Split AC",
+            ),
+            (
+                "Gree Pular Split Inverter Air Conditioner 2.0 Ton (GS-24PW)",
+                "Gree",
+                "Electronics / Home appliances / Air Conditioners / Split",
+                "Split AC",
+            ),
+        )
+    )
+    assert corpus.proven["gree"]["pular"].earned_by == "siblings"
+
+
+def test_the_name_chosen_for_a_row_carries_the_rule_that_earned_it() -> None:
+    """A caller that prints a name must be able to say how strongly the run believed it.
+
+    the vote hands back the row's own spelling, which is what a Title needs and nothing else;
+    the proof travels beside it, so the pipeline can flag a rescued name without re-running the
+    vote's arithmetic.
+    """
+    rows = _rows(
+        (
+            "MIDEA ECO - WALL MOUNTED DC INVERTER MSAG2B-12HRDN1-QC0",
+            "Midea",
+            "Electronics / Home appliances / Air Conditioners",
+            "Split AC",
+        ),
+    )
+    corpus = build_corpus(rows)
+    chosen = pick_candidate("Midea", rows[0], corpus)
+    assert chosen is not None
+    assert chosen.source == "ECO"
+    evidence = corpus.evidence("Midea", chosen.key)
+    assert evidence is not None and evidence.earned_by == "brand-position"
+    assert printed("Midea", rows[0], corpus) == "ECO"
