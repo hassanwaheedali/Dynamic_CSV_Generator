@@ -321,7 +321,7 @@ def resolve_row(
         )
 
     extraction = extract_model(row.title, row.description)
-    capacity = parse_capacity(text)
+    capacity = parse_capacity(text, product_type)
     if extraction.confidence == "none":
         model = build_fallback_model(
             effective_brand, find_series_token(text), capacity, row.title

@@ -326,6 +326,88 @@ def test_geyser_capacity_ignores_inline_weight_and_keeps_nasgas() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# [Capacity] -- a category is sold in its own unit
+# --------------------------------------------------------------------------- #
+def test_an_air_conditioner_is_sold_in_ton_never_in_the_weight_of_its_own_boxes() -> None:
+    """Row 257 of the sheet: `Indoor Unit Weight (kg) 13 kg` beat the row's own `1.5 Ton`.
+
+    The weight guards only know a `Weight:` line, and this sheet writes weight as a spec bullet in
+    running prose -- so the first pattern that matched won and the shop's AC Title read `13 KG`.
+    The unit is the fact here: a category prints the size written in a unit it is actually sold in,
+    and a number in any other unit is not its capacity.
+    """
+    result = build_title(
+        brand="Dawlance",
+        extraction=ModelExtraction(
+            code="Inverter Frost 30: Yes", source="description-model-line", confidence="high"
+        ),
+        product_type="Air Conditioner",
+        source_title="Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton White (Cool Only)",
+        source_description=(
+            "The Dawlance Frost Inverter 30 White (Cool Only) is a 1.5 Ton DC Inverter split air "
+            "conditioner designed for cooling only, in White.Dimensions & Weight Indoor Unit "
+            "Weight (kg) 13 kg Outdoor Unit Weight (kg) 30.5 kg Indoor Unit (WxHxD) mm 998x230x328"
+        ),
+    )
+    assert result.capacity_token == "1.5 Ton"
+    assert "KG" not in result.title
+
+
+def test_a_telly_prints_the_size_it_states_and_not_the_weight_of_its_carton() -> None:
+    """Row 90: `Capacity / Size: 10.8 kg` is the box, and the row wrote `55 Inch` twice.
+
+    A television is sold in inches; the `Capacity:` label does not make a kilogram figure a size.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="H55K85FX", source="title-parenthetical", confidence="high"),
+        product_type="LED TV",
+        source_title="Haier 55 Inch Smart Google LED TV (H55K85FX)",
+        source_description=(
+            "The Haier H55K85FX is a 55-inch smart LED TV.\n\nKey Specifications:\n"
+            "• Capacity / Size: 10.8 kg\n• Resolution: 4K ultra HD"
+        ),
+    )
+    assert result.capacity_token == "55 Inch"
+
+
+def test_a_device_that_only_says_which_air_conditioners_it_runs_prints_no_capacity() -> None:
+    """Row 398: `Capacity: Works with 1 Ton and 1.5 Ton UPS-Enabled Haier DC Inverter…`.
+
+    That sentence names the machines the UPS supports, not the size of the thing being sold, and an
+    UPS is never sold by the ton -- so the safe answer is that the row stated no capacity.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="", source="fallback", confidence="none"),
+        product_type="UPS",
+        source_title="Haier Module DC Inverter AC UPS Device White",
+        source_description=(
+            "The Haier Module DC Inverter AC UPS Device White is an inverter home appliance. "
+            "Key Specifications:\n• Capacity: Works with 1 Ton and 1.5 Ton UPS-Enabled Haier DC "
+            "Inverter\n• Power Consumption: ~450 Watts (2 Amps)"
+        ),
+    )
+    assert result.capacity_token == ""
+    assert " Ton" not in result.title
+
+
+def test_a_washing_machine_is_still_sold_in_kg() -> None:
+    """The gate refuses a foreign unit, it does not delete a category's own.
+
+    Row 170: `Orient Twister 1150 Top Load Fully Automatic Washing Machine 10 Kg Metallic Silver`.
+    """
+    result = build_title(
+        brand="Orient",
+        extraction=ModelExtraction(code="", source="fallback", confidence="none"),
+        product_type="Washing Machine",
+        source_title="Orient Twister 1150 Top Load Fully Automatic Washing Machine 10 Kg Metallic Silver",
+        source_description="A 10 kg fully automatic top load washing machine.",
+    )
+    assert result.capacity_token == "10 KG"
+
+
+# --------------------------------------------------------------------------- #
 # [Subtype] -- the owner's `SubType:` line, and the type list reading the Description
 # --------------------------------------------------------------------------- #
 def _haier_ac(source_title: str, source_description: str) -> TitleResult:

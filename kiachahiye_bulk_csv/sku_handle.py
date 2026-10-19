@@ -277,24 +277,45 @@ def build_fallback_model(
     return "-".join(piece for piece in pieces if piece) or "PRODUCT"
 
 
+# EDIT HERE -- the units each category is SOLD in.  A category named here prints a size only in its
+# own units: six AC rows carry a weight bullet written in running prose (`Indoor Unit Weight (kg) 13
+# kg`) that used to beat the `1.5 Ton` the row stated itself, and a TV's `Capacity / Size: 10.8 kg`
+# is its carton.  A category NOT named here is read exactly as before, so a product nobody has
+# looked at yet can never lose its capacity to this table -- add a category here only with the
+# sheet's own numbers in front of you.  `UPS` is deliberately an empty set: its only size sentence
+# names the air conditioners it runs, not itself.
+CAPACITY_UNITS: dict[str, frozenset[str]] = {
+    "Air Conditioner": frozenset({"Ton"}),
+    "LED TV": frozenset({"Inch"}),
+    "Microwave Oven": frozenset({"Ltr"}),
+    "UPS": frozenset(),
+}
+
+
 # ---------------------------------------------------------------------------
 #  Capacity
 # ---------------------------------------------------------------------------
-def parse_capacity(text: str) -> str:
+def parse_capacity(text: str, product_type: str) -> str:
     """The product's own stated size, e.g. ``16 Cu Ft``, ``1.5 Ton``.
 
     Weight lines are blanked out first: ``Weight: 17.25 kg`` describes shipping,
     not the product's capacity, and the spec forbids putting it in the Title.
+    Weight written any other way is caught by :data:`CAPACITY_PATTERNS` being searched in
+    the category's own unit, so a foreign unit never wins the race.
     """
     cleaned = WEIGHT_LINE_RE.sub(" ", text)
     cleaned = INLINE_WEIGHT_RE.sub(" ", cleaned)
     cleaned = re.sub(r"(?im)^[ \t]*.*tank.*$", " ", cleaned)
     for pattern, unit in CAPACITY_PATTERNS:
         match = pattern.search(cleaned)
-        if match:
-            number = match.group(1)
-            number = number.removesuffix(".0")
-            return f"{number} {unit}"
+        if not match:
+            continue
+        sold_in = CAPACITY_UNITS.get(product_type)
+        if sold_in is not None and unit not in sold_in:
+            continue
+        number = match.group(1)
+        number = number.removesuffix(".0")
+        return f"{number} {unit}"
     return ""
 
 

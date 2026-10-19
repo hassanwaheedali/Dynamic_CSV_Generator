@@ -521,7 +521,7 @@ def build_title(
         warranty = resolve_main_warranty(text, brand, product_type) or ""
 
     taps = extract_taps(text)
-    capacity = parse_capacity(text)
+    capacity = parse_capacity(text, product_type)
     if taps:
         capacity = taps
 
