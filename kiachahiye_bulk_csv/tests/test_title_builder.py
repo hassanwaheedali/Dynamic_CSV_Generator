@@ -531,3 +531,29 @@ def test_a_subtype_line_that_is_a_sentence_is_refused_and_says_why() -> None:
     assert "words long" in result.subtype_label_note
 
 
+def test_a_word_left_beside_the_type_phrase_goes_with_the_phrase() -> None:
+    """`Classic Split` is one statement about the machine; taking `Split` must not sell `Classic`.
+
+    Row 325 of the sheet.  The curated guesser read the word standing beside the type as a line name,
+    so once `Split` moved into `[Subtype]` the row shipped `- HES-2421S Classic` -- a stranded half
+    of a phrase reading as a name the shop never sold.  A neighbour is only a name when the run's
+    vote proves it for that brand; Homage proved nothing here, so silence is the answer and the QC
+    report names the words that went missing.
+    """
+    result = build_title(
+        brand="Homage",
+        extraction=ModelExtraction(code="HES-2421S", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Homage Classic Split Inverter Air Conditioner 2.0 Ton (HES-2421S)",
+        source_description=(
+            "The Homage HES-2421S is a 2.0 Ton inverter split air conditioner. Key features include "
+            "t3 climate type, dc inverter up to 60% energy efficient, WiFi Smart Control, "
+            "Ampere Lock Mechanism."
+        ),
+    )
+    assert "Classic" not in result.title
+    assert result.title == (
+        "Homage 2 Ton Inverter Split Air Conditioner - HES-2421S - 1 Year Warranty"
+    )
+
+

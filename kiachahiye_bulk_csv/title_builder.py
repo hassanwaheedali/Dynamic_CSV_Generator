@@ -295,6 +295,22 @@ SUBTYPES: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {
             "Gas": ("gas",),
         },
     ),
+    # 33 microwave rows print `Solo`/`Grill` behind the model code as if it were a line name; the
+    # words say what the oven does, so they belong here, before the category.
+    "Microwave Oven": (
+        {
+            "Convection": ("convection",),
+            "Grill": ("grill",),
+            "Solo": ("solo",),
+        },
+    ),
+    "Water Dispenser": (
+        {
+            "Bottom Load": ("bottom load",),
+            "Top Load": ("top load",),
+            "Table Top": ("table top",),
+        },
+    ),
 }
 
 
@@ -368,6 +384,30 @@ def extract_subtype(product_type: str, source_title: str, source_description: st
 SUBTYPE_MAX_WORDS = 4
 
 
+def _phrase_neighbours(text: str, phrase: str) -> set[str]:
+    """The words written immediately around a phrase, in lower case.
+
+    `Turbo Cool Split Air Conditioner` is one statement about the machine.  When `[Subtype]` takes
+    `Split`, the word left beside it is not a second fact -- it is the other half of the same
+    phrase, and shipping it alone behind the model code sold `Cool` as a Haier line name.
+    """
+    hay = _spaced_words(text)
+    needle = _spaced_words(phrase).strip()
+    if not needle:
+        return set()
+    neighbours: set[str] = set()
+    start = hay.find(f" {needle} ")
+    while start >= 0:
+        before = hay[:start].split()
+        after = hay[start + len(needle) + 2 :].split()
+        if before:
+            neighbours.add(before[-1])
+        if after:
+            neighbours.add(after[0])
+        start = hay.find(f" {needle} ", start + 1)
+    return neighbours
+
+
 def subtype_line_words(value: str, said_already: str) -> tuple[list[str], str]:
     """The words of a `SubType:` line that the row has not already printed, and why if none.
 
@@ -409,12 +449,18 @@ def extract_feature(
     model: str = "",
     description: str = "",
     series: str | None = None,
+    absorbed: frozenset[str] = frozenset(),
 ) -> str:
     """Extract series and prominent feature keywords dynamically from text.
 
     `series` is the name the corpus proved for this row's brand; when the caller has one, it IS
     the series half of the slot and `extract_series` is not asked -- the curated path stays as the
     fallback for a corpus that proved nothing, so wiring the vote in can never shorten a Title.
+
+    `absorbed` are the words the row spent on saying what the machine is, and the word its Title
+    left beside them.  A candidate built from any of them is dropped whole: a candidate cut down to
+    its leftovers is the stranding this rule exists to remove -- `... - HSU-12CF Cool`, one half of
+    the phrase the shop wrote, printed where a line name belongs.
     """
     full_text = f"{source_title}\n{description}" if (source_title or description) else text
     if not source_title and text:
@@ -437,7 +483,8 @@ def extract_feature(
             candidates.append(feat)
             break
 
-    return " ".join(candidates[:2])
+    kept = [c for c in candidates if not set(c.lower().split()) & absorbed]
+    return " ".join(kept[:2])
 
 
 def build_title(
@@ -500,19 +547,6 @@ def build_title(
                 # dropping it would empty a platform column.  It belongs in the [Subtype] slot.
                 carried_subtype = curated
 
-    feature = extract_feature(
-        text=text,
-        product_type=product_type,
-        source_title=source_title,
-        brand=brand,
-        capacity=capacity,
-        color=color,
-        inverter=inverter,
-        model=extraction.code,
-        description=source_description,
-        series=corpus_series,
-    )
-
     should_rebuild = strict_rebuild or (extraction.confidence in ("high", "medium"))
     slot_printed = False
     subtype: str = ""
@@ -532,6 +566,38 @@ def build_title(
     if kept_words and " ".join(kept_words).lower() == listed_subtype.lower():
         label_note = "restates the word this row's own type already gives"
 
+    # The words the row spent saying what the machine is, plus the word the TITLE left standing
+    # immediately beside them: none may be resold behind the model code, where a line name belongs.
+    # `... - HSU-12CF Cool` is the half of "Turbo Cool" a type word strands, and a fragment reads as
+    # a name the shop never sold.  The one thing that saves such a word is the run's vote -- a name
+    # proved for this brand is what the corpus was built to find.  Prose is not scanned for
+    # neighbours: a Description bullet's neighbour is grammar (`with`, `Yes`), and absorbing it
+    # deleted the `Air` of `Air Fryer` from two Haier rows while leaving `Fryer` behind.
+    own_words = {w.lower() for w in f"{listed_subtype} {carried_subtype}".split()}
+    beside = (
+        {
+            word
+            for phrase in (listed_subtype, carried_subtype)
+            for word in _phrase_neighbours(source_title, phrase)
+        }
+        - set(_spaced_words(said_already).split())
+    )
+    protected = {w.lower() for w in clean_inline(corpus_series or "").split()}
+    absorbed = frozenset((own_words | beside) - protected)
+    feature = extract_feature(
+        text=text,
+        product_type=product_type,
+        source_title=source_title,
+        brand=brand,
+        capacity=capacity,
+        color=color,
+        inverter=inverter,
+        model=extraction.code,
+        description=source_description,
+        series=corpus_series,
+        absorbed=absorbed,
+    )
+
     if should_rebuild:
         if kept_words:
             subtype, subtype_from = " ".join(kept_words), "label"
@@ -539,12 +605,6 @@ def build_title(
             # His line said nothing, so the row is built exactly as it was before the line existed.
             subtype = listed_subtype or carried_subtype
             subtype_from = "list" if listed_subtype else ("carried" if carried_subtype else "")
-        # When his line overrules the word the row wrote, that word is still a TYPE word, and a
-        # type word with no slot to stand in must not be resold as the series keyword behind the
-        # model code -- `... Air Conditioner - HSU-19HFPCAA Split` describes two machines.
-        sold_words = (
-            {w.lower() for w in f"{listed_subtype} {carried_subtype}".split()} if kept_words else set()
-        )
         part1_pieces: list[str] = []
         for raw_piece in (brand, capacity, title_color, inverter, subtype, product_type):
             piece = clean_inline(raw_piece)
@@ -575,7 +635,6 @@ def build_title(
             feat_words = [
                 w for w in clean_feat.split()
                 if not word_printed(w, printed)
-                and w.lower() not in sold_words
                 and not (product_type in OMIT_TITLE_COLOR_CATEGORIES and color and w.lower() == color.lower())
             ]
             if feat_words:

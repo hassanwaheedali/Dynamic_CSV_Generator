@@ -482,15 +482,16 @@ def test_the_name_is_rendered_the_way_the_row_spells_it() -> None:
 # T4a -- the whole run, through main.py
 # --------------------------------------------------------------------------- #
 _AC = "Electronics / Home appliances / Air Conditioners / Split"
+_MICROWAVE = "Electronics / Kitchen appliances / Microwaves"
 
 
-def _sheet(title: str, description: str, brand: str) -> dict[str, str]:
+def _sheet(title: str, description: str, brand: str, category: str = _AC) -> dict[str, str]:
     return {
         "Title": title,
         "Description": description,
         "Sell Price": "54999",
         "Original Price": "59999",
-        "Categories": _AC,
+        "Categories": category,
         "Brand": brand,
         "Image": "https://example.test/a.jpg",
     }
@@ -693,6 +694,31 @@ def test_a_row_that_gains_a_subtype_word_sheds_it_from_the_seo_title_not_its_war
     assert " Vertical " in record.title
     assert len(seo) <= 90
     assert "Warranty" in seo, f"the search title cut its tail instead of an added word: {seo!r}"
+
+
+def test_a_name_the_vote_proves_is_not_stranded_by_the_neighbour_rule(pipeline: Pipeline) -> None:
+    """Row 166 of the sheet: the vote proved `Panini`, so the neighbour rule keeps its hands off it.
+
+    `Panini Solo` is the phrase the shop wrote, `Solo` is the type word that moved into `[Subtype]`,
+    and `Panini` is the word left beside it -- a stranded fragment under that rule.  It survives
+    because this row states it in both columns, which is the evidence the corpus votes on, not
+    because a table says the word is allowed.
+    """
+    records = pipeline(
+        [
+            _sheet(
+                "Orient Panini Solo Microwave Oven 20 Ltr Black",
+                "The Orient Panini 20M is a 20 L solo microwave oven in Black.\n\n"
+                "Key Specifications:\n• Solo Function: Yes\n• Mechanical Control: Yes",
+                "Orient",
+                _MICROWAVE,
+            )
+        ]
+    )["records"]
+    record = records[0]
+    assert " Solo Microwave Oven" in record.title
+    assert record.series_token == "Panini"
+    assert "Panini" in record.title
 
 
 def test_a_row_that_states_no_type_word_anywhere_stays_empty(pipeline: Pipeline) -> None:
