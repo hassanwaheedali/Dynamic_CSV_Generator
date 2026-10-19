@@ -77,14 +77,16 @@ WEIGHT_LINE_RE = re.compile(
 INLINE_WEIGHT_RE = re.compile(
     r"(?i)\bweight\s*[:\-]?\s*\d+(?:\.\d+)?\s*(?:kgs?|kilograms?|g|grams?|lbs?|oz)\b"
 )
-# Capacity: only units that really describe a product's size.
+# Capacity: only units that really describe a product's size.  The number and its unit are read
+# across a hyphen too, because the sheet writes `4.0-Ton` -- and a pattern that stops at the hyphen
+# lets a later Description sentence win over the Title's own size.
 CAPACITY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(\d+(?:\.\d+)?)\s*(?:cu\.?\s*ft\.?|cubic\s+feet|cuft)\b", re.IGNORECASE), "Cu Ft"),
-    (re.compile(r"(\d+(?:\.\d+)?)\s*(?:cft)\b", re.IGNORECASE), "Cu Ft"),
-    (re.compile(r"(\d+(?:\.\d+)?)\s*(?:kg|kgs|kilograms?)\b", re.IGNORECASE), "KG"),
-    (re.compile(r"(\d+(?:\.\d+)?)\s*(?:ton|tons)\b", re.IGNORECASE), "Ton"),
-    (re.compile(r"(\d+(?:\.\d+)?)\s*(?:inch|inches)\b", re.IGNORECASE), "Inch"),
-    (re.compile(r"(\d+(?:\.\d+)?)\s*(?:ltrs?|litres?|liters?)\b(?!\s*(?:/|per\b))", re.IGNORECASE), "Ltr"),
+    (re.compile(r"(\d+(?:\.\d+)?)[\s-]*(?:cu\.?\s*ft\.?|cubic\s+feet|cuft)\b", re.IGNORECASE), "Cu Ft"),
+    (re.compile(r"(\d+(?:\.\d+)?)[\s-]*(?:cft)\b", re.IGNORECASE), "Cu Ft"),
+    (re.compile(r"(\d+(?:\.\d+)?)[\s-]*(?:kg|kgs|kilograms?)\b", re.IGNORECASE), "KG"),
+    (re.compile(r"(\d+(?:\.\d+)?)[\s-]*(?:ton|tons)\b", re.IGNORECASE), "Ton"),
+    (re.compile(r"(\d+(?:\.\d+)?)[\s-]*(?:inch|inches)\b", re.IGNORECASE), "Inch"),
+    (re.compile(r"(\d+(?:\.\d+)?)[\s-]*(?:ltrs?|litres?|liters?)\b(?!\s*(?:/|per\b))", re.IGNORECASE), "Ltr"),
 )
 # A code token mixes letters and digits, with at least one dash/slash chunk.
 CODE_TOKEN_RE = re.compile(
@@ -317,6 +319,68 @@ def parse_capacity(text: str, product_type: str) -> str:
         number = number.removesuffix(".0")
         return f"{number} {unit}"
     return ""
+
+
+# EDIT HERE -- what an air conditioner's model number says about its size, by brand.  The two-digit
+# group in the code IS the tonnage, and it is not a ton-x-10 rule: Dawlance `20FROST` is 1.25 Ton
+# while `30FROST` is 1.5, and the digits mean different sizes across brands.  A brand named here is
+# read ONLY from its own table -- Haier `14` must not fall through to the universal table's 1.25,
+# which is what it would have shipped on a 1-Ton Haier split.  Every other brand reads `universal`.
+AC_TONNAGE_BY_CODE: dict[str, dict[str, str]] = {
+    "dawlance": {
+        "10": "0.75", "12": "1.0", "15": "1.0", "20": "1.25",
+        "30": "1.5", "45": "2.0", "60": "2.5",
+    },
+    "haier": {
+        "09": "0.75", "12": "1.0", "13": "1.0", "18": "1.5", "20": "1.5", "24": "2.0",
+    },
+    "universal": {
+        "09": "0.75", "12": "1.0", "14": "1.25", "18": "1.5", "24": "2.0",
+        "30": "2.5", "36": "3.0", "42": "3.5", "48": "4.0", "60": "5.0",
+    },
+}
+
+# A code's size digits: the FIRST two-digit group, never a later one -- `12KB60T3` is a 1 Ton split
+# whose `60` is not a size, and `TAC-12T3-PRO-11` sells the 1 Ton its `12` names.  A group glued
+# inside longer digits (`2024`, `1280`) is not a size either.
+_CODE_SIZE_RE = re.compile(r"(?<!\d)(\d{2})(?!\d)")
+# A model number is one token.  `Inverter Frost 30: Yes` is a `Model:` line the sheet wrote as
+# prose, and prose can be read as anything -- it is not evidence about a size.
+_PROSE_CODE_RE = re.compile(r"[\s:]")
+
+
+def tonnage_from_model_code(brand: str, code: str) -> str:
+    """What an air conditioner's model number states its size to be, or ``""`` when it does not say.
+
+    Called only for a row that writes no size of its own: the digits are evidence about a model
+    number, while the row's words are evidence about the product, and the second outranks the first.
+    """
+    if not code or _PROSE_CODE_RE.search(code):
+        return ""
+    size = _CODE_SIZE_RE.search(code)
+    if size is None:
+        return ""
+    table = AC_TONNAGE_BY_CODE.get(normalize(brand), AC_TONNAGE_BY_CODE["universal"])
+    ton = table.get(size.group(1))
+    return f"{ton.removesuffix('.0')} Ton" if ton else ""
+
+
+def resolve_capacity(
+    text: str, product_type: str, brand: str = "", extraction: ModelExtraction | None = None
+) -> str:
+    """The size this row sells: the number it states, or an air conditioner's own model code.
+
+    Two rungs and no third answer -- a row that writes nothing about its size ships without a
+    `[Capacity]` token, because an invented number on a customer-facing Title is worse than an
+    empty slot.  Only an air conditioner is ever read from its code, and a code the pipeline wrote
+    itself (`fallback`, which is built FROM the capacity) is never read back as evidence of one.
+    """
+    stated = parse_capacity(text, product_type)
+    if stated or product_type != "Air Conditioner" or extraction is None:
+        return stated
+    if extraction.source == "fallback":
+        return ""
+    return tonnage_from_model_code(brand, extraction.code)
 
 
 # ---------------------------------------------------------------------------

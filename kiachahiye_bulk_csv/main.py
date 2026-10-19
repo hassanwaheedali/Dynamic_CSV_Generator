@@ -63,7 +63,7 @@ from sku_handle import (
     find_series_token,
     format_variant,
     handle_normaliser,
-    parse_capacity,
+    resolve_capacity,
     taps_conflict,
     upper_sku_normaliser,
 )
@@ -321,7 +321,7 @@ def resolve_row(
         )
 
     extraction = extract_model(row.title, row.description)
-    capacity = parse_capacity(text, product_type)
+    capacity = resolve_capacity(text, product_type, brand.normalized, extraction)
     if extraction.confidence == "none":
         model = build_fallback_model(
             effective_brand, find_series_token(text), capacity, row.title
@@ -338,7 +338,7 @@ def resolve_row(
 
     title_result = build_title(
         effective_brand, used, product_type, row.title, row.description,
-        analysis=analysis, corpus=corpus,
+        analysis=analysis, corpus=corpus, capacity=capacity,
     )
     if title_result.strategy == "kept-with-light-cleanup":
         flags.flag(

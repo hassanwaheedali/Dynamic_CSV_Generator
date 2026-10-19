@@ -33,7 +33,7 @@ from config import (
     TITLE_MAX as TITLE_MAX,
 )
 from series_corpus import Corpus, RowAnalysis
-from sku_handle import ModelExtraction, find_series_token, parse_capacity
+from sku_handle import ModelExtraction, find_series_token, resolve_capacity
 from textutils import clean_inline, find_full_color
 from warranty import resolve_main_warranty
 
@@ -497,6 +497,7 @@ def build_title(
     strict_rebuild: bool | None = None,
     analysis: RowAnalysis | None = None,
     corpus: Corpus | None = None,
+    capacity: str | None = None,
 ) -> TitleResult:
     """Build one Title using our formula.
 
@@ -521,7 +522,11 @@ def build_title(
         warranty = resolve_main_warranty(text, brand, product_type) or ""
 
     taps = extract_taps(text)
-    capacity = parse_capacity(text, product_type)
+    if capacity is None:
+        # The run resolves each row's size once (`main.py`), because the Title, the SKU and the
+        # attribute cells must all answer to the same number.  Resolving here would read the brand
+        # as the sheet spelled it instead of as the brand registry resolved it.
+        capacity = resolve_capacity(text, product_type, brand, extraction)
     if taps:
         capacity = taps
 
