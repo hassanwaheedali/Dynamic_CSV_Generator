@@ -617,3 +617,119 @@ def test_a_row_the_vote_stays_silent_on_ships_exactly_the_unwired_title(pipeline
         record.source.description,
     )
     assert record.title == unwired.title
+
+
+def test_a_subtype_line_reaches_the_shipped_title_through_the_pipeline(pipeline: Pipeline) -> None:
+    """His line, his words, in the sub-type position -- end to end, not inside one function.
+
+    The Description here also says `Split`, which the type list would have read; the line overrules
+    it, and the overruled word must not reappear behind the model code as a fake series.
+    """
+    records = pipeline(
+        [
+            _sheet(
+                "Haier Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+                "Haier 1.5 Ton DC Inverter Split Air Conditioner, model HSU-19HFPCAA.\n"
+                "SubType: Heat & Cool",
+                "Haier",
+            )
+        ]
+    )["records"]
+    record = records[0]
+    assert record.subtype_from == "label"
+    assert " Heat & Cool Air Conditioner" in record.title
+    assert "Split" not in record.title
+
+
+def test_a_subtype_line_that_adds_no_word_is_flagged(pipeline: Pipeline) -> None:
+    """`SubType: Air Conditioner` names the category, not a sub-type -- and he must be told.
+
+    He checks these lines by hand, so a line that silently changes nothing is the one failure mode
+    this feature cannot have.
+    """
+    run = pipeline(
+        [
+            _sheet(
+                "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+                "Haier 1.5 Ton DC Inverter Split Air Conditioner, model HSU-19HFPCAA.\n"
+                "SubType: Air Conditioner",
+                "Haier",
+            )
+        ]
+    )
+    flagged = [f for f in run["flags"].flags if f.category == "subtype_line_added_nothing"]
+    assert flagged, "a line that added no word has to reach the QC report"
+    assert "Air Conditioner" in flagged[0].message
+    assert run["records"][0].subtype_from != "label"
+
+
+def test_a_row_that_gains_a_subtype_word_sheds_it_from_the_seo_title_not_its_warranty(
+    pipeline: Pipeline,
+) -> None:
+    """A longer Title must not buy its sub-type with the search title's tail.
+
+    The SEO Title is `Title + " Price in Pakistan"` cut to 90 characters, and it already knows to
+    shed its own optional tokens first.  The new `[Subtype]` word was not on that list, so an
+    over-budget row cut the last word instead -- `Warranty` on 116 real rows.  The shop Title keeps
+    the sub-type; the search title gives up a token instead of eating its own tail.
+    """
+    run = pipeline(
+        [
+            {
+                "Title": "Dawlance Inverter Deep Freezer 14 Cu Ft Silver (VF-1035-GD-INV)",
+                "Description": (
+                    "A Dawlance 14 cu ft vertical deep freezer with a 12 Year Compressor Warranty."
+                ),
+                "Sell Price": "66999",
+                "Original Price": "69999",
+                "Categories": "Electronics / Home appliances / Deep Freezers",
+                "Brand": "Dawlance",
+                "Image": "https://example.test/a.jpg",
+            }
+        ]
+    )
+    record, seo = run["records"][0], run["digi"][0]["SEO Title"]
+    assert record.subtype_from == "list"
+    assert " Vertical " in record.title
+    assert len(seo) <= 90
+    assert "Warranty" in seo, f"the search title cut its tail instead of an added word: {seo!r}"
+
+
+def test_a_row_that_states_no_type_word_anywhere_stays_empty(pipeline: Pipeline) -> None:
+    """Silence is still the safe answer: no line, no type word, no invented sub-type.
+
+    `Front-Load` in a model code is not a type statement -- the row says `HSU-19HFPCAA` and nothing
+    about what kind of unit it is.
+    """
+    record = pipeline(
+        [
+            _sheet(
+                "Haier Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+                "Haier 1.5 Ton DC Inverter Air Conditioner, model HSU-19HFPCAA with a copper condenser.",
+                "Haier",
+            )
+        ]
+    )["records"][0]
+    assert record.subtype_from == ""
+    assert record.title.count("Inverter") == 1
+
+
+def test_a_subtype_word_in_the_prose_is_reported_not_guessed_about(pipeline: Pipeline) -> None:
+    """The row says `Sub-type` without a labelled line, so the Title cannot use it -- and he hears.
+
+    Reading that prose would be guessing where the sheet is silent, so the safe output stands and
+    the QC row names the fix: write it as its own labelled line.
+    """
+    run = pipeline(
+        [
+            _sheet(
+                "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+                "Haier 1.5 Ton DC Inverter Split Air Conditioner, model HSU-19HFPCAA. "
+                "Its sub type is heat and cool.",
+                "Haier",
+            )
+        ]
+    )
+    flagged = [f for f in run["flags"].flags if f.category == "subtype_line_added_nothing"]
+    assert len(flagged) == 1
+    assert "own line" in flagged[0].message

@@ -274,6 +274,7 @@ FLAG_LABELS = {
     "title_kept_from_source": "Titles kept as supplied",
     "title_dropped_words": "Rebuilt titles (dropped extra words)",
     "series_believed_from_one_row": "Series names believed from one row",
+    "subtype_line_added_nothing": "SubType: lines that added no word to the Title",
     "attribute_empty": "Attribute values outside the vocabulary",
     "sku_disambiguated": "SKUs made unique",
     "fallback_sku": "SKUs built without a model code",

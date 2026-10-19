@@ -241,6 +241,12 @@ def _single_word_subtype_labels() -> frozenset[str]:
     type words only when the row writes the phrase, which is what :func:`_subtype_words` does
     per row.  Flattening phrases into words is how ``frost`` would become a type word in an
     air-conditioner row and steal Dawlance's line name.
+
+    Note the coupling: this reads ``title_builder.SUBTYPES``, so ADDING a one-word label to that
+    table also adds it to the vote's refuse list for every brand (`Cassette` became a type word
+    this way).  That is intended -- a word that names what the machine is cannot be a line name --
+    but it is not visible from either file, so a series verdict that changes with no edit to the
+    corpus is looking for its cause here.
     """
     words: set[str] = set()
     for group in _subtype_table().values():

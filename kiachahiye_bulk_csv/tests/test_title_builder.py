@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from sku_handle import ModelExtraction
-from title_builder import TITLE_MAX, build_title
+from title_builder import TITLE_MAX, TitleResult, build_title
 
 
 def test_rebuilt_title_full_template() -> None:
@@ -44,7 +44,13 @@ def test_rebuilt_title_washing_machine_with_capacity_and_color() -> None:
         source_description="Automatic Washing Machine 8 Kg White",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 8 KG White Top Load Washing Machine - DW-6100 Advanco - 12 Year Motor Warranty"
+    # `Fully Automatic` now comes from the Description's own sentence -- the Title said only
+    # `Top load`, and the group the Title left unanswered is the one the prose answers.
+    assert result.subtype_from == "list"
+    assert result.title == (
+        "Dawlance 8 KG White Fully Automatic Top Load Washing Machine - DW-6100 Advanco "
+        "- 12 Year Motor Warranty"
+    )
 
 
 def test_rebuilt_title_microwave_oven_with_capacity() -> None:
@@ -317,4 +323,211 @@ def test_geyser_capacity_ignores_inline_weight_and_keeps_nasgas() -> None:
         source_description="",
     )
     assert nas.title.startswith("Nasgas")
+
+
+# --------------------------------------------------------------------------- #
+# [Subtype] -- the owner's `SubType:` line, and the type list reading the Description
+# --------------------------------------------------------------------------- #
+def _haier_ac(source_title: str, source_description: str) -> TitleResult:
+    return build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-19HFPCAA", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title=source_title,
+        source_description=source_description,
+    )
+
+
+def test_a_subtype_line_in_the_description_fills_the_subtype_slot() -> None:
+    """He writes the sub-type, the Title prints it -- in the subtype position, not after the code.
+
+    The row states no type word of its own, so today this Title ships bare: the slot is the only
+    place `Heat & Cool` belongs, between the inverter signal and the category name.
+    """
+    result = _haier_ac(
+        "Haier Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: Heat & Cool",
+    )
+    assert result.subtype_from == "label"
+    assert result.title == (
+        "Haier 1.5 Ton White Inverter Heat & Cool Air Conditioner - HSU-19HFPCAA "
+        "- 10 Year Compressor Warranty"
+    )
+
+
+def test_a_subtype_line_replaces_the_word_the_list_would_have_guessed() -> None:
+    """The line is the authority for that row, so it never merges with the guess.
+
+    A Title saying `Split` next to `SubType: Cassette` is him correcting the sheet's own word; if
+    the builder printed both, the Title would describe two different machines.
+    """
+    result = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: Cassette",
+    )
+    assert result.subtype_from == "label"
+    assert " Cassette Air Conditioner" in result.title
+    assert "Split" not in result.title
+
+
+def test_a_word_the_subtype_line_claims_is_not_resold_as_the_series_keyword() -> None:
+    """Once the slot owns `Split`, the feature path must not print it again behind the code.
+
+    This is the whole leak: a type word that reaches the Title through the feature slot lands after
+    the model code, where a series name belongs.
+    """
+    result = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: Split Heat & Cool",
+    )
+    assert result.title.count("Split") == 1
+    assert result.title == (
+        "Haier 1.5 Ton White Inverter Split Heat & Cool Air Conditioner - HSU-19HFPCAA "
+        "- 10 Year Compressor Warranty"
+    )
+
+
+def test_the_type_list_reads_a_word_the_description_states_when_the_title_does_not() -> None:
+    """No line, no guessing from him -- but the row DID say it, one column over.
+
+    `heat and cool` in the prose is the same statement as `Heat & Cool`, and 109 AC rows state a
+    type word only in the Description.  The slot's own label prints, in group order after the word
+    the Title already gave.
+    """
+    result = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nReversible unit with heat and cool mode.",
+    )
+    assert result.subtype_from == "list"
+    assert result.title.count("Cool") == 1
+    assert result.title == (
+        "Haier 1.5 Ton White Inverter Split Heat & Cool Air Conditioner - HSU-19HFPCAA "
+        "- 10 Year Compressor Warranty"
+    )
+
+
+def test_a_subtype_line_that_states_nothing_new_changes_nothing_and_says_so() -> None:
+    """`SubType: Air Conditioner` is the category name, not a sub-type -- so the row must not move.
+
+    He checks these lines by hand, so the report needs to be able to name the rows where a line he
+    wrote added no words at all.
+    """
+    with_line = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: Air Conditioner",
+    )
+    without_line = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA",
+    )
+    assert with_line.title == without_line.title
+    assert with_line.subtype_from != "label"
+    assert with_line.subtype_label_added is False
+
+
+def test_a_word_the_description_negates_never_becomes_a_type_word() -> None:
+    """"Not electric, gas only" says NO to Electric and YES to Gas in one breath.
+
+    A phrase match over the whole Description reads that sentence as an electric machine, so the
+    shop's `Attribute_Geyser Type` ships `Electric` for a gas geyser -- a wrong value inside a
+    closed list, which is the very failure the attribute layer guards against by listing negations
+    before their positives (attributes.py).  Reading the row clause by clause is the same guard.
+    """
+    result = build_title(
+        brand="Nasgas",
+        extraction=ModelExtraction(code="NG-1100", source="title-parenthetical", confidence="high"),
+        product_type="Geyser",
+        source_title="Nasgas Water Heater 11 Ltr Copper (NG-1100)",
+        source_description="The Nasgas NG-1100 is a copper-tank geyser. Not electric, gas only.",
+    )
+    assert "Electric" not in result.title
+    assert result.subtype_token == "Gas"
+    assert " Gas Geyser" in result.title
+
+
+def test_a_negation_reaches_only_the_clause_it_sits_in() -> None:
+    """`No Frost` is a phrase, not a `not` -- and a negation does not blind the clause after it.
+
+    Cut too coarsely, the guard would refuse every word after the first `no` and the row would ship
+    with no type at all.  The negation governs its own clause and nothing else.
+    """
+    result = build_title(
+        brand="Nasgas",
+        extraction=ModelExtraction(code="NG-1101", source="title-parenthetical", confidence="high"),
+        product_type="Geyser",
+        source_title="Nasgas Water Heater 11 Ltr Copper (NG-1101)",
+        source_description="No Frost insulation on the tank, electric element, 11 litre capacity.",
+    )
+    assert result.subtype_token == "Electric"
+    assert " Electric Geyser" in result.title
+
+
+def test_the_title_answers_a_group_before_the_description_does() -> None:
+    """When the two columns name different machines, the Title's answer is the row's answer.
+
+    The case that decides the rule is a disagreement: the Title says `Split`, the prose says
+    `floor standing`.  Read the prose first and the table's own order picks the word the buyer was
+    NOT shown -- measured, that swap moves 26 real rows on this sheet.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-20", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Split Inverter Air Conditioner 2 Ton White (HSU-20)",
+        source_description="A floor standing unit with heat and cool operation.",
+    )
+    assert result.subtype_token == "Split Heat & Cool"
+    assert "Floor Standing" not in result.title
+
+
+def test_a_subtype_line_that_repeats_the_model_code_prints_the_code_once() -> None:
+    """A vendor pasting the SKU into his own line must not ship a Title with the code twice.
+
+    Two of the same code in one Title is a row that shadows itself on the shelf.
+    """
+    result = build_title(
+        brand="Dawlance",
+        extraction=ModelExtraction(code="DT-1030", source="title-parenthetical", confidence="high"),
+        product_type="Refrigerator",
+        source_title="Dawlance Inverter Refrigerator 10 Cu Ft White (DT-1030)",
+        source_description="Model DT-1030.\nSubType: DT-1030 Double Door",
+    )
+    assert result.title.count("DT-1030") == 1
+    assert result.subtype_token == "Double Door"
+    assert " Double Door Refrigerator" in result.title
+
+
+def test_a_subtype_line_wrapped_in_html_is_still_read() -> None:
+    """These sheets arrive with `<b>` around their labels; the line is no less his for the markup."""
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-21", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Inverter Air Conditioner 1.5 Ton White (HSU-21)",
+        source_description="<p><b>SubType:</b> Heat &amp; Cool</p>",
+    )
+    assert result.subtype_from == "label"
+    assert "Heat" in result.title
+
+
+def test_a_subtype_line_that_is_a_sentence_is_refused_and_says_why() -> None:
+    """A value longer than a sub-type is a vendor answering a different question.
+
+    Printing it would fold his whole paragraph into the Title -- one real sheet row reached 249
+    characters this way -- and a Title is a product's name, not its spec sheet.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-22", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Inverter Air Conditioner 1.5 Ton White (HSU-22)",
+        source_description=(
+            "SubType: Heat & Cool with a 5 Star Energy Rating, Copper Condenser, "
+            "Inverter Compressor and Self Cleaning Filter"
+        ),
+    )
+    assert len(result.title) < 130
+    assert result.subtype_from != "label"
+    assert "words long" in result.subtype_label_note
+
 

@@ -23,7 +23,7 @@ import config as CONFIG
 from attributes import build_attributes
 from brands import resolve_brand
 from categories import resolve_category, resolve_product_type
-from description_builder import build_description_bundle
+from description_builder import build_description_bundle, mentions_subtype
 from models import InputRow, ProductRecord
 from pricing import resolve_prices, resolve_quantity
 from qc_report import (
@@ -41,6 +41,7 @@ from qc_report import (
     CAT_SERIES_SINGLE_ROW,
     CAT_SHORT_DESCRIPTION_THIN,
     CAT_SKU_DEDUPED,
+    CAT_SUBTYPE_LINE_UNUSED,
     CAT_THIN_DESCRIPTION,
     CAT_TITLE_DESCRIPTION_CONFLICT,
     CAT_TITLE_DROPPED_WORDS,
@@ -360,6 +361,18 @@ def resolve_row(
             "-- the vote's weakest proof, not two products stating it. "
             "Confirm it is a real line before uploading.",
         )
+    if title_result.subtype_line and not title_result.subtype_label_added:
+        flags.flag(
+            row.row_number, row.title, CAT_SUBTYPE_LINE_UNUSED,
+            f"SubType: {title_result.subtype_line!r} added no word to the Title -- it "
+            f"{title_result.subtype_label_note}. The Description still shows your line.",
+        )
+    elif not title_result.subtype_line and mentions_subtype(row.description):
+        flags.flag(
+            row.row_number, row.title, CAT_SUBTYPE_LINE_UNUSED,
+            "The row writes the words `SubType` but not as a labelled line -- write "
+            "`SubType: Heat & Cool` on its own line, or the Title cannot use it.",
+        )
 
     warranty_rows, warranty_headline, warranty_source = resolve_warranty(
         text, brand.normalized, product_type
@@ -381,6 +394,10 @@ def resolve_row(
             title_result.color_token,
             title_result.inverter_token,
             title_result.capacity_token,
+            # Last, not first: an over-budget search title must shed the sub-type word before it cut
+            # its own TAIL -- measured, 116 rows had lost `Warranty`, `Compressor` or their tonnage.
+            # Ahead of this list it became the first casualty on 219 rows whose Title never changed.
+            title_result.subtype_token,
         ],
     )
     if description.thin:
@@ -506,6 +523,7 @@ def resolve_row(
         warranty_source=warranty_source,
         variant_suffix=variant_suffix,
         series_token=title_result.series_token,
+        subtype_from=title_result.subtype_from,
         title_strategy=title_result.strategy,
         capacity_token=title_result.capacity_token,
         color_token=title_result.color_token,
@@ -720,6 +738,7 @@ def print_summary(
         (CAT_TITLE_FALLBACK, "Title kept from source"),
         (CAT_TITLE_DROPPED_WORDS, "Rebuilt Title dropped extra source words"),
         (CAT_SERIES_SINGLE_ROW, "Series name believed from a single row"),
+        (CAT_SUBTYPE_LINE_UNUSED, "SubType: line added no word to the Title"),
         (CAT_PRODUCT_TYPE_INFERRED, "Product Type inferred from breadcrumb"),
     ):
         print(f"  {label:60} {flags.count(category):5} rows")
@@ -736,6 +755,15 @@ def print_summary(
             category_misses["digi"][record.category.raw] += 1
         if record.category.alfa_id is None:
             category_misses["alfa"][record.category.raw] += 1
+
+    print()
+    print("SUBTYPE SLOTS THIS RUN")
+    slots: Counter[str] = Counter(record.subtype_from for record in records)
+    print(
+        f"  your SubType: line {slots['label']:5} | type list read from the row "
+        f"{slots['list']:5} | carried off the series slot {slots['carried']:5} | "
+        f"nothing states one {slots['']:5}"
+    )
 
     print()
     print("SERIES NAMES THIS RUN PROVED")

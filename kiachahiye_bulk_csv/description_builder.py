@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from models import DescriptionBundle, SpecRow
-from textutils import clean_inline, dedupe_preserve_order
+from textutils import clean_inline, dedupe_preserve_order, strip_markup_keep_lines
 
 TABLE_HEAD = (
     '<table style="width:100%;border-collapse:collapse;font-family:Arial,sans-serif;'
@@ -207,6 +207,29 @@ def parse_description(description: str) -> ParsedSpecs:
         key_features=features,
         thin=thin,
     )
+
+
+def subtype_label(description: str) -> str:
+    """The sheet's own sub-type statement: a `SubType: Heat & Cool` line, value exactly as written.
+
+    Read through :func:`parse_description` because a bullet in front of the label is how these
+    sheets write it -- a line-start regex probe finds none of them.  Only this label counts:
+    `Type:`, `Door Type:` and `Air Conditioner Type:` answer different questions.
+    """
+    for label, value in parse_description(strip_markup_keep_lines(description)).labelled:
+        if re.sub(r"[^a-z0-9]", "", label.lower()) == "subtype":
+            return clean_inline(value)
+    return ""
+
+
+#: A row that talks about a sub-type without writing it as a labelled line.  The Title cannot use
+#: that, and the owner checks these by hand, so it has to be reported rather than dropped quietly.
+_SUBTYPE_MENTION_RE = re.compile(r"\bsub\s*-?\s*type\b", re.IGNORECASE)
+
+
+def mentions_subtype(description: str) -> bool:
+    """Whether the row writes the words `SubType` at all, labelled or not."""
+    return _SUBTYPE_MENTION_RE.search(strip_markup_keep_lines(description)) is not None
 
 
 # ---------------------------------------------------------------------------

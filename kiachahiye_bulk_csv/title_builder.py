@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
+import description_builder
 import series_corpus
 from config import (
     OMIT_TITLE_COLOR_CATEGORIES as OMIT_TITLE_COLOR_CATEGORIES,
@@ -86,6 +88,10 @@ _STOPWORDS = frozenset(
 )
 
 
+SubtypeSource = Literal["", "label", "list", "carried"]
+"""Which rung of the ladder filled the `[Subtype]` slot for one row."""
+
+
 @dataclass(frozen=True)
 class TitleResult:
     """One row's Title, the tokens it was built from, and how it was produced."""
@@ -106,6 +112,30 @@ class TitleResult:
     """
 
     series_earned_by: series_corpus.SeriesProof = ""
+
+    subtype_token: str = ""
+    """The words that filled this row's `[Subtype]` slot, in the order they print."""
+
+    subtype_from: SubtypeSource = ""
+    """Which rung filled the slot: the sheet's own `SubType:` line, the type list, or the series
+    carry-over.  ``""`` means nothing claimed it -- which is the safe answer, not a failure."""
+
+    subtype_label_added: bool = False
+    """Whether a `SubType:` line was written AND its words reached the Title.
+
+    A line whose every word the Title already prints (`SubType: Air Conditioner`) adds nothing; the
+    row ships as it did before, and he wants to be told, because he checks those lines by hand.
+    """
+
+    subtype_line: str = ""
+    """What the row's `SubType:` line said, verbatim, whether or not it was used -- the flag needs
+    to quote the line back to the person who wrote it, and re-parsing the Description for that would
+    read it a second way."""
+
+    subtype_label_note: str = ""
+    """Why a written `SubType:` line added no word, in the builder's own knowledge: the row kept its
+    source wording, the line restates what the Title already prints, or the value was a sentence.
+    Empty when the line was used."""
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +256,11 @@ SUBTYPES: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {
     ),
     "Air Conditioner": (
         {
+            # Most specific first: a row that writes `Wall Mounted Split` is one machine, and
+            # printing the shorter `Split` alone costs the shop its `Attribute_Air Conditioner Type`
+            # value (measured: 25 rows fell from `Wall Mounted Split`/`Wall Mounted` to `Split`).
+            "Wall Mounted Split": ("wall mounted split",),
+            "Wall Mounted": ("wall mounted",),
             "Floor Standing": ("floor standing",),
             "Split": ("split",),
         },
@@ -263,16 +298,104 @@ SUBTYPES: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {
 }
 
 
-def extract_subtype(product_type: str, source_title: str) -> str:
-    """Sub-category words the source title states, e.g. ``Fully Automatic Front Load``."""
-    title = " " + re.sub(r"[^a-z]+", " ", source_title.lower()) + " "
+def _spaced_words(text: str) -> str:
+    """Lower-case the text and cut every non-letter to a space, padded so word tests are exact."""
+    return " " + re.sub(r"[^a-z]+", " ", text.lower()) + " "
+
+
+def word_printed(word: str, printed: str) -> bool:
+    """Whether this word already stands in the text as a word of its own.
+
+    A substring test used to drop the `E` of `E Luxury Pro` because `E` is inside `Kenwood`, and
+    sold the row as somebody else's line.  A name is repeated by a dedupe, never by its letters --
+    so a row whose name is ALSO a run inside its own part number (`H40K85EFX` + `K85 Series`)
+    prints the name and reads redundant.  Seven rows do this; hiding the name to avoid the
+    redundancy would repeat the very defect the reading layer was built to kill.  Shortlist for T8,
+    not a rule here.
+
+    The boundary class carries `.` as well as letters and digits, or the `5` of `SubType: 5 Star`
+    counts as already printed by a `1.5 Ton` capacity.
+    """
+    return re.search(rf"(?<![\w.]){re.escape(word.lower())}(?![\w.])", printed.lower()) is not None
+
+
+#: Punctuation that ends a vendor's statement -- one clause, one claim.
+_CLAUSE_RE = re.compile(r"[^.;,•·\n\r\t]+")
+#: A type word standing behind one of these in its own clause was denied, not stated.
+_NEGATION_RE = re.compile(r"\b(?:not|no|without|never|nor)\b")
+
+
+def _clauses(text: str) -> list[str]:
+    """The row's text cut into squashed clauses -- the unit a vendor negates inside.
+
+    `Not electric, gas only` answers two questions in one sentence, and a phrase match over the whole
+    Description ships that geyser as `Electric` -- a wrong value in a closed attribute list, which is
+    the failure `attributes.py` guards against by putting negations before their positives.  Here a
+    negation governs its own clause and no other.
+    """
+    return [_spaced_words(clause) for clause in _CLAUSE_RE.findall(text)]
+
+
+def _group_label(group: dict[str, tuple[str, ...]], clauses: list[str]) -> str:
+    """The first label in this group whose any alias stands, un-negated, in one clause."""
+    for label, aliases in group.items():
+        for alias in aliases:
+            needle = _spaced_words(alias)
+            for clause in clauses:
+                start = clause.find(needle)
+                if start >= 0 and not _NEGATION_RE.search(clause[:start]):
+                    return label
+    return ""
+
+
+def extract_subtype(product_type: str, source_title: str, source_description: str = "") -> str:
+    """Sub-category words the row states, e.g. ``Fully Automatic Front Load``.
+
+    The Title answers for a group first, because that is the sentence the buyer sees; the
+    Description only fills a group the Title said nothing about, so it can add ``Heat & Cool`` to a
+    row that wrote ``Split`` but never it -- and never overwrite the row's own word.
+    """
+    title_clauses = _clauses(source_title)
+    row_clauses = title_clauses + _clauses(source_description)
     labels: list[str] = []
     for group in SUBTYPES.get(product_type, ()):
-        for label, aliases in group.items():
-            if any(f" {alias} " in title for alias in aliases):
-                labels.append(label)
-                break
-    return " ".join(labels)
+        labels.append(_group_label(group, title_clauses) or _group_label(group, row_clauses))
+    return " ".join(label for label in labels if label)
+
+
+#: A sub-type names what the machine is; a sentence after `SubType:` is a vendor answering a
+#: different question.  Four words is the longest real one on these sheets (`Split DC Inverter AC`).
+SUBTYPE_MAX_WORDS = 4
+
+
+def subtype_line_words(value: str, said_already: str) -> tuple[list[str], str]:
+    """The words of a `SubType:` line that the row has not already printed, and why if none.
+
+    Punctuation at the ends of the value goes; a sign BETWEEN two words stays, because
+    `Heat & Cool` is how he wrote it and how the shelf must read it.  A value that repeats the
+    model code, the warranty or the category is refused word by word, because a Title that says the
+    SKU twice is a row shadowing itself.
+    """
+    if not value:
+        return [], ""
+    line_words = value.strip(" .,:;-–—").split()
+    if len(line_words) > SUBTYPE_MAX_WORDS:
+        return [], (
+            f"is {len(line_words)} words long -- a sub-type is 1-{SUBTYPE_MAX_WORDS} words, "
+            "so nothing was added"
+        )
+    kept: list[str] = []
+    for index, word in enumerate(line_words):
+        if not re.search(r"[A-Za-z0-9]", word):
+            if 0 < index < len(line_words) - 1 and kept:
+                kept.append(word)
+            continue
+        if word_printed(word, said_already) or word_printed(word, " ".join(kept)):
+            continue
+        kept.append(word)
+    if kept:
+        return kept, ""
+    return [], "states only words this Title already prints"
 
 
 def extract_feature(
@@ -392,16 +515,45 @@ def build_title(
 
     should_rebuild = strict_rebuild or (extraction.confidence in ("high", "medium"))
     slot_printed = False
+    subtype: str = ""
+    subtype_from: SubtypeSource = ""
+    title_color = "" if product_type in OMIT_TITLE_COLOR_CATEGORIES else color
+    label_value = clean_inline(description_builder.subtype_label(source_description))
+    # A word the Title prints anyway is not a sub-type word: `SubType: Air Conditioner` states the
+    # category, and `Double Door Refrigerator` exactly one word more than `Double Door`.  The model
+    # code and the warranty are refused for the same reason -- a Title carrying its own SKU twice is
+    # a row shadowing itself.  Read before the rebuild test, because a row kept from source still
+    # has a Title, and he is owed the truth about his line either way.
+    said_already = " ".join(
+        (brand, capacity, title_color, color, inverter, product_type, extraction.code, warranty)
+    )
+    kept_words, label_note = subtype_line_words(label_value, said_already)
+    listed_subtype = extract_subtype(product_type, source_title, source_description)
+    if kept_words and " ".join(kept_words).lower() == listed_subtype.lower():
+        label_note = "restates the word this row's own type already gives"
 
     if should_rebuild:
-        title_color = "" if product_type in OMIT_TITLE_COLOR_CATEGORIES else color
-        subtype = extract_subtype(product_type, source_title) or carried_subtype
+        if kept_words:
+            subtype, subtype_from = " ".join(kept_words), "label"
+        else:
+            # His line said nothing, so the row is built exactly as it was before the line existed.
+            subtype = listed_subtype or carried_subtype
+            subtype_from = "list" if listed_subtype else ("carried" if carried_subtype else "")
+        # When his line overrules the word the row wrote, that word is still a TYPE word, and a
+        # type word with no slot to stand in must not be resold as the series keyword behind the
+        # model code -- `... Air Conditioner - HSU-19HFPCAA Split` describes two machines.
+        sold_words = (
+            {w.lower() for w in f"{listed_subtype} {carried_subtype}".split()} if kept_words else set()
+        )
         part1_pieces: list[str] = []
         for raw_piece in (brand, capacity, title_color, inverter, subtype, product_type):
             piece = clean_inline(raw_piece)
             if not piece:
                 continue
-            if piece.lower() in " ".join(part1_pieces).lower():
+            joined = " ".join(part1_pieces)
+            # Word-level, never letters: `Gas` is a type word even next to a brand called `Nasgas`,
+            # and a substring test here drops the row's own sub-type on the way to the category name.
+            if joined and all(word_printed(word, joined) for word in piece.split()):
                 continue
             part1_pieces.append(piece)
         part1 = " ".join(part1_pieces)
@@ -420,24 +572,10 @@ def build_title(
             clean_feat = clean_inline(feature)
             printed = f"{part1} {' '.join(part2_pieces)}".lower()
 
-            def already_printed(word: str) -> bool:
-                """Whether this word already stands in the Title as a word of its own.
-
-                A substring test used to drop the `E` of `E Luxury Pro` because `E` is inside
-                `Kenwood`, and sold the row as somebody else's line.  A name is repeated by a
-                dedupe, never by its letters -- so a row whose name is ALSO a run inside its own
-                part number (`H40K85EFX` + `K85 Series`) prints the name and reads redundant.  Seven
-                rows do this; hiding the name to avoid the redundancy would repeat the very defect
-                the reading layer was built to kill.  Shortlist for T8, not a rule here.
-                """
-                return (
-                    re.search(rf"(?<![a-z0-9]){re.escape(word.lower())}(?![a-z0-9])", printed)
-                    is not None
-                )
-
             feat_words = [
                 w for w in clean_feat.split()
-                if not already_printed(w)
+                if not word_printed(w, printed)
+                and w.lower() not in sold_words
                 and not (product_type in OMIT_TITLE_COLOR_CATEGORIES and color and w.lower() == color.lower())
             ]
             if feat_words:
@@ -490,6 +628,18 @@ def build_title(
     name_printed = slot_printed and all(
         word.lower() in title.lower() for word in clean_inline(corpus_series or "").split()
     )
+    # Same question for his line: it only counts as added if the words reached the shipped Title.
+    # Tested against the Title, not against which rung the builder claims, because a Title kept from
+    # source may well print the very word he wrote -- and then his line was not ignored.
+    label_printed = bool(kept_words) and all(word_printed(word, title) for word in kept_words)
+    subtype_printed = bool(subtype) and all(word_printed(word, title) for word in subtype.split())
+    if label_value and not label_printed and not label_note:
+        if strategy != "rebuilt":
+            label_note = "this row keeps its own source wording"
+        elif kept_words:
+            label_note = "its words were cut by the Title's length limit"
+        else:
+            label_note = "states only words this Title already prints"
     return TitleResult(
         title=title,
         strategy=strategy,
@@ -503,6 +653,11 @@ def build_title(
         series_earned_by=series_earned_by if name_printed else "",
         dropped_words=dropped_words(source_title, title),
         warranty_token=warranty,
+        subtype_token=subtype if subtype_printed else "",
+        subtype_from=subtype_from if subtype_printed else "",
+        subtype_label_added=label_printed,
+        subtype_line=label_value,
+        subtype_label_note="" if label_printed else label_note,
     )
 
 

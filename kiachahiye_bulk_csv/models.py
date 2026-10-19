@@ -130,6 +130,7 @@ class ProductRecord:
     variant_suffix: str = ""
     handle_deduped: bool = False
     series_token: str = ""
+    subtype_from: str = ""
     title_strategy: str = ""
     capacity_token: str = ""
     color_token: str = ""
