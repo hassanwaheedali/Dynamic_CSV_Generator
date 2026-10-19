@@ -261,3 +261,30 @@ def test_trimming_never_mutilates_a_part_number_to_buy_room() -> None:
     )
     assert "Etech-12" in seo
     assert "--" not in seo
+
+
+def test_seo_padding_never_shreds_the_title_into_words() -> None:
+    """A Title that states `1.5 Ton` used to hand the padding ladder `1.5`, `Ton` and `Air`.
+
+    The shop's meta description then ended `..., 1.5. Buy the best Air Conditioner in Pakistan
+    today.` -- fourteen rows read like that.  Padding may only reuse a whole fact about this
+    product, so the sentence stays a sentence.
+    """
+    bundle = _bundle(
+        "The Gree 18PITH-10W is a split inverter air conditioner.",
+        brand="Gree",
+        model="18PITH-10W",
+        product_type="Air Conditioner",
+        breadcrumb_leaf="Air Conditioners",
+        capacity="1.5 Ton",
+        title=(
+            "Gree 1.5 Ton White Inverter Split Air Conditioner - 18PITH-10W Elegant "
+            "- 10 Year Compressor Warranty"
+        ),
+        feature_tokens=["Elegant", "White", "1.5 Ton"],
+    )
+    seo = bundle.seo_description
+    assert SEO_DESC_MIN <= len(seo) <= SEO_DESC_MAX
+    assert ", 1.5." not in seo
+    assert ", Ton." not in seo
+    assert ", Air." not in seo

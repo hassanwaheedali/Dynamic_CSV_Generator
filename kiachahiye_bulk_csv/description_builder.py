@@ -592,6 +592,10 @@ def _grow_into_range(head: str, recipe: str, phrases: list[str], words: list[str
 
     def grow(source: list[str], require_fit: bool) -> bool:
         for item in sorted(source, key=len, reverse=True):
+            # Never say the same fact twice: the padding pool is built from the same spec rows the
+            # head already quotes, so `..., Inverter Yes, Inverter Yes.` is reachable without this.
+            if item in extra or item.lower() in head.lower():
+                continue
             candidate = render([*extra, item])
             if len(candidate) > SEO_DESC_MAX:
                 continue
@@ -624,13 +628,12 @@ def build_seo_description(
     category_name: str,
     warranty_duration: str | None,
     rows: list[SpecRow],
-    title: str,
     tags: list[str] | None = None,
 ) -> str:
     """The section 8 recipe, then padded/trimmed into 151-155 characters.
 
-    Padding only ever reuses this product's own facts -- its extracted specs,
-    its key features, its real Title and its tags.
+    Padding only ever reuses this product's own facts -- its extracted specs, its key features and
+    its brand, type and category.
     """
     brand_token = clean_inline(f"{brand} {model}").strip() or brand
     features = _feature_phrases(rows)
@@ -659,16 +662,15 @@ def build_seo_description(
     heads = list(dict.fromkeys(heads))
     heads.sort(key=len, reverse=True)
 
-    # Keyword phrases this sentence may be padded with, richest first: the row's
-    # own tags, then brand+type, then its extracted feature phrases.  Single
-    # words from the Title are the last resort.
+    # Keyword phrases this sentence may be padded with, richest first: the row's own tags, then
+    # brand+type, then its extracted feature phrases.  The last resort is a whole fact about this
+    # product -- never one word cut out of the Title, because a Title that states `1.5 Ton` hands
+    # the ladder `1.5`, `Ton` and `Air`, and the shop's meta description then ends
+    # `..., 1.5. Buy the best Air Conditioner in Pakistan today.`: a shredded Title, not a sentence.
     phrases: list[str] = list(tags or [])
     phrases.extend([f"{brand} {type_short}", f"{brand} {type_short} price in Pakistan"])
     phrases.extend(features)
-    words: list[str] = []
-    if title:
-        words.extend(title.split())
-    words.extend([brand, type_short, category_name, "Pakistan"])
+    words: list[str] = [brand, type_short, category_name, "Pakistan"]
 
     longest = ""
     for tail in tails:
@@ -764,8 +766,7 @@ def build_description_bundle(
     seo_title = build_seo_title(title, product_type, brand, feature_tokens)
     seo_description = clean_inline(
         build_seo_description(
-            brand, model, product_type, product_type, warranty_duration, deduped,
-            title, tags,
+            brand, model, product_type, product_type, warranty_duration, deduped, tags,
         )
     )
     thin = parsed.thin and not parsed.key_features
