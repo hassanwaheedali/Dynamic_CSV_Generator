@@ -491,6 +491,43 @@ from config import SEO_TITLE_MAX as SEO_TITLE_MAX  # noqa: E402
 from config import SEO_TITLE_MIN as SEO_TITLE_MIN  # noqa: E402
 from config import THIN_SHORT_BULLETS as SHORT_DESC_BULLETS  # noqa: E402  # edit in config.py
 
+#: A ` - ` segment that survived as nothing but digits (`- 30 -`): a number with no name on it.
+_BARE_NUMBER_RE = re.compile(r"\d+[A-Za-z]?")
+
+
+def _segments(text: str) -> list[str]:
+    """The Title cut on its own ` - ` clause breaks, with separators and blanks stripped."""
+    return [part.strip(" -,") for part in re.split(r"\s+-\s+", text) if part.strip(" -,")]
+
+
+def _tidy_segments(text: str) -> str:
+    """Rejoin segments, dropping any the cut emptied -- `Dispenser - - 3 Year Warranty` never ships."""
+    return re.sub(r"\s{2,}", " ", " - ".join(_segments(text))).strip(" -,")
+
+
+def _bare_number_segments(text: str) -> set[str]:
+    return {part for part in _segments(text) if _BARE_NUMBER_RE.fullmatch(part)}
+
+
+def _shed_token(text: str, token: str) -> str:
+    """Take ONE fact out of the copy to fit the budget, or return the text untouched.
+
+    Only a token standing as its own whole word is removable: cutting `Etech` out of the part number
+    `Etech-12` shipped `Air Conditioner --12`, a mutilated code and a hole.  A cut that CREATES a
+    segment of bare digits is refused too -- deleting `Frost` out of `- Frost 30 -` left the shop's
+    result reading `- 30 -`, a number standing where a name was.  A number the row wrote by itself
+    (`- 18G -`) is not created here and must not freeze the whole shed.
+    """
+    if not token:
+        return text
+    pattern = rf"(?<!\S){re.escape(token)}(?!\S)"
+    if not re.search(pattern, text):
+        return text
+    candidate = _tidy_segments(re.sub(pattern, "", text, count=1))
+    if _bare_number_segments(candidate) - _bare_number_segments(text):
+        return text
+    return candidate
+
 
 def build_seo_title(
     title: str,
@@ -511,19 +548,7 @@ def build_seo_title(
         for token in feature_tokens:
             if len(trimmed) <= budget:
                 break
-            # Only a token that stands as its own word may be removed: cutting `Etech` out of the
-            # part number `Etech-12` shipped `Air Conditioner --12` -- a mutilated code and a hole.
-            pattern = rf"(?<!\S){re.escape(token)}(?!\S)"
-            if token and re.search(pattern, trimmed):
-                trimmed = re.sub(pattern, "", trimmed, count=1)
-                # A deleted token can empty a whole ` - ` segment; the segment goes with it, or the
-                # shop's search result reads "Dispenser - - 3 Year Compressor Warranty".
-                trimmed = " - ".join(
-                    part.strip(" -,")
-                    for part in re.split(r"\s+-\s+", trimmed)
-                    if part.strip(" -,")
-                )
-                trimmed = re.sub(r"\s{2,}", " ", trimmed).strip(" -,")
+            trimmed = _shed_token(trimmed, token)
         if len(trimmed) > budget:
             trimmed = trimmed[:budget].rsplit(" ", 1)[0].rstrip(" -,")
 

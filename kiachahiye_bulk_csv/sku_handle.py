@@ -145,6 +145,9 @@ def clean_model_code(value: str) -> str:
     ``HC``.
     """
     cleaned = re.sub(r"\s+", " ", value.replace("®", " ").replace("™", " ")).strip()
+    # A spec row the vendor filled in as `Model: 12EM/DU: Yes` carries its own answer, not a second
+    # fact -- the `: Yes` is the sheet's checkbox column, and leaving it in shipped it as the handle.
+    cleaned = re.sub(r"\s*:\s*(?:yes|no)\s*$", "", cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.split(r"\s{2,}|\t", cleaned)[0].strip()
     base = find_base_color(cleaned)
     if base:
@@ -257,16 +260,26 @@ def lookup_is_acronym(word: str) -> bool:
 
 
 def build_fallback_model(
-    brand: str, series: str, capacity: str, title: str
+    brand: str, series: str, capacity: str, title: str, identity: str = ""
 ) -> str:
     """A readable, stable model stand-in for a row with no formal code.
 
     ``Dawlance ... Kore 32 Inch ...`` becomes ``DAWLANCE-KORE-32``.  Every row
     built this way is flagged for a human.
+
+    When the row wrote a name and a number of its own -- ``Frost 30``, ``Econo 15`` -- that pair IS
+    the product's identity and it replaces the recipe: the shop sells the thing by those words, so
+    a SKU built from its size digits instead would name a machine this row never stated.
     """
+    brand_token = re.sub(r"[^A-Za-z0-9]", "", brand).upper()
+    if identity:
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", identity).strip("-").upper()
+        if slug.startswith(brand_token):
+            return slug
+        return f"{brand_token}-{slug}" if brand_token else slug
     pieces: list[str] = []
     if brand:
-        pieces.append(re.sub(r"[^A-Za-z0-9]", "", brand).upper())
+        pieces.append(brand_token)
     if series and series.upper() not in pieces:
         pieces.append(re.sub(r"[^A-Za-z0-9]", "", series).upper())
     digits = re.match(r"\d+(?:\.\d+)?", capacity or "")

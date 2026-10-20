@@ -33,8 +33,8 @@ from config import (
     TITLE_MAX as TITLE_MAX,
 )
 from series_corpus import Corpus, RowAnalysis
-from sku_handle import ModelExtraction, find_series_token, resolve_capacity
-from textutils import clean_inline, find_full_color
+from sku_handle import TYPE_WORDS, ModelExtraction, find_series_token, resolve_capacity
+from textutils import BASE_COLORS, clean_inline, find_full_color
 from warranty import resolve_main_warranty
 
 # ---------------------------------------------------------------------------
@@ -103,6 +103,13 @@ class TitleResult:
     series_token: str
     inverter_token: str
     dropped_words: tuple[str, ...]
+    identity_token: str = ""
+    """The name-and-number a codeless row wrote for itself (`Twister 1150`), as it reached segment 2.
+
+    The SEO Title sheds by whole token, so this must be shed as the pair the row wrote: cutting
+    `Twister` out of `Twister 1150` left a bare `- 1150 -` in the shop's search result.
+    """
+
     warranty_token: str = ""
     series_name: str = ""
     """The name this row prints in its series slot, exactly as the run's vote chose it.
@@ -314,6 +321,159 @@ SUBTYPES: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {
 }
 
 
+# EDIT HERE -- every unit a size on this sheet is written in.  One list serves both rules that need
+# it: a number standing in front of one of these words is the product's stated size, and the word
+# itself can never be part of the name the shop sells the machine by.
+SIZE_UNIT_WORDS: frozenset[str] = frozenset(
+    {
+        "ton", "tons", "kg", "kgs", "kilogram", "kilograms", "ltr", "ltrs", "litre", "litres",
+        "liter", "liters", "litters", "cu", "ft", "cf", "cft", "cuft", "inch", "inches", "in",
+        "w", "watt", "watts", "v", "volt", "volts", "va", "ah", "hz", "rpm", "btu", "mm", "cm",
+        "sq", "lb", "lbs", "pound", "pounds", "g", "gm", "gms", "gram", "grams", "oz", "ounce",
+        "taps", "tap", "star", "spin", "month", "months", "day", "days",
+    }
+)
+
+# EDIT HERE -- words a shop says INSIDE a model name, so the type list above may not block them:
+# `Chrome Plus 45`, `Infinity Pro 15`, `Sprinter Turbo` are the name, not the technology.  `Star` is
+# deliberately NOT here: on its own it is an energy rating, and Haier's `E-Star` reaches the Title
+# through the vote, whole -- a half name read off one side of its own hyphen is worse than silence.
+IDENTITY_NAME_WORDS: frozenset[str] = frozenset({"plus", "pro", "turbo", "master"})
+
+# EDIT HERE -- words that name a machine's shape, size, colour or spec answer.  A stock name is the
+# run of words a shop actually says -- `Frost 30`, `Chrome Plus 45`, `Twister 1150` -- and these
+# words are never part of one: they are the category, the type, the technology or the paint.
+# TYPE_WORDS is the sheet's own list of words that carry no model information, so it is reused here
+# rather than a second copy of the same vocabulary being kept by hand.
+_NOT_A_NAME_WORDS: frozenset[str] = (
+    CATEGORY_WORDS
+    | SIZE_UNIT_WORDS
+    | TYPE_WORDS
+    | frozenset(BASE_COLORS)
+    | {
+        "inverter", "non", "series", "model", "type", "size", "capacity", "brand",
+        "google", "android", "qled", "oled", "uhd", "fhd", "hd", "smart", "digital",
+        "manual", "semi", "fully", "automatic", "auto", "top", "front", "load",
+        "loading", "door", "doors", "glass", "single", "double", "triple", "side",
+        "by", "french", "vertical", "horizontal", "mounted", "mount", "standing",
+        "floor", "wall", "table", "twin", "tub", "tubs", "cabinet", "cool", "heat",
+        "hot", "with", "and", "the", "for", "new", "best", "price", "buy", "online",
+        "wifi", "wi", "iot", "remote", "touch", "copper", "year", "years", "warranty",
+        "free", "yes", "no",
+    }
+)
+
+# The identity ladder may not eat a name, but a `Model:` sentence is prose first and a code last, so
+# the peel is allowed to remove these too: a vendor who answers `Model: Turbo Inverter Split 1.5 Ton`
+# wrote a sentence, not a name.
+IDENTITY_NOT_A_NAME: frozenset[str] = _NOT_A_NAME_WORDS - IDENTITY_NAME_WORDS
+
+# A stock number is 2-4 digits, optionally with one letter tail (`1150`, `20M`).  It is not a
+# fragment of a longer token -- the `405` inside `HDF-405INV` belongs to a code -- it is not the
+# digits of a dashed part number (`PMO-23`), and it is not the whole side of a decimal size: the
+# `12` inside `12.5 Kg` is a weight.
+_IDENTITY_NUMBER_RE = re.compile(r"(?<![\w\u2013\u2014.-])(\d{2,4}[A-Za-z]?)(?![\w.-])")
+# A number followed by its unit is the product's size, stated plainly, and not its name.  The inch
+# mark is a unit too, and it is written glued to the digits: `55"`.
+_SIZE_UNIT_RE = re.compile(
+    r'^\s*(?:["\u201d\u2033]|(?:'
+    + "|".join(sorted(SIZE_UNIT_WORDS, key=lambda w: (-len(w), w)))
+    + r")\b)",
+    re.IGNORECASE,
+)
+_NAME_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z+]*")
+# A whole answer of a number WITH its unit (`1.5 Ton`, `9000 BTU`, `55 Inches`) is a size the vendor
+# typed into the `Model:` cell, not a code.  A bare `30` or `2101` is their own answer and stays --
+# this sheet writes real codes as bare digits, so only the unit word gives the shape away.
+_SIZE_ANSWER_RE = re.compile(
+    r'^\d+(?:[.,]\d+)?\s*["\u201d]?(?:'
+    + "|".join(sorted(SIZE_UNIT_WORDS, key=lambda w: (-len(w), w)))
+    + r")\.?$",
+    re.IGNORECASE,
+)
+
+
+def word_identity(title: str, brand: str) -> str:
+    """The name-and-number a row writes when it never wrote a model code: `Frost 30`, `15 Econo`.
+
+    The shop sells these products by that pair, so nothing tidier may be invented for them.  The
+    answer is the run of name words the row wrote around the number, in the order it wrote them --
+    `Frost 30 Inverter` gives `Frost 30` and `ECM 3500 Plus DC` gives `ECM 3500 Plus DC`.  A number
+    written in its own unit is a size, not a name, and a word that names the category, the type, the
+    drive or the colour is not part of a name either.  At most three name words may be taken, so a
+    row that says nothing but marketing prose yields nothing rather than a sentence.
+    """
+    brand_words = {word.lower() for word in _NAME_TOKEN_RE.findall(brand)}
+
+    def is_name(word: str) -> bool:
+        return (
+            len(word) > 1
+            and word.lower() not in IDENTITY_NOT_A_NAME
+            and word.lower() not in brand_words
+        )
+
+    for match in _IDENTITY_NUMBER_RE.finditer(title):
+        after = title[match.end():]
+        if _SIZE_UNIT_RE.match(after):
+            continue
+        before = title[: match.start()]
+        head_run: list[str] = []
+        while len(head_run) < 3:
+            head = re.search(rf"({_NAME_TOKEN_RE.pattern}) ?$", before)
+            if head is None or not is_name(head.group(1)):
+                break
+            head_run.insert(0, head.group(1))
+            before = before[: head.start()]
+        tail_run: list[str] = []
+        while len(head_run) + len(tail_run) < 3:
+            tail = re.match(rf" ?({_NAME_TOKEN_RE.pattern})", after)
+            if tail is None or not is_name(tail.group(1)):
+                break
+            # `Plus` and `Pro` are suffixes: they join a name only behind one.  A row that writes
+            # `Refrigerator 90 Plus Double Door` states a size and a suffix, and the suffix alone is
+            # not a name -- reading it as one shipped that row as `Plus 90`.
+            if not head_run and tail.group(1).lower() in IDENTITY_NAME_WORDS:
+                break
+            tail_run.append(tail.group(1))
+            after = after[tail.end():]
+        if not head_run and not tail_run:
+            continue
+        # Only a name word written before the number lets the words after it keep their place; a
+        # row that leads with the number (`30 Econo`) is read as `Econo 30`, the way the shop says it.
+        if head_run:
+            return " ".join([*head_run, match.group(1), *tail_run])
+        return f"{' '.join(tail_run)} {match.group(1)}"
+    return ""
+
+
+def without_leading_type_words(extraction: ModelExtraction) -> ModelExtraction:
+    """`Inverter Frost 30` -> `Frost 30`: a `Model:` line the vendor answered with prose.
+
+    The line is the sheet's own answer, but it is often a short sentence with the code at the end.
+    Words that name a shape or a drive are not part of a code, so they are peeled until a word that
+    could be a name is left -- and a code that was already clean comes back untouched, because
+    `Icon 3 Taps Water Dispenser` really is Orient's `Icon` and nothing here may eat its name.
+    Unlike the name scan, the peel also drops `Plus`, `Pro` and `Turbo`: a line that OPENS with one
+    of those is a sentence about the machine, and shipping it whole built the SKU
+    `KIA-TURBOINVERTERSPLIT1.5TON` out of a size.
+    """
+    if extraction.source != "description-model-line" or not extraction.code:
+        return extraction
+    # A cell filled with a number and its unit states the size, not a code (`18000 BTU`), whether it
+    # needed peeling to say so or not.  A bare `2101` is the vendor's own answer and stays.
+    if _SIZE_ANSWER_RE.match(extraction.code):
+        return ModelExtraction("", extraction.source, "none")
+    tokens = extraction.code.split()
+    while len(tokens) > 1 and tokens[0].lower() in _NOT_A_NAME_WORDS:
+        tokens.pop(0)
+    cleaned = " ".join(tokens)
+    if not cleaned or cleaned == extraction.code:
+        return extraction
+    if _SIZE_ANSWER_RE.match(cleaned):
+        return ModelExtraction("", extraction.source, "none")
+    return ModelExtraction(cleaned, extraction.source, extraction.confidence)
+
+
 def _spaced_words(text: str) -> str:
     """Lower-case the text and cut every non-letter to a space, padded so word tests are exact."""
     return " " + re.sub(r"[^a-z]+", " ", text.lower()) + " "
@@ -498,6 +658,7 @@ def build_title(
     analysis: RowAnalysis | None = None,
     corpus: Corpus | None = None,
     capacity: str | None = None,
+    identity: str | None = None,
 ) -> TitleResult:
     """Build one Title using our formula.
 
@@ -513,6 +674,9 @@ def build_title(
     `series_corpus`; they arrive together or not at all.  A name the corpus proved for this brand
     fills the series slot in the row's own spelling; a corpus that proved nothing leaves the
     curated path in charge, so a Title can never be shortened by the vote being silent.
+
+    `capacity` and `identity` are what the row stated -- the pipeline resolves them once, in
+    `main`, and hands them here so a Title and the SKU under it can never disagree.
     """
     if strict_rebuild is None:
         strict_rebuild = STRICT_TITLE_REBUILD
@@ -554,6 +718,7 @@ def build_title(
 
     should_rebuild = strict_rebuild or (extraction.confidence in ("high", "medium"))
     slot_printed = False
+    identity_printed = ""
     subtype: str = ""
     subtype_from: SubtypeSource = ""
     title_color = "" if product_type in OMIT_TITLE_COLOR_CATEGORIES else color
@@ -633,6 +798,14 @@ def build_title(
                 clean_code = clean_code[len(brand_token) + 1:].strip()
             if clean_code and clean_code.lower() not in part1.lower():
                 part2_pieces.append(clean_code)
+        if extraction.confidence == "none":
+            # A row with no model code is sold by the name and number IT wrote, so that pair is
+            # segment 2 -- not a bare word, and not a number the pipeline invented from its size.
+            if identity is None:
+                identity = word_identity(source_title, brand)
+            if identity:
+                part2_pieces.append(clean_inline(identity))
+                identity_printed = identity
         if feature:
             clean_feat = clean_inline(feature)
             printed = f"{part1} {' '.join(part2_pieces)}".lower()
@@ -716,6 +889,7 @@ def build_title(
         series_name=corpus_series if name_printed and corpus_series else "",
         series_earned_by=series_earned_by if name_printed else "",
         dropped_words=dropped_words(source_title, title),
+        identity_token=identity_printed,
         warranty_token=warranty,
         subtype_token=subtype if subtype_printed else "",
         subtype_from=subtype_from if subtype_printed else "",

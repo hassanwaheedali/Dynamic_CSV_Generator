@@ -74,7 +74,7 @@ from textutils import (
     pick_weight_columns,
     strip_markup_keep_lines,
 )
-from title_builder import build_title
+from title_builder import build_title, without_leading_type_words, word_identity
 from warranty import TERM_LINES, resolve_warranty
 from writers import (
     ALFA_HEADER,
@@ -245,6 +245,18 @@ def read_rows(rows: list[InputRow]) -> tuple[list[RowAnalysis], Corpus]:
     return analyses, build_corpus(analyses)
 
 
+def _drop_contained(outer: str, inner: str) -> str:
+    """Empty `inner` when every word of it already stands inside `outer` -- one fact, one token.
+
+    The row wrote `Chrome Plus 45` and the vote called the same line `Chrome`.  Handed to the SEO
+    shed as two removable tokens, the second cut the head off the first and left `- Plus -` in the
+    shop's search result: a fragment that names nothing.
+    """
+    if outer and inner and set(inner.lower().split()) <= set(outer.lower().split()):
+        return ""
+    return inner
+
+
 def resolve_row(
     row: InputRow,
     flags: QCFlagCollector,
@@ -320,11 +332,16 @@ def resolve_row(
             "SKU follows the Title; please confirm which is correct in the source.",
         )
 
-    extraction = extract_model(row.title, row.description)
+    extraction = without_leading_type_words(extract_model(row.title, row.description))
     capacity = resolve_capacity(text, product_type, brand.normalized, extraction)
+    identity = word_identity(row.title, effective_brand) if extraction.confidence == "none" else ""
     if extraction.confidence == "none":
         model = build_fallback_model(
-            effective_brand, find_series_token(text), capacity, row.title
+            effective_brand,
+            find_series_token(text),
+            capacity,
+            row.title,
+            identity,
         )
         used = ModelExtraction(model, "fallback", "none")
         flags.flag(
@@ -338,7 +355,7 @@ def resolve_row(
 
     title_result = build_title(
         effective_brand, used, product_type, row.title, row.description,
-        analysis=analysis, corpus=corpus, capacity=capacity,
+        analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
     )
     if title_result.strategy == "kept-with-light-cleanup":
         flags.flag(
@@ -390,7 +407,15 @@ def resolve_row(
         title=title_result.title,
         has_real_model=used.confidence != "none",
         feature_tokens=[
-            title_result.series_token,
+            # A name-and-number is ONE fact and is handed over whole: `build_seo_title` sheds its
+            # glued-on digits before the name, and refuses any cut that would leave the number
+            # standing alone.  Passing `10` as its own token deleted the WASHING MACHINE's capacity
+            # digit instead (`Kenwood KG Semi Automatic`) -- the shed cannot tell two `10`s apart.
+            title_result.identity_token,
+            # A voted name the row also wrote inside its own name-and-number is ONE fact, offered
+            # twice: the shed cut `Chrome` out of `Chrome Plus 45` and left `- Plus -` in the shop's
+            # result -- a fragment that names nothing.
+            _drop_contained(title_result.identity_token, title_result.series_token),
             title_result.color_token,
             title_result.inverter_token,
             title_result.capacity_token,

@@ -5,7 +5,13 @@
 from __future__ import annotations
 
 from sku_handle import ModelExtraction
-from title_builder import TITLE_MAX, TitleResult, build_title
+from title_builder import (
+    TITLE_MAX,
+    TitleResult,
+    build_title,
+    without_leading_type_words,
+    word_identity,
+)
 
 
 def test_rebuilt_title_full_template() -> None:
@@ -80,6 +86,12 @@ def test_user_example_microwave_baking_1_year_warranty() -> None:
 
 
 def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
+    """His example row: `Dawlance Aura 15 ... 1.0 Ton White`.
+
+    Segment 2 carries `Aura 15` -- the name and the number the row itself wrote.  An earlier
+    expectation dropped the `15` and sold the machine by half its name, which the identity rule now
+    forbids: a row with no model code is shipped under the stock code the shop uses.
+    """
     extraction = ModelExtraction(code="Aura 15", source="fallback", confidence="none")
     # Default strict rebuild:
     result = build_title(
@@ -90,7 +102,7 @@ def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
         source_description="Split AC 1.0 Ton White. Warranty: 10 Year Compressor Warranty",
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 1 Ton White Inverter Split Air Conditioner - Aura - 10 Year Compressor Warranty"
+    assert result.title == "Dawlance 1 Ton White Inverter Split Air Conditioner - Aura 15 - 10 Year Compressor Warranty"
 
     # When strict_rebuild is toggled False:
     result_kept = build_title(
@@ -639,3 +651,207 @@ def test_a_word_left_beside_the_type_phrase_goes_with_the_phrase() -> None:
     )
 
 
+
+
+# --------------------------------------------------------------------------- #
+# [Model] -- a row with no code is sold by the name and number it wrote
+# --------------------------------------------------------------------------- #
+def _fallback_dawlance(source_title: str, source_description: str = "") -> TitleResult:
+    return build_title(
+        brand="Dawlance",
+        extraction=ModelExtraction(code="", source="fallback", confidence="none"),
+        product_type="Air Conditioner",
+        source_title=source_title,
+        source_description=source_description,
+    )
+
+
+def test_a_number_before_its_name_word_still_becomes_the_stock_code() -> None:
+    """Row 206: `Dawlance 30 Econo + Inverter Split Air Conditioner 1.5 Ton`.
+
+    The shop says `Econo 30`; the number the sheet wrote first is the same number, and a SKU built
+    from the tonnage digits instead sold this row as a machine it is not.
+    """
+    result = _fallback_dawlance(
+        "Dawlance 30 Econo + Inverter Split Air Conditioner 1.5 Ton",
+        "1.5 Ton split inverter air conditioner.",
+    )
+    assert result.title == (
+        "Dawlance 1.5 Ton Inverter Split Air Conditioner - Econo 30 - 12 Year Compressor Warranty"
+    )
+
+
+def test_every_word_of_a_two_word_name_travels_with_the_number() -> None:
+    """Row 250: `Dawlance Chrome Plus 45 Inverter Split Air Conditioner 2 Ton` is a Chrome Plus."""
+    result = _fallback_dawlance(
+        "Dawlance Chrome Plus 45 Inverter Split Air Conditioner 2 Ton",
+        "2 Ton inverter split air conditioner.",
+    )
+    assert " - Chrome Plus 45 - " in result.title
+
+
+def test_a_number_written_in_its_own_unit_is_a_size_and_never_a_name() -> None:
+    """Row 169: `Orient Roast Microwave Oven Solo 23 Ltr Black`.
+
+    `23 Ltr` is the capacity, and `Solo` is the type word -- neither is a stock number, so no
+    identity may be invented out of them and the row keeps the name-only slot it had before.
+    """
+    assert word_identity("Orient Roast Microwave Oven Solo 23 Ltr Black", "Orient") == ""
+    assert word_identity("Dawlance Frost 30 Inverter Split Air Conditioner", "Dawlance") == "Frost 30"
+    assert word_identity("PEL 215 Pearl 2 Taps Water Dispenser White", "PEL") == "Pearl 215"
+
+
+def test_a_real_model_code_outranks_a_word_identity() -> None:
+    """Row 213 writes `(9173)`: a code the vendor printed beats any reading of the words around it.
+
+    The identity slot is only ever reached by a row that has no code at all.
+    """
+    result = build_title(
+        brand="Dawlance",
+        extraction=ModelExtraction(code="9173", source="title-parenthetical", confidence="high"),
+        product_type="Refrigerator",
+        source_title="Dawlance Acce Glass Door Freezer-On-Top Refrigerator (9173)-Cool Inverter White",
+        source_description="A glass door refrigerator.",
+    )
+    assert " - 9173 " in result.title
+
+
+def test_a_number_glued_into_a_dashed_part_number_is_not_a_stock_number() -> None:
+    """Row 181 writes `PMO-23 Kitchen Pro GR` inside an unclosed bracket -- not a name and a number.
+
+    The `23` belongs to the part number `PMO-23` (the sheet spells that joiner an en dash); taking it
+    for a stock number shipped this row as `Kitchen Pro GR 23`, which is the debris of a broken Title
+    rather than the shop's name for it.
+    """
+    assert word_identity("PEL Kitchen Pro Grill Microwave Oven (PMO-23 Kitchen Pro GR", "PEL") == ""
+
+
+def test_a_model_line_written_as_prose_gives_up_the_code_inside_it() -> None:
+    """Row 257: the vendor's `Model:` line answered `Inverter Frost 30: Yes`.
+
+    `: Yes` is that sheet's checkbox column and `Inverter` is a drive word, so the code inside the
+    sentence is `Frost 30` -- the name the shop sells it by.  A line that already holds a code is
+    returned untouched, because `Icon 3 Taps Water Dispenser` really is Orient's `Icon`.
+    """
+    prose = ModelExtraction("Inverter Frost 30", "description-model-line", "high")
+    assert without_leading_type_words(prose).code == "Frost 30"
+    clean = ModelExtraction("Icon 3 Taps Water Dispenser", "description-model-line", "high")
+    assert without_leading_type_words(clean).code == "Icon 3 Taps Water Dispenser"
+
+    result = build_title(
+        brand="Dawlance",
+        extraction=without_leading_type_words(
+            ModelExtraction("Inverter Frost 30", "description-model-line", "high")
+        ),
+        product_type="Air Conditioner",
+        source_title="Dawlance Frost 30 Inverter Split Air Conditioner 1.5 Ton White (Cool Only)",
+        source_description="1.5 Ton split air conditioner.",
+    )
+    assert " - Frost 30 - " in result.title
+
+
+def test_a_peeled_model_line_keeps_a_bare_number_because_the_row_wrote_it() -> None:
+    """`Model: Inverter 30` -> `30`.  A bare number is the vendor's own answer, not a size.
+
+    Only a number written WITH its unit is a size (`1.5 Ton`); this sheet also writes real codes as
+    bare digits (`Model: Water Dispenser 2101`), and refusing those would drop a model number a
+    shopper searches for and quietly degrade the row to a made-up fallback SKU.
+    """
+    prose = ModelExtraction("Inverter 30", "description-model-line", "high")
+    assert without_leading_type_words(prose).code == "30"
+    digits = ModelExtraction("Water Dispenser 2101", "description-model-line", "high")
+    assert without_leading_type_words(digits).code == "2101"
+
+
+def test_the_name_words_a_row_wrote_after_its_number_keep_their_place() -> None:
+    """Row 682: `Midea ECM 3500 Plus DC Air Cooler` sells itself as `ECM 3500 Plus DC`.
+
+    A number the row wrote in the middle of its name must not drag the words behind it across the
+    front -- the run is read in the order the shop printed it.
+    """
+    assert word_identity("Midea ECM 3500 Plus DC Air Cooler", "Midea") == "ECM 3500 Plus DC"
+
+
+def test_a_colour_word_never_becomes_part_of_a_stock_name() -> None:
+    """`White 20` is a paint and a size, not a name -- row 533 sold that row as `White 20`."""
+    assert word_identity("Gree White 20 Split Air Conditioner 1.5 Ton", "Gree") == ""
+
+
+def test_a_number_after_a_unit_word_is_a_second_size_and_never_a_name() -> None:
+    """`Washing Machine 7 Kg 1000 RPM` states a weight and a spin speed, not a stock number.
+
+    A unit only shields the number written in front of it, so `1000` was read as the row's name and
+    the row shipped as `Kg 1000 RPM` -- a size word standing where a name belongs.
+    """
+    assert word_identity("LG Inverter Washing Machine 7 Kg 1000 RPM", "LG") == ""
+    assert word_identity("Gree Inverter Split Air Conditioner 1.5 Ton 9000 BTU White", "Gree") == ""
+
+
+def test_the_prose_after_a_stock_number_is_not_taken_as_its_name() -> None:
+    """`Crompton Arithmetic Neo 120 Watt Ceiling Fan` states a wattage, not a stock number.
+
+    The unbounded run collected the whole tail of the Title -- unit word, category and all -- into
+    the model slot.  A number written in its own unit is a size, so this row says nothing nameable.
+    """
+    identity = word_identity("Crompton Arithmetic Neo 120 Watt Ceiling Fan", "Crompton")
+    assert identity == ""
+
+
+def test_a_name_never_reaches_over_the_dashes_into_the_next_clause() -> None:
+    """`Gree Eco 15 - Frost Split Air Conditioner` is `Eco 15`, not `Eco 15 Frost`.
+
+    ` - ` is the boundary the Title formula itself is written with; the word on its far side belongs
+    to another slot and welding it in invents a name the shop never said.
+    """
+    assert word_identity("Gree Eco 15 - Frost Split Air Conditioner", "Gree") == "Eco 15"
+
+
+def test_a_number_written_as_an_inch_mark_is_a_size() -> None:
+    """`Weston Bravia 55" Split Air Conditioner` sells a 55-inch machine, not a `Bravia 55`."""
+    assert word_identity('Weston Bravia 55" Split Air Conditioner', "Weston") == ""
+
+
+def test_a_model_line_of_a_number_and_a_unit_is_still_no_code() -> None:
+    """`Model: Inverter 1.5 Ton` is the vendor stating the size in the wrong cell.
+
+    Leaving it alone put a drive word and a duplicated capacity in the model slot and let the
+    Description claim a model number the row never gave.  A remainder of number-plus-unit is no code
+    at all, so the row goes the way of every other codeless row -- and `12EM/DU`, which opens with a
+    digit and IS a code, survives the same test untouched.
+    """
+    prose = ModelExtraction("Inverter 1.5 Ton", "description-model-line", "high")
+    peeled = without_leading_type_words(prose)
+    assert peeled.code == "" and peeled.confidence == "none"
+    bare = ModelExtraction("18000 BTU", "description-model-line", "high")
+    assert without_leading_type_words(bare).confidence == "none"
+    other = ModelExtraction("Non Inverter 9000 BTU", "description-model-line", "high")
+    assert without_leading_type_words(other).confidence == "none"
+    real = ModelExtraction("Inverter 12EM/DU", "description-model-line", "high")
+    assert without_leading_type_words(real).code == "12EM/DU"
+
+
+def test_a_warranty_written_in_months_states_no_stock_number() -> None:
+    """`Hisense 24 Months Warranty LED TV` says how long the cover runs, not what the set is called.
+
+    A duration is a measure like a tonnage, so its digits are never the stock number, and `Months`
+    is not a name word.
+    """
+    assert word_identity("Hisense 24 Months Warranty LED TV", "Hisense") == ""
+    assert word_identity("Dawlance 18 Months Compressor Warranty Freezer", "Dawlance") == ""
+
+
+def test_a_cooling_type_written_around_a_number_is_not_that_number_s_name() -> None:
+    """`Rattan Frost Free 250 Deep Freezer` is a 250-litre Frost Free machine, not a `Frost Free 250`.
+
+    The owner's own ruling kills `Frost` when the row wrote `No Frost`; the two-word type written in
+    front of a size may not walk back in through the identity slot.
+    """
+    assert word_identity("Rattan Frost Free 250 Deep Freezer", "Rattan") == ""
+
+
+def test_a_category_word_the_type_list_knows_may_not_stand_as_a_name() -> None:
+    """`Royal 1200 Fan`: `fan` carries no model information, exactly as `sku_handle` already says.
+
+    The identity list reuses that vocabulary instead of keeping a second copy of it.
+    """
+    assert word_identity("Royal 1200 Fan", "Royal") == ""

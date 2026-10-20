@@ -263,6 +263,22 @@ def test_trimming_never_mutilates_a_part_number_to_buy_room() -> None:
     assert "--" not in seo
 
 
+def test_an_over_budget_seo_title_sheds_a_name_and_number_as_one_unit() -> None:
+    """A row that sells itself as `Twister 1150` must never appear in search as bare `- 1150 -`.
+
+    The trim loop cuts a whole feature token, and the pipeline handed it `Twister` while the Title
+    carried `Twister 1150` -- so the length cut ate the name and left the digits standing alone.
+    The pair travels as one token, and it goes before a stated size like `10 KG`, never after it.
+    """
+    seo = build_seo_title(
+        "Orient 10 KG Metallic Silver Fully Automatic Top Load Washing Machine - Twister 1150 - 1 Year Warranty",
+        "Washing Machine",
+        "Orient",
+        ["Twister 1150", "Twister", "Metallic Silver", "10 KG", "Top Load"],
+    )
+    assert "1150" not in seo or "Twister 1150" in seo
+
+
 def test_seo_padding_never_shreds_the_title_into_words() -> None:
     """A Title that states `1.5 Ton` used to hand the padding ladder `1.5`, `Ton` and `Air`.
 
