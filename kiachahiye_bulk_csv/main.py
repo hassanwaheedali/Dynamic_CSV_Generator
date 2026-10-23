@@ -390,6 +390,17 @@ def resolve_row(
             "The row writes the words `SubType` but not as a labelled line -- write "
             "`SubType: Heat & Cool` on its own line, or the Title cannot use it.",
         )
+    for title_value, description_value in title_result.subtype_conflicts:
+        # The row claims two machines for one question and no reader may settle it from letters: the
+        # vendor sentence `... is a X Ton DC Inverter split air conditioner` stands in 204 of these
+        # Descriptions and is wrong on the six rows whose Titles sell a cassette.  The slot ships
+        # empty rather than wrong, and the answer is one line on the row.
+        flags.flag(
+            row.row_number, row.title, CAT_TITLE_DESCRIPTION_CONFLICT,
+            f"Title says {title_value!r} but the Description says {description_value!r} for the same "
+            "type -- the [Subtype] slot and its Attribute_* cell are left empty. Write `SubType: "
+            f"{title_value}` (or the other value) on the row to settle it.",
+        )
 
     warranty_rows, warranty_headline, warranty_source = resolve_warranty(
         text, brand.normalized, product_type
@@ -451,6 +462,12 @@ def resolve_row(
         product_type=product_type,
         warranty_headline=warranty_headline,
     )
+    for column in title_result.subtype_undecided_columns:
+        # The slot is empty because the row disagrees with itself, and this matcher reads his
+        # Description right after the Title -- where the vendor's template sentence lives.  A value
+        # read out of a sentence the row contradicts is not a fact about the product, so the cell
+        # waits for his answer instead of shipping the template's guess.
+        attributes.pop(column, None)
     for column, signal in unmatched:
         flags.flag(
             row.row_number, row.title, CAT_ATTRIBUTE_EMPTY,
@@ -764,6 +781,7 @@ def print_summary(
         (CAT_TITLE_DROPPED_WORDS, "Rebuilt Title dropped extra source words"),
         (CAT_SERIES_SINGLE_ROW, "Series name believed from a single row"),
         (CAT_SUBTYPE_LINE_UNUSED, "SubType: line added no word to the Title"),
+        (CAT_TITLE_DESCRIPTION_CONFLICT, "Title and Description disagree (type or size)"),
         (CAT_PRODUCT_TYPE_INFERRED, "Product Type inferred from breadcrumb"),
     ):
         print(f"  {label:60} {flags.count(category):5} rows")
@@ -787,6 +805,7 @@ def print_summary(
     print(
         f"  your SubType: line {slots['label']:5} | type list read from the row "
         f"{slots['list']:5} | carried off the series slot {slots['carried']:5} | "
+        f"the platform's own type table {slots['class']:5} | "
         f"nothing states one {slots['']:5}"
     )
 

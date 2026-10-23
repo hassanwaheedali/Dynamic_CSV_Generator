@@ -208,6 +208,28 @@ def strip_markup_keep_lines(text: str) -> str:
     return re.sub(r" {2,}", " ", text)
 
 
+# ---------------------------------------------------------------------------
+# Series names (shared by the Title builder and the SKU fallback)
+# ---------------------------------------------------------------------------
+#: An explicit ``Series:`` spec line, written the way the sheet writes its other labels
+#: (``Model:``, ``Color:``): optional bullet, optional ``Model``/``Product`` prefix, separator,
+#: then up to three words of value.  Read case-insensitively -- a label is punctuated, so the
+#: colon is the contract and the casing is the typist's.
+SERIES_LABEL_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(?:•[ \t]*)?(?:model[ \t]+|product[ \t]+)?series[ \t]*[:=][ \t]*"
+    r"([A-Za-z][A-Za-z0-9+&.'\-]*(?:[ \t]+[A-Za-z][A-Za-z0-9+&.'\-]*){0,2})\b"
+)
+
+#: A name standing before the word ``Series`` -- ``the E Luxury Pro Series``.  Up to two
+#: capitalised words ahead of the final one are captured with it, because a line is often
+#: spelled over several words and the old single-word reader kept only the last of them.
+#: Deliberately capital-required: ``the premium series for homes`` is a sentence about the
+#: product, not a name, and lowercase prose must never reach the seat.
+SERIES_NAME_BEFORE_RE = re.compile(
+    r"\b((?:[A-Z][A-Za-z0-9+.\-]*[ \t]+){0,2}[A-Z][A-Za-z0-9+.\-]*)[ \t]+Series\b"
+)
+
+
 def slugify(text: str) -> str:
     """ASCII-only, hyphenated slug used for Handles (and fallback SKUs)."""
     normalized = unicodedata.normalize("NFKD", text)
@@ -309,7 +331,9 @@ def find_full_color(text: str, title: str = "") -> str | None:
     When a marketing or descriptive modifier is present, returns the full colour phrase.
     Otherwise falls back to :func:`find_base_color`.
     """
-    full_text = f"{title}\n{text}" if title else text
+    # The pipeline hands this the row's whole text AND its Title, and that text already opens with
+    # the Title -- prepending it a second time scans the same words twice for no second answer.
+    full_text = text if (not title or text.startswith(title)) else f"{title}\n{text}"
     scope_title = title or text.splitlines()[0]
 
     # Clean false-positive phrases (like 'Golden Fin')
@@ -317,22 +341,36 @@ def find_full_color(text: str, title: str = "") -> str | None:
     for phrase in FALSE_COLOR_PHRASES:
         cleaned_full_text = re.sub(phrase, "", cleaned_full_text, flags=re.IGNORECASE)
 
-    # 1. Explicit 'Color:' or 'Product Color:' spec line anywhere in text
-    #    The colour phrase is bounded to ITS OWN LINE: `[ \t]+`, never `\s+`, which
-    #    also matches newlines and used to swallow the next spec line's first word
-    #    ("Color: White\nDuzin Series" read the colour as "White Duzin").
+    # 1. Explicit 'Color:' or 'Product Color:' spec line anywhere in text.
+    #    The label is the contract, and a contract is punctuated: the value must stand behind a
+    #    separator (`:`, `-`, `=`, or the tab a spec block uses).  Without one, `Color Depth Black`
+    #    and the scraped column head `Color Pattern        Black` are sentences about the picture,
+    #    and the separator-less reader sold `Depth Black` and `Pattern Black` -- phrases no shop
+    #    wrote -- as the colourway.
+    #    The colourway the label states is kept WHOLE ("Color: Blaze Purple",
+    #    "Color: Dark Jade Silver").  A two-word cap used to cut "Dark Jade Silver" down to
+    #    "Dark Jade"; the ceiling is now three, because a colour name is a head with a modifier or
+    #    two, while a longer run is a scraped variant picker ("Color: Choose an option Hairline
+    #    Golden Hairline Red Hairline …") and reading that as one colour invents a phrase no shop
+    #    wrote.  Product and spec nouns are still dropped
+    #    ("Color: HC White" is White: `HC` is the model suffix, not paint).  The value is bounded
+    #    to ITS OWN LINE: `[ \t]+`, never `\s+`, which also matches newlines and used to swallow
+    #    the next spec line's first word ("Color: White\nDuzin Series" read the colour as "White
+    #    Duzin"), and it ends at the first punctuation, so "Color: Blaze Purple, Inverter AC"
+    #    stops at the comma.
     m_color_line = re.search(
         r"(?im)^[ \t]*(?:•\s*)?(?:product\s+|appliance\s+|body\s+)?colo(?:u)?r"
-        r"(?:\s*(?:name|code))?\s*[:\-]?\s*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\b",
+        r"(?:\s*(?:name|code))?\s*[:\-=\t]\s*"
+        r"([A-Za-z][A-Za-z'\-]*(?:[ \t]+[A-Za-z][A-Za-z'\-]*){0,2})",
         cleaned_full_text,
     )
     if m_color_line:
-        cand = m_color_line.group(1).strip()
-        words = cand.lower().split()
-        if any(w in BASE_COLORS for w in words):
-            filtered = [w for w in words if w not in COLOR_NON_MODIFIERS]
-            if any(w in BASE_COLORS for w in filtered):
-                return " ".join(w.title() for w in filtered)
+        words = [
+            word for word in m_color_line.group(1).split()
+            if word.lower() not in COLOR_NON_MODIFIERS
+        ]
+        if any(word.lower() in BASE_COLORS for word in words):
+            return " ".join(word.title() for word in words)
 
     # 2. Hyphen color at end of title: e.g. '-(9173-WB)-Crimson Red' or '-Crimson Red'
     m_hyphen = re.search(r"-\s*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\s*$", scope_title.strip())

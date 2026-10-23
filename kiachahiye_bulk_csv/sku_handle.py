@@ -29,7 +29,14 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from textutils import dedupe_preserve_order, find_base_color, normalize, slugify
+from textutils import (
+    SERIES_LABEL_LINE_RE,
+    SERIES_NAME_BEFORE_RE,
+    dedupe_preserve_order,
+    find_base_color,
+    normalize,
+    slugify,
+)
 
 # ---------------------------------------------------------------------------
 #  EDIT HERE -- model, SKU and Handle shaping rules
@@ -65,6 +72,22 @@ TYPE_WORDS: frozenset[str] = frozenset(
     }
 )
 
+# EDIT HERE -- every unit a size on this sheet is written in.  One list serves every rule that
+# needs it: a number standing in front of one of these words is the product's stated size, the
+# word itself can never be part of the name the shop sells the machine by, and a number GLUED to
+# one of them (`10Years`, `1.5Ton`) is a measure with its unit, never a part number.  It lives
+# here beside TYPE_WORDS because both the model reader and the Title builder read it.
+SIZE_UNIT_WORDS: frozenset[str] = frozenset(
+    {
+        "ton", "tons", "kg", "kgs", "kilogram", "kilograms", "ltr", "ltrs", "litre", "litres",
+        "liter", "liters", "litters", "cu", "ft", "cf", "cft", "cuft", "inch", "inches", "in",
+        "w", "watt", "watts", "v", "volt", "volts", "va", "ah", "hz", "rpm", "btu", "mm", "cm",
+        "sq", "lb", "lbs", "pound", "pounds", "g", "gm", "gms", "gram", "grams", "oz", "ounce",
+        "taps", "tap", "star", "spin", "month", "months", "day", "days",
+        "year", "years", "yr", "yrs",
+    }
+)
+
 MODEL_LABEL_RE = re.compile(
     r"(?im)^[ \t]*(?:•\s*)?model(?:\s*(?:name|no\.?|number|code))?\s*:?\t?\s*"
     r"(?P<value>[^\n\r]+)$"
@@ -97,6 +120,15 @@ CODE_TOKEN_RE = re.compile(
 CAPACITY_ONLY_RE = re.compile(
     r"(?i)^\s*\d+(?:\.\d+)?\s*(?:cu\.?\s?ft\.?|liter|litre|ltr|kg|ton|inch|"
     r"inches|watt|watts|w|v|volt|volts|taps?|star)\s*$"
+)
+# A number GLUED to its unit is a measure with the space left out (`10Years`, `1.5Ton`, `55Inch`),
+# or a panel's resolution (`1080p`, `4K`): a fact about the machine, never its part number.  Built
+# from the sheet's own unit vocabulary above -- no second list of words is kept for this.
+_UNIT_GLUED_RE = re.compile(
+    r"^\d+(?:[.,]\d+)?(?:"
+    + "|".join(sorted(SIZE_UNIT_WORDS, key=lambda w: (-len(w), w)))
+    + r"|[kp])\.?$",
+    re.IGNORECASE,
 )
 TRAILING_DIGITS_RE = re.compile(r"(?:^|[-_])(\d+)$")
 DIMENSION_VARIANT_RE = re.compile(r"^(\d+(?:\.\d+)?)([A-Za-z]+)(?:([-_].*))?$")
@@ -176,7 +208,7 @@ def _usable_code(candidate: str) -> bool:
         return False
     if not re.search(r"[A-Za-z]", value) or not re.search(r"\d", value):
         return False
-    return not CAPACITY_ONLY_RE.match(value)
+    return not (CAPACITY_ONLY_RE.match(value) or _UNIT_GLUED_RE.match(value))
 
 
 def extract_model(title: str, description: str) -> ModelExtraction:
@@ -213,27 +245,53 @@ def extract_model(title: str, description: str) -> ModelExtraction:
     return ModelExtraction("", "fallback", "none")
 
 
-def find_series_token(text: str) -> str:
+def find_series_token(text: str, banned: frozenset[str] = frozenset()) -> str:
     """A series name stated by the source, for use in a fallback model.
 
-    Looks for an explicit ``"<Name> Series"`` label first, then the first
+    Looks for an explicit ``Series:`` spec line or ``"<Name> Series"`` label first, then the first
     distinctive capitalised word in the title -- skipping the brand itself (the
-    first word in this sheet), product-type words and all-caps acronyms.
+    first word in this sheet), product-type words, all-caps acronyms and every word in `banned`.
+
+    A labelled name is captured with up to two words in front of it (`E Luxury Pro Series`), so a
+    leading code, brand or type word is peeled before the name is returned; only the peel is
+    guessed, never the name.
+
+    `banned` carries the words this row already spent elsewhere -- its own colourway above all.  A
+    scan that stops only at type words reads `Dawlance 12 Cu Ft PEARL COPPER ... 9173WB Chrome` as a
+    machine called `Pearl`, because the colour stands at char 18 and the real name at char 82, and
+    the first hit wins.
     """
-    labelled = re.search(r"\b([A-Z][A-Za-z0-9+.\-]{1,20})\s+Series\b", text)
-    if labelled:
-        return labelled.group(1).strip()
+    for regex in (SERIES_LABEL_LINE_RE, SERIES_NAME_BEFORE_RE):
+        labelled = regex.search(text)
+        if not labelled:
+            continue
+        words = labelled.group(1).split()
+        if words and words[-1].lower() == "series":
+            # `Series: KB Series` names `KB`; the label's own keyword is not part of the name.
+            words.pop()
+        last = len(words) - 1
+        for index, head in enumerate(words):
+            # The word touching `Series` is the name itself, so nothing peels IT (`K85 Series`
+            # names `K85`); junk stands in FRONT of the name, and only there does it peel.
+            key = normalize(head)
+            if index != last and (
+                any(character.isdigit() for character in head)
+                or key in TYPE_WORDS
+                or key in banned
+            ):
+                continue
+            return " ".join(words[index:])
 
     title = text.splitlines()[0] if text else ""
     # A sheet typed entirely in capitals carries no casing signal, so there an
     # all-caps word is not evidence of an acronym.
     shouty = title.upper() == title
-    words: list[str] = re.findall(r"[A-Za-z][A-Za-z0-9+.\-]+", title)
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+.\-]+", title)
     for index, word in enumerate(words):
         if index == 0:  # the leading word is the brand in this sheet
             continue
         key = normalize(word)
-        if len(key) < 3 or key in TYPE_WORDS:
+        if len(key) < 3 or key in TYPE_WORDS or key in banned:
             continue
         if shouty:
             if _is_code_like(word) or not _has_vowel(word):

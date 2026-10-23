@@ -243,10 +243,13 @@ def _single_word_subtype_labels() -> frozenset[str]:
     air-conditioner row and steal Dawlance's line name.
 
     Note the coupling: this reads ``title_builder.SUBTYPES``, so ADDING a one-word label to that
-    table also adds it to the vote's refuse list for every brand (`Cassette` became a type word
-    this way).  That is intended -- a word that names what the machine is cannot be a line name --
-    but it is not visible from either file, so a series verdict that changes with no edit to the
-    corpus is looking for its cause here.
+    table also adds it to the vote's refuse list for every brand (`Spinner` became a type word this
+    way).  That is intended -- a word that names what the machine is cannot be a line name -- but it
+    is not visible from either file, so a series verdict that changes with no edit to the corpus is
+    looking for its cause here.  It reads the AUTHORED table only: a value the Title builder widens a
+    group with from the platform's list (`Cassette`) is not in this set, so widening a group cannot
+    quietly re-rule a series verdict -- and a widened word is refused as a line name only by the
+    builder's own guards, not by the vote.
     """
     words: set[str] = set()
     for group in _subtype_table().values():
@@ -922,24 +925,85 @@ def _offers(
     return tuple(found)
 
 
-@lru_cache(maxsize=1)
-def _class_phrases() -> frozenset[str]:
+@lru_cache(maxsize=32)
+def _class_phrases(product_type: str = "") -> frozenset[str]:
     """Every two-or-more-word value the platform's own attribute tables enumerate.
 
     `Multi Door`, `Table Top`, `Side-By-Side`, `Twin Tub`, `Freezer-On-Top`, `Mini LED`: the
     shop's per-category attribute lists say what a product IS, and none of them lists `pro`,
     `plus` or `max`.  Reading those tables is what lets a class phrase be refused as a name
     without authoring a list of banned words here.
+
+    A `product_type` narrows the set to the columns the platform itself says that type answers
+    (`attributes.SCOPE`).  `attributes.py` writes `None = any` for a column it scopes to every type,
+    and a column it never lists is a different thing: `Attribute_Fragrance Type` answers a question
+    no refrigerator is asked, so an UNLISTED column stays out of a narrowed set while an explicit
+    `None` would be read as `any`.  Empty `product_type` means every column, which is what the name
+    test wants: a word that names ANY product type on the shop is not this row's line name.
     """
     found: set[str] = set()
     for column, values in attributes.ALLOWED.items():
         if not column.endswith((" Type", " Category")):
             continue
+        if product_type:
+            scope = attributes.SCOPE.get(column)
+            if scope is not None and product_type not in scope:
+                continue
+            if column not in attributes.SCOPE:
+                continue
         for variant in (*values, *attributes.ALIASES.get(column, {})):
             words = _WORD_RE.findall(variant.lower())
             if len(words) >= 2:
                 found.add(" ".join(words))
     return frozenset(found)
+
+
+def class_phrases(product_type: str) -> tuple[str, ...]:
+    """The class phrases THIS product type's own attribute columns enumerate, longest first.
+
+    Exposed for the Title builder's carry-over: a type phrase the row wrote has to go somewhere,
+    and where it goes is decided by the platform's list for that type -- never by a word table
+    authored here.
+    """
+    return tuple(
+        sorted(_class_phrases(product_type), key=lambda phrase: (-len(phrase.split()), phrase))
+    )
+
+
+@lru_cache(maxsize=32)
+def _class_word_set(product_type: str) -> frozenset[str]:
+    """The ONE-word values this product type's own attribute columns enumerate.
+
+    Kept apart from :func:`_class_phrases` on purpose: that set guards SERIES NAMES, where a
+    single word would refuse half the catalogue (`Smart`, `Pro`, `Basic` are names' letters), while
+    the Title builder's class rung READS these to place a type the row stated -- `Cassette`,
+    `Spinner`, `QLED`.  The same columns, the same scope rules, the other half of the length split.
+    """
+    found: set[str] = set()
+    for column, values in attributes.ALLOWED.items():
+        if not column.endswith((" Type", " Category")):
+            continue
+        scope = attributes.SCOPE.get(column)
+        if scope is not None and product_type not in scope:
+            continue
+        if column not in attributes.SCOPE:
+            continue
+        for value in values:
+            words = re.findall(r"[a-z0-9]+", value.lower())
+            if len(words) == 1:
+                found.add(words[0])
+    return frozenset(found)
+
+
+def class_words(product_type: str) -> tuple[str, ...]:
+    """The one-word class values for this type, sorted -- the Title builder's class rung reads them.
+
+    A row that sells itself as a `Cassette` states a TYPE the platform enumerates in exactly one
+    of the columns its matcher fills for this category; dropping the word empties that cell, so the
+    `[Subtype]` slot takes it -- with the never-stack guard living in the builder, beside the
+    group table that decides which columns ask one question and which ask two.
+    """
+    return tuple(sorted(_class_word_set(product_type)))
 
 
 def _names_a_class(pair_key: str) -> bool:
@@ -1000,7 +1064,7 @@ def _is_level_tail(piece: str, claimed: Mapping[str, str]) -> bool:
     to `pro` and `plus`, so shape alone would call `Bottom Load` and `Multi Door` names -- measured
     on the real sheets, that is exactly what it did.  Three more facts, each read from a table that
     already exists, settle it: a colour or colour-modifier word never marks a level
-    (:func:`_colour_words`, and `textutils.COLOR_NON_MODIFIERS` is the repo's own statement that
+    (:func:`colour_words`, and `textutils.COLOR_NON_MODIFIERS` is the repo's own statement that
     `pro`, `plus`, `door` and `top` are NOT colours), a word that abbreviates a longer word in the
     same vocabulary is that word shortened, not a level (:func:`_abbreviates_noise_word`:
     `inv`/inverter, `load`/loading, `cool`/cooler), and a phrase the shop enumerates as an
@@ -1013,14 +1077,18 @@ def _is_level_tail(piece: str, claimed: Mapping[str, str]) -> bool:
         claimed.get(piece) == REVIVABLE_SLOT
         and _MIN_NAME_LENGTH <= len(piece) <= _MAX_LEVEL_LENGTH
         and piece not in _title_stopwords()
-        and piece not in _colour_words()
+        and piece not in colour_words()
         and not _abbreviates_noise_word(piece)
     )
 
 
 @lru_cache(maxsize=1)
-def _colour_words() -> frozenset[str]:
+def colour_words() -> frozenset[str]:
     """Base colours and their modifiers: `Pearl`, `Mist`, `Gold` never name a level.
+
+    The Title builder reads this same set for its colourway ban (a word this row spent on its paint
+    cannot become its line name), so the paint vocabulary stays in one module -- a second copy here
+    or there is how the two readers start disagreeing about what is a colour.
 
     :data:`textutils.COLOR_NON_MODIFIERS` is deliberately NOT used -- the repo's own table puts
     `pro`, `plus`, `door` and `top` in it, which is that table saying these are not colours.

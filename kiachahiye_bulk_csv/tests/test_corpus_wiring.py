@@ -483,6 +483,7 @@ def test_the_name_is_rendered_the_way_the_row_spells_it() -> None:
 # --------------------------------------------------------------------------- #
 _AC = "Electronics / Home appliances / Air Conditioners / Split"
 _MICROWAVE = "Electronics / Kitchen appliances / Microwaves"
+_WASHING = "Electronics / Home appliances / Washing machine"
 
 
 def _sheet(title: str, description: str, brand: str, category: str = _AC) -> dict[str, str]:
@@ -623,8 +624,12 @@ def test_a_row_the_vote_stays_silent_on_ships_exactly_the_unwired_title(pipeline
 def test_a_subtype_line_reaches_the_shipped_title_through_the_pipeline(pipeline: Pipeline) -> None:
     """His line, his words, in the sub-type position -- end to end, not inside one function.
 
-    The Description here also says `Split`, which the type list would have read; the line overrules
-    it, and the overruled word must not reappear behind the model code as a fake series.
+    The Description also says `Split`, and nothing disagrees with it: the Title leaves the mounting
+    question empty, so one column answering it is the row answering it.  `Heat & Cool` is a DIFFERENT
+    question -- cooling and heating -- so the line seats its own group and `Split` stays standing
+    (owner ruling, 2026-10-23: pick the value when only one column states it).  Wiping it would have
+    printed `Heat & Cool Air Conditioner` and emptied `Attribute_Air Conditioner Type`, which DigiMall
+    matches out of this Title -- and a line the shop sells as a Split heat-pump AC is both facts.
     """
     records = pipeline(
         [
@@ -638,8 +643,10 @@ def test_a_subtype_line_reaches_the_shipped_title_through_the_pipeline(pipeline:
     )["records"]
     record = records[0]
     assert record.subtype_from == "label"
-    assert " Heat & Cool Air Conditioner" in record.title
-    assert "Split" not in record.title
+    assert " Split Heat & Cool Air Conditioner" in record.title
+    assert record.title.count("Heat & Cool") == 1
+    # The word the line did NOT overrule still may not be resold behind the model code as a series.
+    assert " - HSU-19HFPCAA Split" not in record.title
 
 
 def test_a_subtype_line_that_adds_no_word_is_flagged(pipeline: Pipeline) -> None:
@@ -662,6 +669,41 @@ def test_a_subtype_line_that_adds_no_word_is_flagged(pipeline: Pipeline) -> None
     assert flagged, "a line that added no word has to reach the QC report"
     assert "Air Conditioner" in flagged[0].message
     assert run["records"][0].subtype_from != "label"
+
+
+def test_a_row_claiming_two_machines_ships_neither_and_is_sent_to_the_owner(
+    pipeline: Pipeline,
+) -> None:
+    """Real row 290: the Title sells a `Cassette`, the vendor sentence says `split`.
+
+    Nothing in the letters says which is the machine -- `... is a X Ton DC Inverter split air
+    conditioner` is template text standing in 204 Descriptions on this sheet, six of them cassettes --
+    so the builder must not pick one: a wrong value in `Attribute_Air Conditioner Type` ships a
+    product the shop never sold.  The slot stays empty and the row reaches the QC report naming both
+    candidates and the one line that settles it.
+    """
+    run = pipeline(
+        [
+            _sheet(
+                "Haier 4 Way Cassette DC Inverter Air Conditioner 1.5 Ton White (HBU-18HE)",
+                "The Haier HBU-18HE/DC-DC Inverter Cassette Type Air Conditioner is a 1.5 Ton DC "
+                "Inverter split air conditioner, in White.",
+                "Haier",
+            )
+        ]
+    )
+    record = run["records"][0]
+    assert record.subtype_from == ""
+    assert "Cassette" not in record.title
+    assert "Split" not in record.title
+    flagged = [f for f in run["flags"].flags if f.category == "title_description_conflict"]
+    assert len(flagged) == 1
+    assert "Cassette" in flagged[0].message and "Split" in flagged[0].message
+    assert "SubType:" in flagged[0].message
+    # The cell goes with the slot: DigiMall's matcher would otherwise read his Description next and
+    # take `split` out of the vendor sentence -- a wrong value in a closed list, shipped under a Title
+    # that refused to say it.
+    assert record.attributes.get("Attribute_Air Conditioner Type", "") == ""
 
 
 def test_a_row_that_gains_a_subtype_word_sheds_it_from_the_seo_title_not_its_warranty(
@@ -759,3 +801,66 @@ def test_a_subtype_word_in_the_prose_is_reported_not_guessed_about(pipeline: Pip
     flagged = [f for f in run["flags"].flags if f.category == "subtype_line_added_nothing"]
     assert len(flagged) == 1
     assert "own line" in flagged[0].message
+
+
+def test_a_type_the_row_already_names_is_not_spelled_a_second_time(pipeline: Pipeline) -> None:
+    """`Top-Load Automatic` beside the `Top Load` the Title already prints says nothing new.
+
+    Real rows 71 and 72 of Products.csv state their type with hyphens, the sub-type list reads it
+    as `Fully Automatic Top Load`, and the stranded-class-word rung used to append the platform's
+    own phrase on top of it -- shipping `... Fully Automatic Top Load Top-Load Automatic Washing
+    Machine` for a shop to untangle.  The rung is refused by the same one-word rule that stops
+    `Mini LED LED TV`; only the words the Title prints, and not just the seat, are put in front of
+    it.
+    """
+    record = pipeline(
+        [
+            _sheet(
+                "Dawlance Top-Load Automatic Washing Machine (DWT-1165PL)",
+                "The Dawlance DWT-1165PL is a Green top load fully automatic washing machine.",
+                "Dawlance",
+                _WASHING,
+            )
+        ]
+    )["records"][0]
+    assert record.title.count("Top") == 1
+    assert "Top-Load Automatic" not in record.title
+
+
+def _orient(title: str) -> dict[str, str]:
+    return {
+        "Title": title,
+        "Description": title,
+        "Sell Price": "54999",
+        "Original Price": "59999",
+        "Categories": "Electronics / Home appliances / Refrigerators",
+        "Brand": "Orient",
+        "Image": "https://example.test/a.jpg",
+    }
+
+
+def test_the_slot_the_row_wrote_replaces_the_vote_instead_of_stacking_with_it(
+    pipeline: Pipeline,
+) -> None:
+    """One seat, one name: `Marvel 200` is a Marvel, and the run's `Blaze` stays out of the Title.
+
+    Both words are proven for Orient on this sheet, so the old seam printed `Marvel Blaze` -- the
+    row's own line name followed by whatever else the run believed.  The clause the sheet wrote its
+    code into is the row's own answer, so it REPLACES the vote; the vote still speaks (the test above
+    this one) where that clause is silent.
+    """
+    records = pipeline(
+        [
+            _orient(
+                "Orient 7 Cu Ft Blaze Purple Glass Door Direct Cool Non-Inverter Refrigerator "
+                "- Marvel 200 - 3 Years Compressor Warranty"
+            ),
+            _orient(
+                "Orient 12 Cu Ft Blaze Purple Glass Door Direct Cool Non-Inverter Refrigerator "
+                "- Marvel 330 - 3 Years Compressor Warranty"
+            ),
+        ]
+    )["records"]
+    assert [r.series_token for r in records] == ["Marvel", "Marvel"]
+    for record in records:
+        assert "Blaze" not in record.title

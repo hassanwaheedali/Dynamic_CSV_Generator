@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+import attributes
 import description_builder
 import series_corpus
 from config import (
@@ -33,8 +34,20 @@ from config import (
     TITLE_MAX as TITLE_MAX,
 )
 from series_corpus import Corpus, RowAnalysis
-from sku_handle import TYPE_WORDS, ModelExtraction, find_series_token, resolve_capacity
-from textutils import BASE_COLORS, clean_inline, find_full_color
+from sku_handle import (
+    SIZE_UNIT_WORDS,
+    TYPE_WORDS,
+    ModelExtraction,
+    find_series_token,
+    resolve_capacity,
+)
+from textutils import (
+    BASE_COLORS,
+    SERIES_LABEL_LINE_RE,
+    SERIES_NAME_BEFORE_RE,
+    clean_inline,
+    find_full_color,
+)
 from warranty import resolve_main_warranty
 
 # ---------------------------------------------------------------------------
@@ -72,12 +85,23 @@ SERIES_WORDS: tuple[str, ...] = (
 )
 
 TAPS_RE = re.compile(r"\b(\d+)\s*-?\s*taps?\b", re.IGNORECASE)
-SERIES_RE = re.compile(r"\b([A-Z][A-Za-z0-9+.\-]{1,20})\s+Series\b")
+# The two spellings a series LABEL takes -- `Series: Thunder Plus` and `the E Luxury Pro
+# Series` -- are read by shared regexes in textutils, because `sku_handle.find_series_token`
+# answers the same question for the fallback SKU and the two readers must not drift.
 SERIES_WORD_RE = re.compile(
     "|".join(rf"\b{re.escape(word)}\b" for word in SERIES_WORDS), re.IGNORECASE
 )
-INVERTER_RE = re.compile(r"\binverter\b", re.IGNORECASE)
-NON_INVERTER_RE = re.compile(r"\bnon[-\s]?inverter\b", re.IGNORECASE)
+#: The inverter signals, spelled exactly as the other two readers spell them: `categories.py`
+#: routes the AC leaf with these, and `attributes.py` fills `Attribute_INV/NON-INV` off the same
+#: words (`t-ai`, `bldc`, `inverteron`, `brushless`, a glued `non inv`).  One sheet, one answer:
+#: a Title that knows fewer synonyms prints no [Inverter] on a row both other readers call one.
+INVERTER_RE = re.compile(
+    r"\binverter\b|\bdc\s?inverter\b|\bt-?ai\b|\bbldc\b|\binverteron\b|\bbrushless\b",
+    re.IGNORECASE,
+)
+NON_INVERTER_RE = re.compile(
+    r"\bnon[\s\-_]?inverter\b|\bnon[\s\-_]?inv\b", re.IGNORECASE
+)
 
 _STOPWORDS = frozenset(
     {
@@ -88,8 +112,13 @@ _STOPWORDS = frozenset(
 )
 
 
-SubtypeSource = Literal["", "label", "list", "carried"]
-"""Which rung of the ladder filled the `[Subtype]` slot for one row."""
+SubtypeSource = Literal["", "label", "list", "carried", "class"]
+"""Which rung of the ladder filled the `[Subtype]` slot for one row.
+
+``class`` is the platform's own type table: the row wrote a phrase like `Freezer-On-Top` that no
+sub-type group names, and it had to be placed somewhere or DigiMall's Type cell -- which is matched
+out of this Title -- would fall empty.
+"""
 
 
 @dataclass(frozen=True)
@@ -124,8 +153,9 @@ class TitleResult:
     """The words that filled this row's `[Subtype]` slot, in the order they print."""
 
     subtype_from: SubtypeSource = ""
-    """Which rung filled the slot: the sheet's own `SubType:` line, the type list, or the series
-    carry-over.  ``""`` means nothing claimed it -- which is the safe answer, not a failure."""
+    """Which rung filled the slot: the sheet's own `SubType:` line, the type list, the series
+    carry-over, or the platform's own class phrase.  ``""`` means nothing claimed it -- which is the
+    safe answer, not a failure."""
 
     subtype_label_added: bool = False
     """Whether a `SubType:` line was written AND its words reached the Title.
@@ -133,6 +163,16 @@ class TitleResult:
     A line whose every word the Title already prints (`SubType: Air Conditioner`) adds nothing; the
     row ships as it did before, and he wants to be told, because he checks those lines by hand.
     """
+
+    taps_token: str = ""
+    """`3 Taps` when the row states a tap count -- carried beside the capacity, never instead of
+    reading it, so the formula rewrite can print a dispenser's taps AND its litres."""
+
+    volume_capacity_token: str = ""
+    """The row's volume capacity (`15 Ltr`) as resolved before a tap count took the capacity slot.
+
+    On a Water Dispenser the two facts are different answers -- how many taps, how big the tank --
+    and the old assembly overwrote one with the other."""
 
     subtype_line: str = ""
     """What the row's `SubType:` line said, verbatim, whether or not it was used -- the flag needs
@@ -144,24 +184,379 @@ class TitleResult:
     source wording, the line restates what the Title already prints, or the value was a sentence.
     Empty when the line was used."""
 
+    subtype_conflicts: tuple[tuple[str, str], ...] = ()
+    """Per question this row's two columns answered DIFFERENTLY: (Title value, Description value).
+
+    A row that sells a `Cassette` in its ad and a `split` in its vendor template is one row claiming
+    two machines, and no reader can settle that from letters.  The slot stays empty -- a wrong value
+    in a closed `Attribute_... Type` list ships a product the shop never sold, while an empty one is
+    a question -- and the pair travels to the QC report for the owner to answer once.
+    """
+
+    subtype_undecided_columns: tuple[str, ...] = ()
+    """The `Attribute_... Type` columns an unsettled disagreement leaves this row unable to answer.
+
+    DigiMall's matcher reads the Title first and his Description next, and the Description is where
+    the template sentence lives -- so a cell the row cannot stand behind is withheld here too,
+    instead of walking back in through the fallback.
+    """
+
 
 # ---------------------------------------------------------------------------
 #  Token helpers
 # ---------------------------------------------------------------------------
-def extract_series(text: str) -> str:
+#: The words a model-code clause is padded with: a paint or material abbreviation, or the sheet's own
+#: filler.  None of them names a line, and none of them ends the scan.
+_SLOT_SKIP_RE = re.compile(r"^(?:[A-Z][A-Z0-9+.\-]{1,7})$")
+#: On a sheet typed entirely in capitals, casing carries no signal at all, so only a SHORT block is a
+#: paint code there: `Dawlance ... - 9173WB AVANTE` names the Avante, while `DSS-9055 INV Inox` still
+#: steps over `INV`.  `sku_handle.find_series_token` reads the same shouty test for the same reason.
+_SLOT_SHOUTY_SKIP_RE = re.compile(r"^(?:[A-Z][A-Z0-9]{1,2})$")
+_CLAUSE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9+.\-]*")
+#: A name's `+` is often spaced off it (`9193LF AVANTE + GD INV`), and `Avante+` is a different
+#: product from `Avante`, so the sign is read as its own part and glued back onto the word.
+_CLAUSE_PART_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9+.\-]*|\+")
+#: The separators a sheet puts around its clauses: a hyphen, or the en/em dash a typed sheet uses.
+_CLAUSE_SPLIT_RE = re.compile(r"\s+[-\u2013\u2014]\s+")
+#: The repo's own colour vocabulary, read from the module that owns it: the words that say how the
+#: machine is painted, which is exactly the set R1 keeps out of the name seat.
+_COLOURWAY_WORDS = series_corpus.colour_words()
+
+
+def colourway_words(source_title: str, color: str) -> set[str]:
+    """The first half of a two-word paint name, when this row wrote one.
+
+    `Cloud White`, `Mystic Grey`, `Hazel Red`: the repo's own colour tables call the first word a
+    colour, and standing immediately in front of the row's colour it is half of what the machine is
+    PAINTED -- which is how a Dawlance freezer was sold as a `Cloud`.
+
+    One word, one step, and only from that table.  `Haier Pearl DC Inverter Air Conditioner 1.5 Ton
+    Silver` keeps Haier's `Pearl`, `Orient Crystal 3 Taps Water Dispenser` keeps Orient's `Crystal`,
+    and `PEL ... Hazel Red Blaze` keeps PEL's `Blaze`: a word is swallowed only by the paint it
+    actually stands inside, and a name parked in front of a size is a name.
+    """
+    head = _CLAUSE_SPLIT_RE.split(source_title)[0]
+    # Cut on every non-letter, so a sheet that hyphenates its paint -- `Pearl-Copper` -- spends the
+    # same word as one that spaces it.
+    keys = [match.group(0).lower() for match in re.finditer(r"[A-Za-z]+", head)]
+    painted = _COLOURWAY_WORDS | set(color.lower().split())
+    taken: set[str] = set()
+    for index, key in enumerate(keys):
+        if key not in painted:
+            continue
+        before = keys[index - 1] if index else ""
+        if before in _COLOURWAY_WORDS:
+            taken.add(before)
+    return taken
+
+
+def warranty_words(warranty: str) -> set[str]:
+    """The words of this row's own warranty statement, which no seat may reuse.
+
+    `Lifetime Compressor Warranty` is a promise about how long the machine is covered, and the sheet
+    writes it in the clause the formula reserves for `[Main Warranty]` -- or in its Description, where
+    `warranty.resolve_main_warranty` already reads it.  Either way the pipeline ends up holding that
+    statement as one string, so its words are spent before any name is looked for, and no clause
+    punctuation has to be guessed at.
+    """
+    return {token.lower() for token in _CLAUSE_TOKEN_RE.findall(warranty)}
+
+
+def _is_code_token(token: str, following: str) -> bool:
+    """Whether this token in the clause is the model code the formula puts there.
+
+    Letters and digits together (`9173WB`, `380I`, `KRF-23357`, `HR-47452`), or a number the row wrote
+    on its own (`9173`).  `12` in front of `Years` is a warranty, and `White` is a colour -- neither is
+    a code, and treating one as the code would read the clause beside it as the machine's name.
+    """
+    key = token.lower()
+    if key in _NOT_A_NAME_WORDS:
+        # The same set the seat is read with, defined below with the words it is built from.
+        return False
+    if not any(character.isdigit() for character in token):
+        return False
+    # A decimal is a size in the unit the category is sold in (`12.5` Cu Ft, `1.5` Ton) and never a
+    # part number, whatever else it looks like.
+    if re.fullmatch(r"\d+[.,]\d+", token):
+        return False
+    if re.fullmatch(r"\d+", token):
+        return len(token) >= 3 and following.lower() not in SIZE_UNIT_WORDS
+    return True
+
+
+def _slot_refuses(token: str, key: str, banned: frozenset[str]) -> bool:
+    """Whether this word says what the machine IS (or is painted, or is warranted) -- not which line.
+
+    Nothing here is a list of words this function keeps: `_NOT_A_NAME_WORDS` (defined below, with the
+    type, category, colour, size and warranty tables it is built from) is the repo's own answer to
+    "this word cannot be a name", and `names_a_class` is the test the corpus vote already uses.  A
+    word that opens with a long technology word -- `InverterOn`, `DirectCool` -- is that technology
+    written camel-case, and a size (`10kg`, `1.5 TON`) or a bare number is the machine's measure,
+    which `[Capacity]` and `[Model]` already state.
+
+    Only the SLOT is read with this.  A name the row positioned beside its own code is evidence; the
+    same word written loose in the descriptive part is the guesser path's business, where `Pearl`
+    really is Haier's line and a colour table alone cannot know that.
+    """
+    if len(key) < 3 or key.isdigit():
+        return True
+    # Read on its letters too, or a name wearing the paint's punctuation -- `Pearl+` for `Pearl` --
+    # steps past the very ban R1 puts on it.
+    forms = {key, "".join(character for character in key if character.isalpha())}
+    if forms & _NOT_A_NAME_WORDS or forms & banned:
+        return True
+    if series_corpus.names_a_class(token) or _SIZE_ANSWER_RE.match(token):
+        return True
+    return any(len(word) >= 8 and key.startswith(word) for word in TYPE_WORDS)
+
+
+def beside_model_code(
+    source_title: str, model: str, banned: frozenset[str] = frozenset()
+) -> tuple[str, str]:
+    """The name the row wrote beside its model code, and whether the row has such a clause at all.
+
+    The formula writes `[Model] [Series]` in one ` - ` clause after the descriptive part, so THAT
+    clause -- not the whole Title -- is the row's own answer to "which line is this":
+    `9173WB Chrome`, `9193LF Acce`, `9178LF Avante+`, `Ultron 380I GD`, `HR-47452 BKG Tech Inverter`.
+
+    A paint abbreviation (`BKG`, `GD`, `VCM`, `MRG`) or a filler (`New`) is stepped over, because the
+    sheet stands them in the same clause; the first word that could be a name is taken and its
+    immediate neighbours with it, up to three, in the order the row wrote them -- `Ref Avante 9173WB`
+    is the line the sheet named, never its letters reversed.  A word naming the class, the colourway,
+    the warranty or the technology ends the scan and reports an empty slot: the row said nothing
+    there, and silence is right where a guess would be wrong.
+
+    When the row resolved NO code at all, a bare number is not allowed to stand in for one: beside it
+    the name must be touching the number, because ` - 828 New Design -` is a stock number followed by
+    a sentence, and a sentence stepped over its first word invents a line (`Design`) that then
+    crowds out the name the run's vote actually proved.
+
+    A `+` the sheet spaced off its word is glued back (`AVANTE + GD INV` is `Avante+`, a different
+    product from `Avante`), and on a sheet typed in capitals only a SHORT block is read as a paint
+    code, because there `AVANTE` and `INV` look exactly alike to a casing test.
+
+    An empty clause means the Title was written without the ` - ` clauses at all -- there is no slot
+    to read here, and the curated path stays in charge exactly as it was.
+    """
+    clauses = _CLAUSE_SPLIT_RE.split(source_title)
+    shouty = source_title.upper() == source_title
+    spoken_clause = ""
+    for clause in clauses[1:]:
+        tokens = _CLAUSE_PART_RE.findall(clause)
+        code_index = -1
+        bare_number = False
+        for position, token in enumerate(tokens):
+            following = tokens[position + 1] if position + 1 < len(tokens) else ""
+            if not _is_code_token(token, following):
+                continue
+            if model:
+                # The anchor is THIS row's resolved code: a clause carrying some other number is the
+                # warranty or the size, and reading beside it would name the machine after its price.
+                if token.lower() in model.lower():
+                    code_index = position
+                    break
+                continue
+            # With no code resolved, the row's own part number is still the clause's anchor -- but a
+            # bare number (`828`) is a stock number or a size, and the words around it are prose: the
+            # name has to be TOUCHING it, or `- 828 New Design -` makes a line of `Design`.
+            code_index = position
+            bare_number = not any(character.isalpha() for character in token)
+            break
+        if code_index == -1:
+            continue
+        if not spoken_clause:
+            # The row put its code in a clause of its own, so its name slot exists: a later rung may
+            # not guess past it, even when this clause held a paint code and nothing else.
+            spoken_clause = clause
+        before = list(reversed(tokens[:code_index]))
+        for run in (tokens[code_index + 1 :], before):
+            kept: list[str] = []
+            trailing_plus = False
+            for token in run:
+                key = token.lower()
+                if token == "+":
+                    # The sign belongs to the word in front of it, and to nothing else: a row that
+                    # wrote `+` with no name behind it wrote a sum, not a line.  Read backwards, the
+                    # word in front of it is the one this scan meets NEXT (`AVANTE + 9178LF`).
+                    if kept:
+                        kept[-1] = f"{kept[-1]}+"
+                    elif run is before:
+                        trailing_plus = True
+                        continue
+                    else:
+                        break
+                    continue
+                if _slot_skips(token, shouty) or _slot_refuses(token, key, banned):
+                    # The sheet stands a paint code or a filler word in the same clause as the name;
+                    # once a name has begun, either of them ends it instead of joining it.  And beside
+                    # a bare number the name has to stand TOUCHING it: `- 828 New Design -` is a stock
+                    # number followed by a sentence, and stepping over `New` made a line of `Design`.
+                    if kept or bare_number:
+                        break
+                    continue
+                kept.append(f"{token}+" if trailing_plus else token)
+                trailing_plus = False
+                if len(kept) == 3:
+                    break
+            if run is before:
+                kept.reverse()  # read backwards to find it, print it the way the row spelled it
+            # Each word alone can look like a name while the phrase they spell says what the machine
+            # IS: `Side` is not a type, `Side By Side` is, and shipping the first of them sold a
+            # fragment of a class word as Dawlance's line.
+            if kept and series_corpus.names_a_class(" ".join(kept)):
+                kept = []
+            if kept:
+                return " ".join(kept), clause
+    return "", spoken_clause
+
+
+def _slot_skips(token: str, shouty: bool) -> bool:
+    """Whether this token is a paint code the scan steps over rather than a name."""
+    if shouty:
+        return bool(_SLOT_SHOUTY_SKIP_RE.match(token))
+    return bool(_SLOT_SKIP_RE.match(token))
+
+
+def _series_name(capture: str, banned: frozenset[str] = frozenset()) -> str:
+    """The name inside a labelled series capture, with its leading junk peeled off.
+
+    The shared readers capture up to three words -- `E Luxury Pro Series` names `E Luxury Pro` --
+    so whatever stands in FRONT of the real name is captured with it: `White HPU-24HDZ Duzin
+    Series` names `Duzin`, and `Dawlance Avante Series` names `Avante`.  A label value may also
+    repeat the label's own keyword (`Series: KB Series` names `KB`), so a trailing `Series` goes
+    first.  Only LEADING words are then peeled, and only ones the repo's own tables already refuse
+    -- a word carrying digits (a code), a brand name, `_NOT_A_NAME_WORDS` minus the identity words
+    (`Pro`, `Plus`, `Turbo`, `Master`, which a shop really does begin a line with), and the words
+    this row already spent elsewhere.  The word touching `Series` is the name itself, so digits
+    never peel IT: `K85 Series` names `K85`, a line whose letters happen to be digits.  Nothing
+    here is a keep-list; after the first word survives, the rest of the capture is the shop's own
+    spelling and travels whole.
+    """
+    words = capture.split()
+    if words and words[-1].lower() == "series":
+        words.pop()
+    last = len(words) - 1
+    for index, head in enumerate(words):
+        key = head.lower()
+        if (
+            (index != last and any(character.isdigit() for character in head))
+            or key in series_corpus.brand_words()
+            or (key in _NOT_A_NAME_WORDS and key not in IDENTITY_NAME_WORDS)
+            or key in banned
+        ):
+            continue
+        return " ".join(words[index:])
+    return ""
+
+
+def extract_series(
+    text: str,
+    model: str = "",
+    banned: frozenset[str] = frozenset(),
+    product_type: str = "",
+) -> str:
     """The series name the source itself states, or ``""``.
 
-    Two spellings are honoured: an explicit ``"<Name> Series"`` label, and one
-    of the curated :data:`SERIES_WORDS` appearing in the text, falling back to
-    any distinctive capitalised series word found by :func:`find_series_token`.
+    Four spellings are honoured, in this order: an explicit ``Series:`` spec line (the row's own
+    label, the same mechanism as ``Model:`` and ``Warranty:``); a name written before the word
+    ``Series`` (``the E Luxury Pro Series``); the word the row wrote BESIDE its model code, which
+    is where the formula puts the name (`9173WB Chrome`, `Ultron 380I GD`); and one of the
+    curated :data:`SERIES_WORDS`.
+
+    The slot outranks everything but the label because it is the row's own answer, positioned: the
+    old reader took the FIRST capitalised word in the Title instead, and on a sheet written
+    `[Brand] [size] [colour] [type] [category] - [code] [name] - [warranty]` that word is always the
+    colour -- `Pearl`, `Coral`, `Cloud`, `Hairline` -- three characters from the front of the row and
+    never its name, while the name at char 82 is never reached.
+
+    Once the row has written a clause holding its code, nothing is guessed after those three: an
+    empty seat is correct and a leftover word is not.  `banned` carries the words this row already
+    spent -- its colourway, its type words.
     """
-    match = SERIES_RE.search(text)
-    if match:
-        return match.group(1).strip()
+    for regex in (SERIES_LABEL_LINE_RE, SERIES_NAME_BEFORE_RE):
+        match = regex.search(text)
+        if match:
+            named = _series_name(match.group(1), banned)
+            if named:
+                return named
+    title = text.splitlines()[0] if text else ""
+    name, clause = beside_model_code(title, model, banned)
+    if name:
+        return name
     word = SERIES_WORD_RE.search(text)
-    if word:
+    # Capitalised only: a curated word in lowercase is prose, not a name -- `orders are paid in
+    # advance` sold a Homage refrigerator as the `advance` line the moment the label rung above
+    # stopped swallowing the text with its own (empty) answer.
+    if word and word.group(0)[0].isupper() and word.group(0).lower() not in banned:
         return word.group(0)
-    return find_series_token(text)
+    if clause:
+        return ""
+    guess = find_series_token(text, banned)
+    # The leftover-word reader stops at a class word when it is one token (`Freezer-on-top`) and not
+    # when the sheet spaced it (`Side By Side`), so the phrase is tested around the word it picked:
+    # a word that only says what the machine IS cannot be the name, and `[Subtype]` already has it.
+    if guess and _says_what_it_is(guess, text, product_type):
+        return ""
+    return guess
+
+
+def _heads_class_phrase(word: str, text: str) -> bool:
+    """Whether this word is only a piece of a class phrase the row spaced out.
+
+    `Side` names nothing on its own, but `Side By Side` is what the platform calls the machine, and
+    the leftover-word reader stranded the first of them into the name slot.  Every window of two to
+    four words that contains this one is asked of the same test the corpus vote uses.
+    """
+    tokens = _CLAUSE_TOKEN_RE.findall(text)
+    try:
+        position = next(
+            index for index, token in enumerate(tokens) if token.lower() == word.lower()
+        )
+    except StopIteration:
+        return False
+    for size in (2, 3, 4):
+        for start in range(max(0, position - size + 1), min(position + 1, len(tokens) - size + 1)):
+            window = " ".join(tokens[start : start + size])
+            if series_corpus.names_a_class(window):
+                return True
+    return False
+
+
+def _says_what_it_is(word: str, text: str, product_type: str = "") -> bool:
+    """Whether a candidate name only says what the machine is: a type, a class, a size, a warranty.
+
+    The test the name SLOT is read with, minus the row's own colour words.  A vote or a curated hit
+    has no position behind it, so `Inverter` and the `Multi` stranded out of `Multi Door` still have
+    to be stopped -- while `Pearl`, `Room` and `Crystal`, which the tables also call colours, are
+    real lines the shop sells and stay where the vote put them.
+
+    Only a lone word is read word by word.  A name spelled over several words carries its own type
+    word inside it -- Kenwood sells `E Luxury Pro`, and `Pro` there is part of the line, not the
+    machine's shape -- so a phrase is refused only when the WHOLE of it is what the platform's own
+    tables call the product.
+
+    `product_type` adds the columns THIS row is asked: `Cassette` is a value of
+    `Attribute_Air Conditioner Type` and nothing else, so on an air-conditioner row it says what the
+    machine IS -- while `Mini` stays a line name for a brand whose list does not spell a type that way.
+    """
+    parts = word.split()
+    if len(parts) > 1:
+        return series_corpus.names_a_class(word)
+    for part in parts:
+        key = part.lower()
+        if len(key) < 3:
+            continue  # an initial glued to a word (`E-Chrome`) travels with its name
+        if (
+            key in CATEGORY_WORDS
+            or key in TYPE_WORDS
+            or key in SIZE_UNIT_WORDS
+            or (product_type != "" and key in series_corpus.class_words(product_type))
+            or series_corpus.names_a_class(part)
+            or _SIZE_ANSWER_RE.match(part)
+            or _heads_class_phrase(part, text)
+        ):
+            return True
+    return False
 
 
 def extract_taps(text: str) -> str:
@@ -321,18 +716,8 @@ SUBTYPES: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {
 }
 
 
-# EDIT HERE -- every unit a size on this sheet is written in.  One list serves both rules that need
-# it: a number standing in front of one of these words is the product's stated size, and the word
-# itself can never be part of the name the shop sells the machine by.
-SIZE_UNIT_WORDS: frozenset[str] = frozenset(
-    {
-        "ton", "tons", "kg", "kgs", "kilogram", "kilograms", "ltr", "ltrs", "litre", "litres",
-        "liter", "liters", "litters", "cu", "ft", "cf", "cft", "cuft", "inch", "inches", "in",
-        "w", "watt", "watts", "v", "volt", "volts", "va", "ah", "hz", "rpm", "btu", "mm", "cm",
-        "sq", "lb", "lbs", "pound", "pounds", "g", "gm", "gms", "gram", "grams", "oz", "ounce",
-        "taps", "tap", "star", "spin", "month", "months", "day", "days",
-    }
-)
+# EDIT HERE -- the unit vocabulary lives in `sku_handle.SIZE_UNIT_WORDS`, beside TYPE_WORDS: the
+# model reader needs it too, and one list serves both.  It is imported at the top of this file.
 
 # EDIT HERE -- words a shop says INSIDE a model name, so the type list above may not block them:
 # `Chrome Plus 45`, `Infinity Pro 15`, `Sprinter Turbo` are the name, not the technology.  `Star` is
@@ -497,7 +882,12 @@ def word_printed(word: str, printed: str) -> bool:
 
 #: Punctuation that ends a vendor's statement -- one clause, one claim.
 _CLAUSE_RE = re.compile(r"[^.;,•·\n\r\t]+")
-#: A type word standing behind one of these in its own clause was denied, not stated.
+#: A type word standing behind one of these in its own clause was denied, not stated.  Deliberately
+#: casing-aware on the RAW clause: `No Frost` is a type the platform enumerates, so a case-insensitive
+#: `no` reads nine Dawlance/Haier rows' own `Freezer-On-Top` as a denial and drops the wording the
+#: closed-list matcher in `attributes.py` needs to find the value the row actually earned.  Measured:
+#: no Title on the sheet writes a capitalised denial; three Descriptions do, and those clauses reach
+#: the matcher through `_clauses()`, which lowercases first and so IS read case-insensitively.
 _NEGATION_RE = re.compile(r"\b(?:not|no|without|never|nor)\b")
 
 
@@ -513,30 +903,527 @@ def _clauses(text: str) -> list[str]:
 
 
 def _group_label(group: dict[str, tuple[str, ...]], clauses: list[str]) -> str:
-    """The first label in this group whose any alias stands, un-negated, in one clause."""
+    """The label this group's aliases stand for in these clauses, un-negated -- the longest if two.
+
+    A group's list is written most-specific first (`Wall Mounted Split` before `Wall Mounted` before
+    `Split`), and the platform's longer label is the fuller spelling of ONE machine, so when a row's
+    words satisfy two nested labels the longer is the answer: `Split` beside `Wall Mounted Split` is
+    one AC spelled twice, not a row contradicting itself, and the closed list carries the longer.
+    """
+    best = ""
     for label, aliases in group.items():
         for alias in aliases:
             needle = _spaced_words(alias)
             for clause in clauses:
                 start = clause.find(needle)
                 if start >= 0 and not _NEGATION_RE.search(clause[:start]):
-                    return label
+                    if len(label.split()) > len(best.split()):
+                        best = label
+                    break
+            else:
+                continue
+            break
+    return best
+
+
+def _compound_value(first: str, second: str) -> str:
+    """The platform's ONE value whose words are exactly these two runs put together.
+
+    `Split` in the ad and `Wall Mounted` in the row's own `Type:` bullet are the two runs of
+    `Wall Mounted Split`, which the closed air-conditioner list carries: the row named ONE machine in
+    two pieces, so the pieces join and nothing is flagged.  The same test on `Split` and
+    `Floor Standing` searches the same list and finds no such value, because those are two machines
+    -- which is why this is a reading of the platform's table and not a list of words to forgive.
+
+    An empty side returns nothing: one column's word is not a run of a two-part value, it is that
+    column's own answer, and the join must never hand a word to a row whose other column said
+    nothing (an empty disjunction would otherwise make the FIRST column's value the answer to
+    whatever its second word happened to combine with).
+    """
+    if not first or not second:
+        return ""
+    wanted = set(_spelling_words(first)) | set(_spelling_words(second))
+    if len(wanted) != len(_spelling_words(first)) + len(_spelling_words(second)):
+        return ""  # they share a word: one is inside the other, and the caller already knows that
+    for column, values in attributes.ALLOWED.items():
+        if not column.endswith(" Type"):
+            continue
+        for value in values:
+            if set(_spelling_words(value)) == wanted:
+                return value
     return ""
 
 
-def extract_subtype(product_type: str, source_title: str, source_description: str = "") -> str:
-    """Sub-category words the row states, e.g. ``Fully Automatic Front Load``.
+def _nests(shorter: str, longer: str) -> bool:
+    """Whether one value's words stand, unbroken, inside the other's.
 
-    The Title answers for a group first, because that is the sentence the buyer sees; the
-    Description only fills a group the Title said nothing about, so it can add ``Heat & Cool`` to a
-    row that wrote ``Split`` but never it -- and never overwrite the row's own word.
+    `Split` inside `Wall Mounted Split` is the same machine spelled by the platform's longer label,
+    not a second answer: 14 rows on this sheet state a type one way in the ad and the other way in
+    the prose, and calling that a contradiction would empty 14 filled cells.
+    """
+    a, b = _spelling_words(shorter), _spelling_words(longer)
+    return len(a) <= len(b) and any(
+        b[start : start + len(a)] == a for start in range(len(b) - len(a) + 1)
+    )
+
+
+def extract_subtype_groups(
+    product_type: str, source_title: str, source_description: str = ""
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[tuple[int, str, str], ...]]:
+    """Per group: what this row answers, the words it spent getting there, and what it cannot settle.
+
+    A group is answered by whichever of the row's two columns names it (owner ruling, 2026-10-23).
+    The Title and the Description are read as EQUAL evidence, because on this sheet neither is the
+    trusted one: 154 group answers come only from the prose -- the side the ad never spelled -- and
+    47 come only from the Title.
+
+    When BOTH columns answer the same group they must agree, and agreement is spelled one way:
+    identical, or one value's words standing inside the other (`Split` and `Wall Mounted Split` are
+    the platform's two labels for one machine, and the longer is taken).  Two values that neither
+    match nor nest are one row claiming two machines -- `Haier 4 Way Cassette ... (HBU-18HE)` whose
+    vendor sentence reads `... is a 1.5 Ton DC Inverter split air conditioner`, a template that says
+    `split` on 204 rows of this sheet and is wrong on 6 of them.  The builder then answers NEITHER
+    and hands the pair to the owner as a decision, because a guessed value inside
+    `Attribute_Air Conditioner Type` is a wrong shipping fact while an empty one is a question he can
+    answer in one line.
+
+    Every word the row wrote toward a group that went unanswered or was out-spelled travels back in
+    `overruled`: a type word is spent, and may not be resold behind the model code where a line name
+    belongs.
+
+    A conflict carries the GROUP it belongs to, not just its two words, because the thing that closes
+    a decision is his `SubType:` line answering THAT question -- and he may answer it with a third
+    value neither column fought over (`SubType: Cassette` on a row whose Title said `Floor Standing`
+    and whose prose said `split`).  Matching the closed pairs on words instead would leave such a row
+    flagged while its Title prints the very word the flag told him to write.
     """
     title_clauses = _clauses(source_title)
-    row_clauses = title_clauses + _clauses(source_description)
-    labels: list[str] = []
-    for group in SUBTYPES.get(product_type, ()):
-        labels.append(_group_label(group, title_clauses) or _group_label(group, row_clauses))
-    return " ".join(label for label in labels if label)
+    description_clauses = _clauses(source_description)
+    answers: list[str] = []
+    overruled: list[str] = []
+    conflicts: list[tuple[int, str, str]] = []
+    for position, group in enumerate(subtype_groups(product_type)):
+        from_description = _group_label(group, description_clauses)
+        from_title = _group_label(group, title_clauses)
+        if from_title and from_description:
+            if from_title == from_description:
+                answer = from_title
+            elif _nests(from_title, from_description):
+                answer = from_description
+            elif _nests(from_description, from_title):
+                answer = from_title
+            elif _compound_value(from_title, from_description):
+                # One machine named in two pieces: the ad says `Split`, the row's own `Type:` bullet
+                # says `Wall Mounted`, and the closed list carries `Wall Mounted Split` -- so the
+                # pieces join into the value the platform actually offers, and both runs are spent.
+                answer = _compound_value(from_title, from_description)
+                overruled.extend((from_title, from_description))
+            else:
+                answer = ""
+                conflicts.append((position, from_title, from_description))
+                overruled.extend((from_title, from_description))
+        else:
+            # Only one column spoke, or neither did: the row's own word stands, and nothing is spent.
+            answer = from_title or from_description
+        answers.append(answer)
+    return tuple(answers), tuple(overruled), tuple(conflicts)
+
+
+def _spelling_words(spelling: str) -> list[str]:
+    """The lower-case letter-and-digit words of a vocabulary spelling.
+
+    `Side-By-Side` gives `side by side` and `Heat & Cool` gives `heat cool`: the marks a shop puts
+    BETWEEN the words of its own values -- hyphens, ampersands -- are that shop's handwriting, and
+    matching is on the words.
+    """
+    return [word.lower() for word in re.findall(r"[A-Za-z0-9]+", spelling)]
+
+
+#: Lazily built, per product type: every vocabulary key mapped to how the shop writes it.
+_CANONICAL: dict[str, dict[str, str]] = {}
+
+
+def _canonical_spellings(product_type: str) -> dict[str, str]:
+    """Every spelling this category's type vocabulary knows, mapped to the shop's own version.
+
+    Not a vocabulary kept by hand: the type list's printed labels AND aliases, plus the values the
+    platform enumerates in the Type columns that answer for THIS product type (`attributes.SCOPE`).
+    A vendor who writes `heat and cool` is asking for the shop's own value `Heat & Cool`, and the
+    right spelling is read from where that value lives.  Aliases join so one reader cannot undo
+    what another reads -- the list matches a row through `heat and cool`, and the same words in a
+    `SubType:` line must re-spell through them, not stand next to them.
+    """
+    cached = _CANONICAL.get(product_type)
+    if cached is None:
+        found: dict[str, str] = {}
+        for group in subtype_groups(product_type):
+            for label, aliases in group.items():
+                for spelling in (label, *aliases):
+                    found.setdefault(" ".join(_spelling_words(spelling)), label)
+        for column, scope in attributes.SCOPE.items():
+            if not column.endswith(" Type"):
+                continue
+            if scope is not None and product_type not in scope:
+                continue
+            for value in attributes.ALLOWED.get(column, ()):
+                found.setdefault(" ".join(_spelling_words(value)), value)
+        cached = found
+        _CANONICAL[product_type] = cached
+    return cached
+
+
+def canonical_type_value(value: str, product_type: str) -> str:
+    """Re-write a vendor's type words in the shop's own spellings; keep an unknown word as written.
+
+    Matching is longest-first and by word count: `heat  cool` is the two words of `Heat & Cool`,
+    while `heat cool cool` is three words no two-word value may stand for.  An unmatched lower-case
+    word at least starts with a capital, so a Title never ships `Heat & cool` -- one fact, two
+    spellings.
+    """
+    spellings = sorted(_canonical_spellings(product_type), key=lambda s: (-len(s.split()), s))
+    # One value, written in the row's own punctuation: `Freezer-on-top` IS the platform's
+    # `Freezer-On-Top`, and a shelf that shows both spellings shows one fact twice.  Tested as the
+    # WHOLE phrase, so `heat cool cool` -- three words no two-word value owns -- still falls through
+    # to the window loop below and is left as written.
+    whole = " ".join(_spelling_words(value))
+    known = _canonical_spellings(product_type)
+    if whole in known:
+        return known[whole]
+    words = value.split()
+    out: list[str] = []
+    index = 0
+    while index < len(words):
+        for spelling in spellings:
+            tokens = spelling.split()
+            candidate = words[index : index + len(tokens)]
+            if len(candidate) == len(tokens) and " ".join(
+                _spelling_words(" ".join(candidate))
+            ) == spelling:
+                out.append(_canonical_spellings(product_type)[spelling])
+                index += len(tokens)
+                break
+        else:
+            word = words[index].strip(".,:;!?\u2013\u2014")
+            out.append(word.capitalize() if word.islower() else words[index])
+            index += 1
+    return " ".join(out)
+
+
+def _type_column(phrase: str) -> str:
+    """The platform Type column that enumerates this value verbatim, or ``""``.
+
+    Which values answer which question is the platform's table, read here, not authored.
+    """
+    needle = " ".join(_spelling_words(phrase))
+    for column, values in attributes.ALLOWED.items():
+        if not column.endswith(" Type"):
+            continue
+        for value in values:
+            if " ".join(_spelling_words(value)) == needle:
+                return column
+    return ""
+
+
+def _owns_column(column: str, group: dict[str, tuple[str, ...]], except_word: str) -> bool:
+    """Whether every value of this platform column but one stands inside this one group.
+
+    A column whose whole list lives in one SUBTYPES group asks exactly that group's question, so
+    ANY value of it -- even one the group has no alias for, like `Cassette` -- is that same
+    question answered differently, and the two may never stack (`Split Cassette Air Conditioner`
+    names two machines, and DigiMall's matcher would pick one of them at random).  A column whose
+    values span two groups is asked two questions at once -- `Attribute_Washing Machine Type`
+    enumerates both `Twin Tub` and `Top Load`, and the shop stacks them in one Title routinely --
+    so sharing it is no contradiction, and the builder may not forbid what its own table prints.
+    """
+    if column == "":
+        return False
+    table: set[str] = set()
+    for label, aliases in group.items():
+        table.add(" ".join(_spelling_words(label)))
+        table.update(" ".join(_spelling_words(alias)) for alias in aliases)
+    needle = " ".join(_spelling_words(except_word))
+    held = [
+        " ".join(_spelling_words(value))
+        for value in attributes.ALLOWED.get(column, ())
+        if " ".join(_spelling_words(value)) != needle
+    ]
+    # An empty `held` means this column lists no value this group could ever answer -- a column the
+    # type does not fill (`Attribute_Lamp Type` for a TV) or a column holding only the tested word.
+    # `all([])` is True, so without this line such a column looked OWNED by every group, and a value
+    # that appears in no vocabulary at all (`LED`) was refused a seat it contradicted nothing about.
+    return bool(held) and all(key in table for key in held)
+
+
+#: Per product type, the group tables once the platform's own closed list has filled them out.
+_WIDENED: dict[str, tuple[dict[str, tuple[str, ...]], ...]] = {}
+
+#: Per product type, the `Attribute_... Type` column each group asks, when exactly one group does.
+_GROUP_COLUMNS: dict[str, dict[int, str]] = {}
+
+
+def _column_keys() -> dict[str, set[str]]:
+    """Every platform Type column, as the spelling keys of the values it enumerates."""
+    return {
+        column: {" ".join(_spelling_words(value)) for value in values}
+        for column, values in attributes.ALLOWED.items()
+        if column.endswith(" Type")
+    }
+
+
+def _group_keys(group: dict[str, tuple[str, ...]]) -> set[str]:
+    keys = {" ".join(_spelling_words(label)) for label in group}
+    keys.update(" ".join(_spelling_words(alias)) for aliases in group.values() for alias in aliases)
+    return keys
+
+
+def _group_column_map(product_type: str) -> dict[int, str]:
+    """Which group asks which platform column -- only where ONE group's labels fit one list.
+
+    A column the platform's list answers with values from two different groups (`Attribute_Washing
+    Machine Type` knows both `Twin Tub` and `Top Load`, and the shop stacks them) belongs to neither,
+    so it widens nothing: the builder must not move a word across the line its own table draws.
+    """
+    cached = _GROUP_COLUMNS.get(product_type)
+    if cached is not None:
+        return cached
+    columns = _column_keys()
+    owners: dict[str, list[int]] = {}
+    for position, group in enumerate(SUBTYPES.get(product_type, ())):
+        for column, values in columns.items():
+            if _group_keys(group) <= values:
+                owners.setdefault(column, []).append(position)
+    resolved = {
+        position: column
+        for column, positions in owners.items()
+        if len(positions) == 1
+        for position in positions
+    }
+    _GROUP_COLUMNS[product_type] = resolved
+    return resolved
+
+
+def subtype_groups(product_type: str) -> tuple[dict[str, tuple[str, ...]], ...]:
+    """The sub-type groups this type is read from, widened by the platform's own list.
+
+    A group whose every label is a value of ONE `Attribute_... Type` column asks that column's
+    question, so the column's remaining values join the group as labels of their own.  DigiMall
+    enumerates `Cassette` in `Attribute_Air Conditioner Type` and the shop's Titles write it, and
+    while the group did not know the word it had no seat: the reader answered the mounting question
+    from the vendor's boilerplate, `Cassette` fell out of the Title, and a value the row earned was
+    never shipped.
+
+    Nothing is invented -- the vocabulary is `attributes.ALLOWED`, the platform's closed list, read
+    instead of copied.  A group the lists place nowhere (`Heat & Cool`) keeps exactly the labels the
+    table authored, and a column split across two groups widens neither.
+    """
+    cached = _WIDENED.get(product_type)
+    if cached is not None:
+        return cached
+    owners = _group_column_map(product_type)
+    widened: list[dict[str, tuple[str, ...]]] = []
+    for position, group in enumerate(SUBTYPES.get(product_type, ())):
+        column = owners.get(position, "")
+        if not column:
+            widened.append(dict(group))
+            continue
+        table = dict(group)
+        known = _group_keys(group)
+        for value in attributes.ALLOWED.get(column, ()):
+            if " ".join(_spelling_words(value)) not in known:
+                # The platform's own spelling is the label, and its words are the alias: the reader
+                # that matches a row's clause re-spaces the alias itself.
+                table[value] = (" ".join(_spelling_words(value)),)
+        widened.append(table)
+    result = tuple(widened)
+    _WIDENED[product_type] = result
+    return result
+
+
+def _answer_for_group(group: dict[str, tuple[str, ...]], phrase: str) -> str:
+    """What this group's OWN alias reader would answer from this phrase, alone.
+
+    The line contradicts a group's answer when the group would name a different label from the
+    line's words than from the row's -- the same question, two machines.  Asked of the group's own
+    reader, the closed platform lists join the test for free: a value no group knows (`Cassette`)
+    is answered by :func:`_owns_column` instead, and a value some other group knows (`Top Load`)
+    takes that group's seat rather than contradicting this one.
+    """
+    if not phrase:
+        return ""
+    return _group_label(group, _clauses(phrase))
+
+
+def merge_subtype_type(
+    label: str, answers: tuple[str, ...], product_type: str
+) -> tuple[str, bool]:
+    """Place the owner's `SubType:` line against the type list's per-group answers.
+
+    The line REPLACES a group's answer only where the two answer the same question differently --
+    the group's own alias reader would name one label from the row and a different one from the
+    line, or the platform's column that enumerates both knows them as its two values (`Split` vs
+    `Cassette`) -- and then it prints IN that group's seat, because the assembly prints groups in
+    order, which is the shop's order (`Front Load Twin Tub` never ships).  Everything else MERGES:
+    a line that answers a second question (`Heat & Cool` beside a standing `Split`) joins the slot
+    without wiping it, and a line that speaks a word another fact already carries is not printed
+    twice.  A line the table asks no question about (`Spinner`) travels at the end.
+    """
+    if not label:
+        return " ".join(answer for answer in answers if answer), False
+    groups = subtype_groups(product_type)
+    label_key = " ".join(_spelling_words(label))
+    label_tokens = _spelling_words(label)
+    line_answer = [_answer_for_group(group, label) for group in groups]
+    anchor = next((p for p, read in enumerate(line_answer) if read), None)
+    column_owner = next(
+        (p for p, group in enumerate(groups) if _owns_column(_type_column(label), group, label)),
+        None,
+    )
+    seats: list[tuple[int, str]] = []
+    replaced = False
+    seated = False
+    for position, group in enumerate(groups):
+        answer = answers[position] if position < len(answers) else ""
+        if anchor == position or (anchor is None and column_owner == position):
+            # The line's OWN question: it takes this seat, and a different value the group had
+            # answered from the row is the answer the line corrects.
+            if not seated:
+                seats.append((position, label))
+                seated = True
+            replaced = replaced or (bool(answer) and line_answer[position] != answer)
+            continue
+        if not answer:
+            continue
+        answer_tokens = _spelling_words(answer)
+        contained = len(answer_tokens) <= len(label_tokens) and any(
+            label_tokens[start : start + len(answer_tokens)] == answer_tokens
+            for start in range(len(label_tokens) - len(answer_tokens) + 1)
+        )
+        contradicts = line_answer[position] not in ("", answer) or (
+            _type_column(answer) != ""
+            and _type_column(answer) == _type_column(label)
+            and _owns_column(_type_column(answer), group, answer)
+        )
+        if contradicts or contained or label_key == " ".join(answer_tokens):
+            if not seated:
+                seats.append((position, label))
+                seated = True
+            replaced = replaced or contradicts
+            continue
+        seats.append((position, answer))
+    if not seated:
+        seats.append((len(groups), label))
+    return " ".join(text for _, text in seats), replaced
+
+
+def undecided_attribute_columns(
+    answers: tuple[str, ...], conflicts: tuple[tuple[str, str], ...]
+) -> tuple[str, ...]:
+    """The platform columns this row left unanswered, and must not be filled from its prose.
+
+    A `[Subtype]` word withheld because the row's two columns disagreed is only half the ruling:
+    DigiMall's matcher reads this Title first and the raw Description next, and the Description is
+    where the vendor sentence sits -- so leaving the slot empty without withholding the cell lets the
+    same wrong value walk back in through the back door (`Kenwood ... - KCT-2402H` shipping
+    `Attribute_Air Conditioner Type: Split` under a Title that refuses to call the machine a Split).
+    A column another group of the same row did answer -- `Top Load` beside an unsettled
+    `Semi Automatic` question -- stays open: the row answered that question, and an empty cell would
+    then be the builder's loss rather than the sheet's.
+    """
+    settled = {_type_column(answer) for answer in answers if answer}
+    undecided: list[str] = []
+    for pair in conflicts:
+        for value in pair:
+            column = _type_column(value)
+            if column and column not in settled and column not in undecided:
+                undecided.append(column)
+    return tuple(undecided)
+
+
+def stated_class_phrase(
+    product_type: str, source_title: str, said_already: str, refuse: tuple[str, ...] = ()
+) -> str:
+    """The type phrase this row writes that its own `[Subtype]` list has no group for.
+
+    `Haier Digital Inverter Freezer-On-Top Refrigerator 12 CFT` states a TYPE the platform
+    enumerates for a refrigerator, and neither the sub-type table nor a `SubType:` line names it.
+    The Series seat may not hold it either -- R1 and R4 put a class word outside the name slot -- so
+    a rebuild that prints neither drops the word from the Title, and DigiMall's
+    `Attribute_Refrigerator Type` cell is matched out of that Title: the row loses a platform value
+    it earned.  Reading the platform's own list for THIS type is how the phrase is found without a
+    second vocabulary living here, and the row's own letters are what gets printed.
+
+    Only clauses the row did not negate: `Not side by side, double door` denies one type and states
+    another, and a denied phrase cannot be the value this row earned.  The RAW clauses are searched,
+    not `_clauses()` -- that view is squashed to letters, and a value the row hyphenated into
+    `Freezer-on-top` has to be found behind its own punctuation before the platform's spelling of it
+    is printed.
+
+    The one-word values the same columns enumerate (`Cassette`, `Spinner`, `QLED`) join the search,
+    but under a stricter placement test: a word may take the slot only when its OWN platform column
+    has not already been answered by the row -- and only when that column is even a single question
+    to begin with (see :func:`_owns_column`), because `Attribute_Washing Machine Type` knows both
+    `Twin Tub` and `Top Load` and the shop stacks them daily.
+    """
+    stated = " ".join(
+        clause for clause in _CLAUSE_RE.findall(source_title) if not _NEGATION_RE.search(clause)
+    )
+
+    def stacks_on_answered_column(word: str) -> bool:
+        """Whether this one-word type contradicts a value the Title already prints.
+
+        `Split` and `Cassette` are two values of the platform's ONE AC Type column and every other
+        value of that column stands in one shape group -- so a row that already prints `Split` may
+        not gain `Cassette` here, and one Title would answer the mounting question twice.  A column
+        the builder's own table splits across two questions asks both, and `Spinner` beside
+        `Semi Automatic` contradicts nothing: it travels free.
+        """
+        column = _type_column(word)
+        if column == "":
+            return False
+        groups = subtype_groups(product_type)
+        if not any(_owns_column(column, group, word) for group in groups):
+            return False
+        mine = " ".join(_spelling_words(word))
+        for value in attributes.ALLOWED.get(column, ()):
+            other = " ".join(_spelling_words(value))
+            if other == mine:
+                continue
+            if all(word_printed(part, said_already) for part in other.split()):
+                return True
+        return False
+
+    best: tuple[int, int, str] | None = None
+    candidates = [(phrase, False) for phrase in series_corpus.class_phrases(product_type)]
+    candidates += [(word, True) for word in series_corpus.class_words(product_type)]
+    for phrase, one_word in candidates:
+        if " ".join(_spelling_words(phrase)) in {" ".join(_spelling_words(word)) for word in refuse}:
+            continue  # the row stated this type and its two columns disagreed -- the owner decides
+        pattern = r"\b" + r"[\s\-]+".join(re.escape(word) for word in phrase.split()) + r"\b"
+        match = re.search(pattern, stated, re.IGNORECASE)
+        if not match:
+            continue
+        written = match.group(0)
+        # A phrase sharing even ONE word with what the Title already prints is that same fact spelled
+        # twice: `TCL 65 Inch Mini LED TV` printed as `Mini LED LED TV` reads as a broken row, and
+        # `Top-Load Automatic` beside `Top Load` says nothing new.  The words are cut on punctuation
+        # too, because the row spells `Top-Load` where its own sub-type list spaced it to `Top Load`,
+        # and a hyphen is not a second type.
+        if any(word_printed(word, said_already) for word in _spaced_words(written).split()):
+            continue
+        if one_word and stacks_on_answered_column(written):
+            continue
+        # The row's own order wins over the table's: `Kenwood Multi Door Side-by-Side` states its
+        # first type first, and a longest-first pick would delete the word it wrote first.
+        candidate = (match.start(), -len(written), written)
+        if best is None or candidate < best:
+            best = candidate
+    if best is None:
+        return ""
+    # The platform's own letters, when it has any for what the row wrote: 32 rows spelled
+    # `Freezer-on-top` while 135 spelled `Freezer-On-Top`, and one fact does not get two spellings on
+    # one shelf.  An unknown phrase keeps the row's letters, because inventing a spelling is worse
+    # than keeping one (owner ruling, 2026-10-23).
+    return canonical_type_value(best[2], product_type)
 
 
 #: A sub-type names what the machine is; a sentence after `SubType:` is a vendor answering a
@@ -568,17 +1455,25 @@ def _phrase_neighbours(text: str, phrase: str) -> set[str]:
     return neighbours
 
 
-def subtype_line_words(value: str, said_already: str) -> tuple[list[str], str]:
+def subtype_line_words(
+    value: str, said_already: str, product_type: str = ""
+) -> tuple[list[str], str]:
     """The words of a `SubType:` line that the row has not already printed, and why if none.
 
-    Punctuation at the ends of the value goes; a sign BETWEEN two words stays, because
-    `Heat & Cool` is how he wrote it and how the shelf must read it.  A value that repeats the
-    model code, the warranty or the category is refused word by word, because a Title that says the
-    SKU twice is a row shadowing itself.
+    The line is re-spelled through the shop's own vocabulary first (:func:`canonical_type_value`):
+    `heat & cool` becomes `Heat & Cool` because that is the platform's value, and a vendor's commas
+    inside the value -- `Split, Heat & Cool.` -- are handwriting, not content, so every word loses
+    its edge punctuation before it is kept.  A sign BETWEEN two words stays, because `Heat & Cool`
+    is how he wrote it and how the shelf must read it.  A value that repeats the model code, the
+    warranty or the category is refused word by word, because a Title that says the SKU twice is a
+    row shadowing itself.
     """
     if not value:
         return [], ""
-    line_words = value.strip(" .,:;-–—").split()
+    if product_type:
+        value = canonical_type_value(value, product_type)
+    line_words = [word.strip(" .,:;-–—") for word in value.split()]
+    line_words = [word for word in line_words if word]
     if len(line_words) > SUBTYPE_MAX_WORDS:
         return [], (
             f"is {len(line_words)} words long -- a sub-type is 1-{SUBTYPE_MAX_WORDS} words, "
@@ -590,9 +1485,10 @@ def subtype_line_words(value: str, said_already: str) -> tuple[list[str], str]:
             if 0 < index < len(line_words) - 1 and kept:
                 kept.append(word)
             continue
-        if word_printed(word, said_already) or word_printed(word, " ".join(kept)):
+        spelling = word.capitalize() if word.islower() else word
+        if word_printed(spelling, said_already) or word_printed(spelling, " ".join(kept)):
             continue
-        kept.append(word)
+        kept.append(spelling)
     if kept:
         return kept, ""
     return [], "states only words this Title already prints"
@@ -610,6 +1506,7 @@ def extract_feature(
     description: str = "",
     series: str | None = None,
     absorbed: frozenset[str] = frozenset(),
+    warranty: str = "",
 ) -> str:
     """Extract series and prominent feature keywords dynamically from text.
 
@@ -620,30 +1517,68 @@ def extract_feature(
     `absorbed` are the words the row spent on saying what the machine is, and the word its Title
     left beside them.  A candidate built from any of them is dropped whole: a candidate cut down to
     its leftovers is the stranding this rule exists to remove -- `... - HSU-12CF Cool`, one half of
-    the phrase the shop wrote, printed where a line name belongs.
+    the phrase the shop wrote, printed where a line name belongs.  `warranty` is the row's own
+    guarantee statement, whose words are spent the same way.
     """
     full_text = f"{source_title}\n{description}" if (source_title or description) else text
     if not source_title and text:
         source_title = text.splitlines()[0]
 
+    # A word this row spent on its paint can never be its line name: `Pearl Copper`, `Cloud White`
+    # and `Green Texture` are colours, and a Series seat reading `Pearl`, `Cloud` or `Texture` out of
+    # one is the defect R1 removes -- absolutely, so the ban is in place BEFORE the row's own clause
+    # is read.  A sheet that writes `9173WB Pearl` behind a `Pearl Copper` row states its paint
+    # twice, and an empty seat is the honest answer.
+    spent = (
+        frozenset(word.lower() for word in color.split())
+        | colourway_words(source_title, color)
+        | frozenset(warranty_words(warranty))
+        | absorbed
+    )
+
     candidates: list[str] = []
-    chosen = series if series is not None else extract_series(full_text)
-    if chosen:
-        candidates.append(chosen)
+    # The row's own clause outranks the run's vote, because position is the row's own evidence:
+    # `KRF-23357 VCM INV Invertech VCM Inverter` names the machine `Invertech` inside the clause it
+    # wrote its code into, while the corpus, reading residue words left to right, believed
+    # `Texture` out of the colourway at char 25.
+    #
+    # And it REPLACES the vote rather than standing beside it: one seat, one name.  A second word
+    # from the run's vote printed `Invertech Texture` and `Room Lifetime` -- the name followed by
+    # the material or warranty word the very same row wrote somewhere else, which is the defect this
+    # task was opened for.  So the vote speaks only where the row's own clause stayed silent.
+    slot_name, _slot_clause = beside_model_code(source_title, model, spent)
+    if slot_name:
+        candidates.append(slot_name)
+    else:
+        chosen = series if series is not None else extract_series(
+            full_text, model=model, banned=spent, product_type=product_type
+        )
+        # A name with no position behind it still has to pass the type test: the vote proved
+        # `Inverter` for one Haier brand and the residue read `Multi` out of `Multi Door`, and neither
+        # is a line -- they are the machine's shape, which `[Subtype]` already carries.
+        if chosen and _says_what_it_is(chosen, full_text, product_type):
+            chosen = ""
+        if chosen:
+            candidates.append(chosen)
 
     # Air Fryer special check
     if re.search(r"\bair\s*fryer\b", full_text, re.IGNORECASE) and "Air Fryer" not in candidates:
         candidates.append("Air Fryer")
 
-    # Extra prominent features (Google, Android, QLED, OLED, Grill, Baking, Convection, Solo)
+    # Extra prominent features (Google, Android, QLED, OLED, Grill, Baking, Convection, Solo).  A word
+    # the platform lists as THIS category's own type value is not a feature to sell behind the model
+    # code -- it says what the machine IS, and `[Subtype]` is the seat for that -- so this hand-written
+    # list is filtered by the platform's columns instead of growing a second exception table by hand.
     for feat in ("Google", "Android", "QLED", "OLED", "Grill", "Baking", "Convection", "Solo"):
+        if product_type and feat.lower() in series_corpus.class_words(product_type):
+            continue
         if re.search(rf"\b{re.escape(feat)}\b", full_text, re.IGNORECASE) and not any(
             feat.lower() in c.lower() for c in candidates
         ):
             candidates.append(feat)
             break
 
-    kept = [c for c in candidates if not set(c.lower().split()) & absorbed]
+    kept = [c for c in candidates if not set(c.lower().split()) & (absorbed | spent)]
     return " ".join(kept[:2])
 
 
@@ -691,6 +1626,10 @@ def build_title(
         # attribute cells must all answer to the same number.  Resolving here would read the brand
         # as the sheet spelled it instead of as the brand registry resolved it.
         capacity = resolve_capacity(text, product_type, brand, extraction)
+    # Two facts, two tokens: how many taps the dispenser has, and how big its tank is.  The tap
+    # count still takes the printed [Capacity] slot today, but the litres are carried beside it
+    # instead of being overwritten -- the formula rewrite prints both.
+    volume_capacity = capacity
     if taps:
         capacity = taps
 
@@ -708,7 +1647,16 @@ def build_title(
             corpus_series = chosen.source
             evidence = corpus.evidence(brand, chosen.key)
             series_earned_by = "" if evidence is None else evidence.earned_by
-            curated = extract_series(text)
+            # Read with THIS row's code and its own colour words: called bare, any digit in the row
+            # would anchor the slot scan and its answer would be the code itself, or the paint standing
+            # beside it -- neither is a line name.
+            curated = extract_series(
+                text,
+                model=extraction.code,
+                banned=frozenset(word.lower() for word in f"{color} {warranty}".split())
+                | colourway_words(source_title, color),
+                product_type=product_type,
+            )
             if curated and curated != corpus_series and series_corpus.names_a_class(curated):
                 # The old series guesser sold this row's TYPE as its series name.  The corpus
                 # replaced it with the real name, but the word still says what the machine is --
@@ -731,19 +1679,65 @@ def build_title(
     said_already = " ".join(
         (brand, capacity, title_color, color, inverter, product_type, extraction.code, warranty)
     )
-    kept_words, label_note = subtype_line_words(label_value, said_already)
-    listed_subtype = extract_subtype(product_type, source_title, source_description)
+    kept_words, label_note = subtype_line_words(label_value, said_already, product_type)
+    answers, list_overruled, list_conflicts = extract_subtype_groups(
+        product_type, source_title, source_description
+    )
+    # A written `SubType:` line settles the questions its own words answer, so a group the two
+    # columns disagreed about is AGREED the moment he speaks: the label's value becomes that group's
+    # answer and nothing is flagged for it.  A question the line does not address stays open.
+    label_answers = list(answers)
+    settled_groups: set[int] = set()
+    conflicts: list[tuple[str, str]] = []
+    overruled = list(list_overruled)
+    if kept_words:
+        label_phrase = " ".join(kept_words)
+        for index, group in enumerate(subtype_groups(product_type)):
+            from_label = _group_label(group, _clauses(label_phrase))
+            if not from_label:
+                continue
+            settled_groups.add(index)
+            if answers[index] != from_label:
+                if answers[index]:
+                    overruled.append(answers[index])
+                label_answers[index] = from_label
+    for position, title_value, description_value in list_conflicts:
+        if position in settled_groups:
+            # His own line answered THIS question -- whichever word he chose, even a third one the
+            # two columns never fought over.  The group carries his word now, so the row is no
+            # longer a decision owed; and both disputed words are already spent, because the reading
+            # that recorded the disagreement spent them.  Keying this on the WORD instead would keep
+            # flagging a row whose Title ships exactly what he wrote: the flag tells him the slot and
+            # its Attribute_* cell are empty, which on these rows is a lie.
+            continue
+        conflicts.append((title_value, description_value))
+    answers = tuple(label_answers)
+    listed_subtype = " ".join(answer for answer in answers if answer)
+    # The line and the list are placed TOGETHER (merge_subtype_type): the line answers the question
+    # it answers and leaves the other groups' answers standing, unless the two contradict.
+    merged_subtype, _ = merge_subtype_type(" ".join(kept_words), answers, product_type)
     if kept_words and " ".join(kept_words).lower() == listed_subtype.lower():
         label_note = "restates the word this row's own type already gives"
+    # Neither value of an unsettled disagreement reaches the Title: the words of a question the
+    # builder may not answer are spent, so they cannot reappear behind the model code either, and the
+    # class rung below is refused them -- the owner settles it, not a reader guessing between columns.
+    for title_value, description_value in conflicts:
+        overruled.extend((title_value, description_value))
+    refuse = tuple(word for pair in conflicts for word in pair)
 
-    # The words the row spent saying what the machine is, plus the word the TITLE left standing
+    # The words the row spent saying what the machine is -- the answers, the type word a column
+    # overruled, and the word the series reader carried -- plus the word the TITLE left standing
     # immediately beside them: none may be resold behind the model code, where a line name belongs.
     # `... - HSU-12CF Cool` is the half of "Turbo Cool" a type word strands, and a fragment reads as
     # a name the shop never sold.  The one thing that saves such a word is the run's vote -- a name
     # proved for this brand is what the corpus was built to find.  Prose is not scanned for
     # neighbours: a Description bullet's neighbour is grammar (`with`, `Yes`), and absorbing it
     # deleted the `Air` of `Air Fryer` from two Haier rows while leaving `Fryer` behind.
-    own_words = {w.lower() for w in f"{listed_subtype} {carried_subtype}".split()}
+    own_words = {
+        word.lower()
+        for phrase in (listed_subtype, carried_subtype, *overruled)
+        for word in phrase.split()
+    }
     beside = (
         {
             word
@@ -766,15 +1760,50 @@ def build_title(
         description=source_description,
         series=corpus_series,
         absorbed=absorbed,
+        warranty=warranty,
     )
+
+    # A word the old leftover-word reader sold as a series is a TYPE the platform enumerates, and it
+    # has to stay in the Title or DigiMall's Type column falls to empty -- so it moves to the slot
+    # built for what a machine IS.  Scoped to exactly the words that reader used to pick up, because a
+    # rebuild that never touched them must not gain a new [Subtype] word either; and it is placed as
+    # the WHOLE phrase, since `Side` alone is the fragment the reader stranded out of `Side By Side`.
+    stranded_subtype = ""
+    if not carried_subtype and not kept_words:
+        # The rung that reads the platform's own list for what the machine IS is gated only on the
+        # slot being unfilled -- never on whether the leftover-word reader had anything to say.
+        # Row 505: a `Series:` line filled the name slot honestly, the old gate fell silent, and
+        # `Side-By-Side` left the Title with DigiMall's Type cell empty.  `[Subtype]` answers for
+        # itself, independent of the series reader (owner ruling).
+        # `said_already` carries the row's own type words and the seat too: a phrase sharing a
+        # word with what the Title already prints is that same fact spelled twice, and shipping
+        # it read `Fully Automatic Top Load Top-Load Automatic` for the shop to untangle.
+        phrase = stated_class_phrase(
+            product_type,
+            source_title,
+            f"{said_already} {listed_subtype} {feature}",
+            refuse,
+        )
+        if phrase:
+            stranded_subtype = phrase
 
     if should_rebuild:
         if kept_words:
-            subtype, subtype_from = " ".join(kept_words), "label"
+            subtype, subtype_from = merged_subtype, "label"
         else:
             # His line said nothing, so the row is built exactly as it was before the line existed.
-            subtype = listed_subtype or carried_subtype
-            subtype_from = "list" if listed_subtype else ("carried" if carried_subtype else "")
+            subtype = " ".join(
+                filter(None, (listed_subtype or carried_subtype, stranded_subtype))
+            )
+            subtype_from = (
+                "list"
+                if listed_subtype
+                else (
+                    "carried"
+                    if carried_subtype
+                    else ("class" if stranded_subtype else "")
+                )
+            )
         part1_pieces: list[str] = []
         for raw_piece in (brand, capacity, title_color, inverter, subtype, product_type):
             piece = clean_inline(raw_piece)
@@ -808,13 +1837,20 @@ def build_title(
                 identity_printed = identity
         if feature:
             clean_feat = clean_inline(feature)
-            printed = f"{part1} {' '.join(part2_pieces)}".lower()
-
-            feat_words = [
-                w for w in clean_feat.split()
-                if not word_printed(w, printed)
-                and not (product_type in OMIT_TITLE_COLOR_CATEGORIES and color and w.lower() == color.lower())
-            ]
+            # What the Title prints so far, GROWING as words are accepted.  It used to be a snapshot
+            # taken before any of the slot's own words went in, so a name slot handed the same phrase
+            # by two readers walked straight through it: `... - HMW-30AFR Air Fryer Air Fryer`.
+            # A word is printed once in a Title -- the rule `subtype_line_words` already applies to
+            # his own `SubType:` line, and the `part1` loop above applies to every other slot.
+            printed = f"{part1} {' '.join(part2_pieces)}"
+            feat_words: list[str] = []
+            for word in clean_feat.split():
+                if word_printed(word, printed):
+                    continue
+                if product_type in OMIT_TITLE_COLOR_CATEGORIES and color and word.lower() == color.lower():
+                    continue
+                feat_words.append(word)
+                printed = f"{printed} {word}"
             if feat_words:
                 part2_pieces.append(" ".join(feat_words))
             # The voted name counts as printed only when EVERY one of its words survived the dedupe
@@ -896,6 +1932,10 @@ def build_title(
         subtype_label_added=label_printed,
         subtype_line=label_value,
         subtype_label_note="" if label_printed else label_note,
+        subtype_conflicts=tuple(conflicts),
+        subtype_undecided_columns=undecided_attribute_columns(answers, tuple(conflicts)),
+        taps_token=taps,
+        volume_capacity_token=volume_capacity if taps else "",
     )
 
 

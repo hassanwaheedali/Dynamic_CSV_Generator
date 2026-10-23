@@ -4,11 +4,16 @@
 
 from __future__ import annotations
 
-from sku_handle import ModelExtraction
+from sku_handle import ModelExtraction, extract_model
 from title_builder import (
     TITLE_MAX,
     TitleResult,
+    beside_model_code,
     build_title,
+    colourway_words,
+    extract_inverter,
+    extract_series,
+    stated_class_phrase,
     without_leading_type_words,
     word_identity,
 )
@@ -25,6 +30,26 @@ def test_rebuilt_title_full_template() -> None:
     )
     assert result.strategy == "rebuilt"
     assert result.title == "Haier 2 Ton White Inverter Air Conditioner - HPU-24HDZ Duzin - 10 Year Compressor Warranty"
+
+
+def test_the_full_colourway_the_description_states_reaches_the_title_whole() -> None:
+    """`Color: Blaze Purple` is the row naming its own colourway; `Marvel` is the series.
+
+    The reading used to keep only a known modifier in front of a base colour, so this Title sold
+    `Blaze Purple` as `Purple` and left `Blaze` free to be guessed as a line name.
+    """
+    extraction = ModelExtraction(code="HRF-336EPB", source="title-parenthetical", confidence="high")
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="Refrigerator",
+        source_title="Haier 12 CuFt Refrigerator Marvel Series Blaze Purple (HRF-336EPB)",
+        source_description="Model: HRF-336EPB\nColor: Blaze Purple\nMarvel Series\n12 CuFt",
+    )
+    assert result.color_token == "Blaze Purple"
+    assert result.title == (
+        "Haier 12 Cu Ft Blaze Purple Refrigerator - HRF-336EPB Marvel - 10 Year Compressor Warranty"
+    )
 
 
 def test_rebuilt_title_without_inverter_for_water_dispenser() -> None:
@@ -234,8 +259,12 @@ def test_full_color_refrigerator_titles() -> None:
             source_description="",
         )
         assert result.color_token == expected_color
+        # `Freezer-on-top` is what the row wrote, and DigiMall's `Attribute_Refrigerator Type` is
+        # matched out of the Title -- the class rung re-homes it into [Subtype] instead of letting
+        # the rebuild drop it and the cell fall to a value the row never stated.  It prints in the
+        # platform's own letters (owner ruling, 2026-10-23): one fact, one spelling on one shelf.
         expected_title = (
-            f"Dawlance {expected_color} Inverter Refrigerator - {expected_model} Acce"
+            f"Dawlance {expected_color} Inverter Freezer-On-Top Refrigerator - {expected_model} Acce"
             " - 12 Year Compressor Warranty"
         )
         assert result.title == expected_title
@@ -253,7 +282,11 @@ def test_led_tv_title_omits_color_even_when_in_source() -> None:
     assert result.strategy == "rebuilt"
     assert "Black" not in result.title
     assert result.color_token == "Black"
-    assert result.title == "Haier 32 Inch LED TV - H32K85FX Android Google - 2 Year Panel Warranty"
+    # One seat, one kind of word: `Android` is a value of the platform's `Attribute_LED Type`, so it
+    # prints in `[Subtype]` beside the size, while `Google` -- an OS the lists never enumerate as a
+    # type -- keeps the feature seat behind the code.  Printing the type word in the name seat is what
+    # made `- H32K85FX Android Google` read as a line called "Android Google".
+    assert result.title == "Haier 32 Inch Android LED TV - H32K85FX Google - 2 Year Panel Warranty"
 
 
 def test_led_tv_kept_title_omits_color() -> None:
@@ -556,24 +589,6 @@ def test_a_negation_reaches_only_the_clause_it_sits_in() -> None:
     assert " Electric Geyser" in result.title
 
 
-def test_the_title_answers_a_group_before_the_description_does() -> None:
-    """When the two columns name different machines, the Title's answer is the row's answer.
-
-    The case that decides the rule is a disagreement: the Title says `Split`, the prose says
-    `floor standing`.  Read the prose first and the table's own order picks the word the buyer was
-    NOT shown -- measured, that swap moves 26 real rows on this sheet.
-    """
-    result = build_title(
-        brand="Haier",
-        extraction=ModelExtraction(code="HSU-20", source="title-parenthetical", confidence="high"),
-        product_type="Air Conditioner",
-        source_title="Haier Split Inverter Air Conditioner 2 Ton White (HSU-20)",
-        source_description="A floor standing unit with heat and cool operation.",
-    )
-    assert result.subtype_token == "Split Heat & Cool"
-    assert "Floor Standing" not in result.title
-
-
 def test_a_subtype_line_that_repeats_the_model_code_prints_the_code_once() -> None:
     """A vendor pasting the SKU into his own line must not ship a Title with the code twice.
 
@@ -649,6 +664,255 @@ def test_a_word_left_beside_the_type_phrase_goes_with_the_phrase() -> None:
     assert result.title == (
         "Homage 2 Ton Inverter Split Air Conditioner - HES-2421S - 1 Year Warranty"
     )
+
+
+# --------------------------------------------------------------------------- #
+# [Subtype] -- the `SubType:` line answers ONE question, not the whole slot
+# --------------------------------------------------------------------------- #
+def test_a_label_answering_a_second_question_leaves_the_first_answer_standing() -> None:
+    """`Split` says the shape, `Heat & Cool` says the cycle -- one machine, two facts, one Title.
+
+    The line used to wipe the slot it touched: a row reading `Haier Split ...` above
+    `SubType: Heat & Cool` shipped without its `Split`, and DigiMall's
+    `Attribute_Air Conditioner Type` -- matched out of this Title -- fell from `Split` to empty.
+    The line is the owner's authority for the question IT answers, not for the ones the type list
+    already answered from the same row.
+    """
+    result = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: Heat & Cool",
+    )
+    assert result.subtype_from == "label"
+    assert result.subtype_token == "Split Heat & Cool"
+    assert " Split Heat & Cool Air Conditioner" in result.title
+
+
+def test_a_merged_label_prints_in_the_order_the_type_table_uses() -> None:
+    """Two groups answer two questions, and the table's group order is the Title's word order.
+
+    A merge that printed the line first would read `Heat & Cool Split Air Conditioner` on half the
+    sheet and the shop's own order on the rest -- one spelling per fact, in one order, always.
+    """
+    result = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: Heat and Cool",
+    )
+    assert result.subtype_token == "Split Heat & Cool"
+
+
+def test_a_label_written_with_punctuation_prints_the_words_not_the_marks() -> None:
+    """`SubType: Split, Heat & Cool.` is two type words wearing the vendor's commas.
+
+    The value's END punctuation already went; a mark INSIDE the value travelled into the Title
+    whole -- `Split,` matched no word guard (it is not the word `Split`), so the shelf read the
+    comma.  A sub-type is words; the punctuation around them is handwriting, not content.
+    """
+    result = _haier_ac(
+        "Haier Split Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: Split, Heat & Cool.",
+    )
+    assert result.subtype_token == "Split Heat & Cool"
+    assert "," not in result.title
+
+
+def test_a_label_written_in_lower_case_prints_the_shop_s_own_spelling() -> None:
+    """`SubType: heat & cool` is the same fact typed quietly -- the Title must not shout it half-case.
+
+    The tidy step capitalizes a value's first letter, which left rows shipping `Heat & cool` -- a
+    fact spelled two ways in one Title.  The repair is not a spelling table authored here: the
+    type list's own label and the platform Type column's own value ARE the spelling, and words that
+    match one (case-blind) print AS one.
+    """
+    result = _haier_ac(
+        "Haier Inverter Air Conditioner 1.5 Ton White (HSU-19HFPCAA)",
+        "Model: HSU-19HFPCAA\nSubType: heat & cool",
+    )
+    assert result.subtype_token == "Heat & Cool"
+    assert " Heat & Cool Air Conditioner" in result.title
+    assert "Heat & cool" not in result.title
+
+
+def test_the_description_answers_a_group_the_title_leaves_empty() -> None:
+    """One column naming the type is the row naming it: 154 group answers on this sheet come only
+    from the prose, and the ad never spelled them (`Side By Side` rows say the type nowhere else).
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-20", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Inverter Air Conditioner 2 Ton White (HSU-20)",
+        source_description="A floor standing unit with heat and cool operation.",
+    )
+    assert result.subtype_token == "Floor Standing Heat & Cool"
+    assert result.subtype_conflicts == ()
+
+
+def test_two_columns_that_answer_one_question_differently_answer_neither() -> None:
+    """`Cassette` in the ad and `split` in the prose is one row claiming two machines.
+
+    The vendor sentence `... is a X Ton DC Inverter split air conditioner` stands in 204
+    Descriptions on this sheet, and six of those rows' Titles sell a cassette -- so no column may be
+    believed over the other here, and guessing one would print a WRONG value in the platform's closed
+    `Attribute_Air Conditioner Type` (owner ruling: a mistake in the sheet is his to make, not ours
+    to invent).  The slot stays empty, both candidates travel to the QC report, and his decision --
+    written as `SubType: Cassette`, or in the decisions file -- is the only thing that fills it.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HBU-18HE", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier 4 Way Cassette DC Inverter Air Conditioner 1.5 Ton White (HBU-18HE)",
+        source_description=(
+            "The Haier HBU-18HE/DC-DC Inverter Cassette Type Air Conditioner (H&C) is a 1.5 Ton "
+            "DC Inverter split air conditioner, in White."
+        ),
+    )
+    assert result.subtype_token == ""
+    assert result.subtype_conflicts == (("Cassette", "Split"),)
+    assert "Cassette" not in result.title
+    assert "Split" not in result.title
+
+
+def test_a_longer_platform_spelling_of_the_same_type_is_not_a_conflict() -> None:
+    """The ad says `Split` and the prose says `Wall Mounted Split`: one machine, two spellings.
+
+    Not every disagreement is a contradiction -- 14 rows on this sheet answer the mounting question
+    with one value nested inside the platform's longer label for it, and the longer spelling is what
+    the closed list carries, so the row takes it without being flagged.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-13HFA", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Split T3 Air Conditioner 1 Ton White (HSU-13HFA)",
+        source_description="Haier T3 wall mounted split air conditioner, 1 ton, in White.",
+    )
+    assert result.subtype_conflicts == ()
+    assert result.subtype_token == "Wall Mounted Split"
+
+
+def test_two_columns_naming_one_machine_in_two_pieces_answer_the_platforms_value() -> None:
+    """The ad says `Split`, the row's own `Type:` bullet says `Wall Mounted`: ONE machine, in pieces.
+
+    `Wall Mounted Split` is the platform's own third air-conditioner value, and these two words are
+    its two runs, so the row is not claiming two machines and is not a decision owed -- 14 rows on
+    this sheet say it this way, and calling it a contradiction emptied 14 filled
+    `Attribute_Air Conditioner Type` cells.  The union rule is read off the closed list: `Split` and
+    `Floor Standing` are tested against the same list, find no value holding both, and stay a
+    conflict.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-13HFA", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Split T3 Air Conditioner 1 Ton (HSU-13HFA)",
+        source_description=(
+            "The Haier 1.0 Ton T3 Inverter (HSU-13HFAB) is a 1 Ton split air conditioner.\n"
+            "• Type: Wall Mounted"
+        ),
+    )
+    assert result.subtype_conflicts == ()
+    assert result.subtype_token == "Wall Mounted Split"
+    assert result.subtype_undecided_columns == ()
+    assert "Split" not in result.title.replace("Wall Mounted Split", "")
+
+
+def test_a_written_subtype_line_clears_the_flag_that_asked_for_it() -> None:
+    """The flag's own cure works: write `SubType: Cassette` and the row stops being a decision owed.
+
+    It is the whole point of handing the 33 rows back to the owner -- and a QC report that keeps
+    saying "the slot and its Attribute_* cell are left empty" under a Title that ships the word he
+    wrote is worse than no report at all.
+    """
+    source_description = (
+        "The Haier HBU-18HE/DC-DC Inverter Cassette Type Air Conditioner (H&C) is a 1.5 Ton DC "
+        "Inverter split air conditioner, in White.\nSubType: Cassette"
+    )
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HBU-18HE", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier 4 Way Cassette DC Inverter Air Conditioner 1.5 Ton White (HBU-18HE)",
+        source_description=source_description,
+    )
+    assert result.subtype_conflicts == ()
+    assert result.subtype_undecided_columns == ()
+    assert result.subtype_token == "Cassette"
+    assert "Split" not in result.title
+
+
+def test_a_written_subtype_line_clears_the_flag_even_by_naming_a_third_type() -> None:
+    """He may settle a disagreement with a word NEITHER column fought over -- `SubType: Cassette`.
+
+    Row 441's ad says `Floor Standing` and its vendor sentence says `split`, and a Gree 24000 BTU
+    cabinet is neither.  The line is what settles the question, not a vote between the two candidates,
+    so keying the dismissal on the disputed WORDS leaves the row flagged -- claiming the slot and its
+    `Attribute_Air Conditioner Type` cell are empty -- under a Title that prints exactly what he wrote.
+    """
+    source_title = "Gree 24000 BTU Floor Standing 2.0 Ton Air Conditioner (GF-24ISH)"
+    source_description = "The Gree GF-24ISH is a 2.0 Ton split air conditioner.\nSubType: Cassette"
+    disputed = build_title(
+        brand="Gree",
+        extraction=ModelExtraction(code="GF-24ISH", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title=source_title,
+        source_description=source_description,
+    )
+    assert disputed.subtype_token == "Cassette"
+    assert disputed.subtype_conflicts == ()
+    assert disputed.subtype_undecided_columns == ()
+    # ...and the same row without his line is still a decision owed, with both words spent.
+    open_row = build_title(
+        brand="Gree",
+        extraction=ModelExtraction(code="GF-24ISH", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title=source_title,
+        source_description="The Gree GF-24ISH is a 2.0 Ton split air conditioner.",
+    )
+    assert open_row.subtype_conflicts == (("Floor Standing", "Split"),)
+    assert open_row.subtype_undecided_columns == ("Attribute_Air Conditioner Type",)
+    assert "Floor Standing" not in open_row.title and "Split" not in open_row.title
+
+
+def test_a_hyphenated_type_prints_the_platforms_own_spelling() -> None:
+    """`Freezer-on-top` is DigiMall's `Freezer-On-Top`: one fact, and one spelling of it on the shelf.
+
+    32 rows wrote the value with their own hyphens while 135 wrote it the platform's way, and the
+    second seat reader printed the row's letters.  The value is the platform's, so its spelling is
+    too; a phrase the platform does not list keeps the row's letters, because inventing a spelling
+    is worse than keeping one (owner ruling, 2026-10-23).
+    """
+    result = build_title(
+        brand="Dawlance",
+        extraction=ModelExtraction(code="9173-WB", source="title-parenthetical", confidence="high"),
+        product_type="Refrigerator",
+        source_title=(
+            "DAWLANCE Acce Pro Glass Door Inverter Freezer-on-top Refrigerator (9173-WB)-Crimson Red"
+        ),
+        source_description=(
+            "Dawlance 9173-WB Acce Pro 18 Cu Ft Glass Door inverter refrigerator, in Crimson Red."
+        ),
+    )
+    assert result.subtype_from == "class"
+    assert result.subtype_token == "Freezer-On-Top"
+    assert "Freezer-on-top" not in result.title
+
+
+def test_the_title_still_answers_a_group_the_description_says_nothing_about() -> None:
+    """Description-first is an order, not a ban: a group the prose never mentions keeps its ad word.
+
+    Most rows write their type only in the Title -- reversing the order must not lose the type
+    for them, only settle it when the two columns disagree.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-20", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Split Inverter Air Conditioner 2 Ton White (HSU-20)",
+        source_description="Copper condenser, 5 Star energy rating.",
+    )
+    assert result.subtype_token == "Split"
+    assert " Split Air Conditioner" in result.title
 
 
 
@@ -855,3 +1119,424 @@ def test_a_category_word_the_type_list_knows_may_not_stand_as_a_name() -> None:
     The identity list reuses that vocabulary instead of keeping a second copy of it.
     """
     assert word_identity("Royal 1200 Fan", "Royal") == ""
+
+
+# --------------------------------------------------------------------------- #
+#  T9 -- the Series seat reads the slot the sheet wrote the name in
+# --------------------------------------------------------------------------- #
+def _build(title: str, description: str = "") -> TitleResult:
+    extraction = extract_model(title, description or title)
+    return build_title(
+        title.split(maxsplit=1)[0], extraction, "Refrigerator", title, description or title
+    )
+
+
+def test_the_word_beside_the_model_code_is_the_series_not_the_colour() -> None:
+    """`... Pearl Copper Steel Door ... - 9173WB Chrome - 12 Years ...` is a Chrome.
+
+    The sheet writes `[Model] [Series]` inside one clause, so the word standing next to the code IS
+    its answer to "which line is this".  The old reader took the FIRST capitalised word in the Title
+    instead -- char 18, the colourway -- printed `Pearl` as the Series, swallowed it as an already
+    printed colour, and `Chrome` was never looked at.
+    """
+    result = _build(
+        "Dawlance 12 Cu Ft Pearl Copper Steel Door Direct Cool Non-Inverter Refrigerator "
+        "- 9173WB Chrome - 12 Years Compressor Warranty"
+    )
+    assert result.series_token == "Chrome"
+    assert " - 9173WB Chrome - " in result.title
+
+
+def test_a_name_written_BEFORE_the_code_is_found_too() -> None:
+    """`Orient 13 Cu Ft Triangle Black ... - Ultron 380I GD - 3 Years ...` is an Ultron.
+
+    Same slot, the other side of the code: `GD` is a colour code, so nothing survives after `380I`
+    and the word in front of it is the name.  `Triangle` is part of the colourway phrase and died
+    here as the Series while `Ultron` vanished from the Title.
+    """
+    result = _build(
+        "Orient 13 Cu Ft Triangle Black Glass Door Direct Cool Inverter Refrigerator "
+        "- Ultron 380I GD - 3 Years Compressor Warranty"
+    )
+    assert result.series_token == "Ultron"
+    assert "Ultron" in result.title
+
+
+def test_a_trailing_plus_belongs_to_the_name() -> None:
+    """`Avante+` and `Chrome+` are different products from `Avante` and `Chrome`.
+
+    The sign is the row's own punctuation, so the name ships with it or it ships wrong.
+    """
+    plus = _build(
+        "Dawlance 12 Cu Ft Cloud White Glass Door Direct Cool Inverter Refrigerator "
+        "- 9178LF Avante+ - 12 Years Compressor Warranty"
+    )
+    assert plus.series_token == "Avante+"
+    assert "Avante+" in plus.title
+
+
+def test_a_colour_word_can_never_become_the_series_even_when_it_is_first() -> None:
+    """Strip the real name out of the slot and the answer is silence, not `Pearl`.
+
+    A row that states no name next to its code has no line name in it; the colour the shop painted
+    the door with is not one, and inventing it costs the buyer the truth for a guess.
+    """
+    result = _build(
+        "Dawlance 12 Cu Ft Pearl Copper Steel Door Direct Cool Non-Inverter Refrigerator "
+        "- 9173WB - 12 Years Compressor Warranty"
+    )
+    assert result.series_token == ""
+    assert result.title == (
+        "Dawlance 12 Cu Ft Pearl Copper Non-Inverter Refrigerator - 9173WB "
+        "- 12 Year Compressor Warranty"
+    )
+
+
+def test_a_bare_number_sheet_names_no_series() -> None:
+    """Adversarial: a Title with a code, no label and no name beside the code stays silent.
+
+    Every leftover word here (`Steel`, `Door`, `Direct`, `Cool`) is material or type -- none is a
+    line name -- and the seat must stay empty rather than sell a material as a model.
+    """
+    result = _build(
+        "Dawlance 12 Cu Ft Steel Door Direct Cool Non-Inverter Refrigerator "
+        "- 9173 - 12 Years Compressor Warranty"
+    )
+    assert result.series_token == ""
+
+
+def test_a_line_name_the_guards_refuse_is_still_reported_as_dropped() -> None:
+    """`Twin Cooling Plus` cannot pass the type-word guard, so it must at least leave evidence.
+
+    A silent deletion is the bug: the QC flag is what tells him the row states a name the pipeline
+    could not read.
+    """
+    result = _build(
+        "Samsung 19 Cu Ft Silver French Door Steel Door No Frost Inverter Refrigerator "
+        "- RF49A5202SL Twin Cooling Plus - 10 Years Compressor Warranty"
+    )
+    assert result.series_token == ""
+    assert "twin" in result.dropped_words
+
+
+def test_a_size_written_where_the_name_belongs_states_no_line() -> None:
+    """`Washing Machine - 10kg (KWM-211059)`: the seat already said `10 KG` -- it cannot be a name.
+
+    The row wrote its size into the clause the formula reserves for `[Model] [Series]`, and a size is
+    the one fact the Title prints twice over -- once as the number and once as the digits behind it.
+    """
+    result = build_title(
+        brand="Kenwood",
+        extraction=ModelExtraction(
+            code="KWM-211059", source="title-parenthetical", confidence="high"
+        ),
+        product_type="Washing Machine",
+        source_title="Kenwood Top Load Semi Automatic Twin Tub Washing Machine - 10kg (KWM-211059)",
+        source_description="Kenwood KWM-211059 semi automatic washing machine, 10 kg.",
+        capacity="10 KG",
+    )
+    assert result.series_token == ""
+    assert "10kg" not in result.title
+
+
+def test_a_paint_word_standing_in_front_of_the_colour_is_never_the_line_name() -> None:
+    """`Dawlance Inverter Vertical Freezer Cloud White` is a WHITE freezer, not a `Cloud` one.
+
+    `Cloud` is a colour word in the repo's own table and it stands in the paint position; R1 puts it
+    with its colour and leaves the seat empty rather than naming a line after a finish.
+    """
+    result = build_title(
+        brand="Dawlance",
+        extraction=ModelExtraction(
+            code="VF-1035-GD-INV", source="title-parenthetical", confidence="high"
+        ),
+        product_type="Deep Freezer",
+        source_title="Dawlance Inverter Vertical Freezer Cloud White (VF-1035-GD-INV)",
+        source_description="Dawlance vertical freezer, 11 Cu Ft, 12 Year Compressor Warranty.",
+        capacity="11 Cu Ft",
+    )
+    assert result.series_token == ""
+
+
+def test_a_name_written_AWAY_from_the_paint_keeps_its_seat() -> None:
+    """The same rule leaves `Haier Pearl DC Inverter Air Conditioner 1.5 Ton Silver` alone.
+
+    `Pearl` is a colour word too, but it stands in the name position, four words clear of the paint:
+    swallowing every colour word a row writes would delete Haier's real line, and a name is what the
+    seat exists for.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-19HFPA", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Pearl DC Inverter Air Conditioner 1.5 Ton Silver (HSU-19HFPA)",
+        source_description="Haier 1.5 Ton DC Inverter Air Conditioner with a 10 Year Compressor Warranty.",
+        capacity="1.5 Ton",
+    )
+    assert result.series_token == "Pearl"
+
+
+def test_a_type_word_the_seat_refuses_still_reaches_the_title() -> None:
+    """`Haier ... Freezer-On-Top Refrigerator 12 CFT - Red (HRF-346 IARA)`: the word moves, it does
+    not vanish.  A class word may not sit behind the code where a line name belongs, but DigiMall's
+    `Attribute_Refrigerator Type` is matched out of the Title -- so `[Subtype]` carries it.
+    """
+    result = _build(
+        "Haier Digital Inverter Freezer-On-Top Refrigerator 12 CFT - Red (HRF-346 IARA) "
+        "- 10 Years Compressor Warranty"
+    )
+    assert "Freezer-On-Top" in result.title
+    assert result.series_token != "Freezer-On-Top"
+    assert result.subtype_from == "class"
+
+
+def test_a_series_label_does_not_blind_the_builder_to_the_type_the_title_writes() -> None:
+    """Row 505's shape: the vendor ANSWERED the series question, so the old gate went quiet.
+
+    The class-phrase rung used to run only when the leftover-word guesser spoke -- and a row whose
+    series slot was filled by its own `Series:` line never reached it: `Side-By-Side` fell out of
+    the Title and DigiMall's `Attribute_Refrigerator Type` shipped EMPTY.  The `[Subtype]` slot
+    answers for itself, independent of whatever the series reader did (owner ruling).
+    """
+    result = build_title(
+        brand="Dawlance",
+        extraction=ModelExtraction(code="S-9173WB", source="title-parenthetical", confidence="high"),
+        product_type="Refrigerator",
+        source_title="Dawlance 12 Cu Ft Side-By-Side Refrigerator Black (S-9173WB)",
+        source_description="Model: S-9173WB\nSeries: T-Door",
+    )
+    assert result.subtype_from == "class"
+    assert "Side-By-Side" in result.title
+    assert result.subtype_token == "Side-By-Side"
+
+
+def test_a_one_word_type_the_platform_lists_reaches_the_subtype_slot_too() -> None:
+    """`Haier Cassette Inverter Air Conditioner 2 Ton`: `Cassette` IS the platform's AC Type.
+
+    DigiMall enumerates `Cassette` in `Attribute_Air Conditioner Type` and six Titles on this sheet
+    sell it, while the builder's own group table stopped at the four mountings its author wrote -- so
+    the word had no seat: the reader answered the mounting question from the vendor's boilerplate and
+    `Cassette` fell out of the Title.  The group is now read WITH the platform's list beside it, so the
+    word takes its place in `[Subtype]` from the type table itself.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HCD-24C", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Cassette Inverter Air Conditioner 2 Ton White (HCD-24C)",
+        source_description="Haier 2 Ton cassette air conditioner with a 10 Year Compressor Warranty.",
+    )
+    assert result.subtype_from == "list"
+    assert result.subtype_token == "Cassette"
+    assert " Cassette Air Conditioner" in result.title
+
+
+def test_a_one_word_type_never_stacks_on_the_type_the_row_already_printed() -> None:
+    """`Haier Split Cassette ...` is a row contradicting itself, and the Title may answer one
+    mounting question once.  `Split` and `Cassette` are two values of the platform's ONE AC Type
+    column, and every other value of that column lives in the same shape group -- so a row that
+    already prints `Split` cannot gain `Cassette` from the class rung, and the stray word may not
+    be resold behind the code as a line name either.
+    """
+    result = build_title(
+        brand="Haier",
+        extraction=ModelExtraction(code="HSU-24C", source="title-parenthetical", confidence="high"),
+        product_type="Air Conditioner",
+        source_title="Haier Split Cassette Inverter Air Conditioner 2 Ton White (HSU-24C)",
+        source_description="Haier 2 Ton inverter air conditioner with a 10 Year Compressor Warranty.",
+    )
+    assert result.subtype_token == "Split"
+    assert "Cassette" not in result.title
+
+
+def test_a_one_word_type_orthogonal_to_the_row_s_answers_travels_free() -> None:
+    """`PEL 12 Kg Semi Automatic Spinner`: the shop stacks these two every day.
+
+    `Spinner` and `Semi Automatic` both appear in `Attribute_Washing Machine Type`, but that column
+    is where the builder's OWN table asks two questions -- drum AND lid (`Twin Tub` and `Top Load`
+    sit in different groups) -- so sharing it proves nothing.  The never-stack rule bites only a
+    column the groups recognise as exactly one question, and the spinner row keeps its type.
+    """
+    result = build_title(
+        brand="PEL",
+        extraction=ModelExtraction(code="PW-120ST", source="title-parenthetical", confidence="high"),
+        product_type="Washing Machine",
+        source_title="PEL 12 Kg Semi Automatic Spinner Washing Machine White (PW-120ST)",
+        source_description="PEL semi-automatic washing machine with a spinner.",
+    )
+    assert result.subtype_token == "Semi Automatic Spinner"
+    assert " Spinner Washing Machine" in result.title
+
+
+def test_a_denial_written_lowercase_still_never_gets_placed() -> None:
+    """`Not side by side, double door` denies one type and states another.
+
+    The prose view (`_clauses()`) is lowercased before it is read, so a denial there IS honoured: a
+    denied phrase cannot become the value this row earned in the platform's closed list.
+    """
+    assert "Side By Side" not in stated_class_phrase(
+        "Refrigerator",
+        "Haier Inverter Refrigerator 12 CFT, not side by side (HRF-346)",
+        "Haier Inverter Refrigerator HRF-346",
+    )
+
+
+def test_no_frost_states_a_type_it_does_not_denied_one() -> None:
+    """`No Frost ... Freezer-on-top` -- the `No` belongs to `Frost`, not to the type beside it.
+
+    Read case-blind, `no` would deny the row's own `Freezer-On-Top` and the phrase would never reach
+    the Title -- and DigiMall's closed `Attribute_Refrigerator Type` is matched out of that Title, so
+    the row would ship `Double Door`, a value it never wrote.  Nine rows on the sheet are this shape.
+    The phrase prints in the platform's letters, not the row's hyphens (owner ruling, 2026-10-23).
+    """
+    assert stated_class_phrase(
+        "Refrigerator",
+        "Dawlance No Frost Glass Door Inverter Freezer-on-top Refrigerator (DTM-7650 INV GD IoT)",
+        "Dawlance Black Inverter Refrigerator DTM-7650",
+    ) == "Freezer-On-Top"
+
+
+def test_a_paint_written_with_a_hyphen_spends_its_first_word_just_the_same() -> None:
+    """`Pearl-Copper` is the same paint as `Pearl Copper`, so `Pearl` is spent either way (R1).
+
+    The colour reader answers `Copper` for the hyphenated spelling, and the ban used to read only the
+    words that colour split into -- so the sheet's own first word slipped into the name slot whole.
+    """
+    title = (
+        "Dawlance 12 Cu Ft Pearl-Copper Refrigerator - 9173WB Pearl "
+        "- 12 Years Compressor Warranty"
+    )
+    assert beside_model_code(title, "9173WB", frozenset(colourway_words(title, "Copper"))) == (
+        "",
+        "9173WB Pearl",
+    )
+
+
+def test_a_year_written_where_the_name_belongs_is_not_a_name() -> None:
+    """`- 2024 Model -` states a vintage and the word `Model`; neither is a line (R4).
+
+    The seat read `Model`, because the guard read a word as a type only from the tables that spell
+    out product types, and `Model` appears nowhere in them.
+    """
+    result = _build(
+        "Falcon 10 Cu Ft Brown Refrigerator - 2024 Model - 1 Year Compressor Warranty"
+    )
+    assert result.series_token == ""
+
+
+def test_a_bare_number_clause_names_no_line_when_the_row_states_no_code() -> None:
+    """`- 828 New Design -` on a row whose code the pipeline never found: the seat stays empty (R4).
+
+    A number with no letters in it is not the `[Model]` this row resolved, so nothing stands beside
+    it, and `Design` -- a word about the machine, not a line -- was read as its name.  Worse, that
+    invention outranked the run's proven name, which the seat then crowded out.
+    """
+    result = _build("Homage 7 Kg Washing Machine - 828 New Design - 1 Year Motor Warranty")
+    assert result.series_token == ""
+
+
+def test_a_spaced_plus_in_front_of_the_code_still_belongs_to_the_name() -> None:
+    """`- Avante + 9178LF -`: the sign is the name's, whichever side of the code the row wrote it (R3).
+
+    Read backwards from the code the scan met the lonely sign first and gave up, so `Avante+` shipped
+    with no name at all -- and `Avante` and `Avante+` are different products on his shelf.
+    """
+    result = _build(
+        "Dawlance 12 Cu Ft White Deep Freezer - Avante + 9178LF - 2 Years Motor Warranty"
+    )
+    assert result.series_token == "Avante+"
+    assert " Avante+" in result.title
+
+
+def test_the_inverter_slot_reads_the_signals_the_other_two_readers_already_read() -> None:
+    """`categories.py` routes the AC leaf and `attributes.py` fills INV/NON-INV off `T-AI`, `BLDC`,
+    `InverterOn`, `brushless` and a glued `non inv`.  A Title reader that knows fewer synonyms prints
+    no [Inverter] on a row both other readers call an inverter -- one sheet, three answers."""
+    assert extract_inverter("Haier T-AI Air Conditioner 1.5 Ton") == "Inverter"
+    assert extract_inverter("Orient BLDC Washing Machine 8 Kg") == "Inverter"
+    assert extract_inverter("Gree InverterOn Refrigerator 12 Cu Ft") == "Inverter"
+    assert extract_inverter("Dawlance Brushless Washing Machine") == "Inverter"
+    assert extract_inverter("Haier DC Inverter Air Conditioner") == "Inverter"
+    assert extract_inverter("Dawlance non inv Air Conditioner") == "Non-Inverter"
+    assert extract_inverter("Super Asia NON-INV Air Conditioner") == "Non-Inverter"
+    # The negation still wins over the positive word hiding inside it.
+    assert extract_inverter("Haier Non-Inverter Air Conditioner") == "Non-Inverter"
+    assert extract_inverter("Dawlance Frost 30 Air Conditioner") == ""
+
+
+def test_a_dispenser_keeps_both_its_taps_and_its_litres() -> None:
+    """`3 Taps` and `15 Litres` answer different questions; the tank used to be overwritten."""
+    extraction = ModelExtraction(
+        code="HWD-49332P", source="title-parenthetical", confidence="high"
+    )
+    result = build_title(
+        brand="Homage",
+        extraction=extraction,
+        product_type="Water Dispenser",
+        source_title="Homage 3 Taps Water Dispenser 15 Litres Red (HWD-49332P)",
+        source_description="Homage 3 Taps Water Dispenser 15 Litres Red (HWD-49332P)",
+    )
+    assert result.taps_token == "3 Taps"
+    assert result.volume_capacity_token == "15 Ltr"
+    # The printed slot still shows the taps until the formula rewrite says otherwise.
+    assert result.capacity_token == "3 Taps"
+
+
+def test_a_series_label_in_the_description_names_the_line() -> None:
+    """`Model: HSU-19HFPCAA` + `Series: Thunder Plus` -- his own label is the row's answer."""
+    text = (
+        "Haier Split Inverter Air Conditioner 1.5 Ton White\n"
+        "Model: HSU-19HFPCAA\nSeries: Thunder Plus"
+    )
+    assert extract_series(text, model="HSU-19HFPCAA") == "Thunder Plus"
+
+
+def test_a_multi_word_name_before_the_word_series_is_captured_whole() -> None:
+    """`Part of the E Luxury Pro Series` names `E Luxury Pro`, not just the word beside `Series`."""
+    text = (
+        "Kenwood Microwave Oven 25 Ltr\n"
+        "Part of the E Luxury Pro Series with fast cooling."
+    )
+    assert extract_series(text) == "E Luxury Pro"
+
+
+def test_a_prose_sentence_ending_in_the_word_series_names_no_line() -> None:
+    """`the premium series` is a sentence, not a label: no capitalised name stands before it."""
+    text = "Haier Air Conditioner 1.5 Ton\nthe premium series for homes."
+    assert extract_series(text) == ""
+
+
+def test_a_word_the_title_already_prints_is_not_sold_again_behind_the_code() -> None:
+    """Two readers name the same fact for this Haier row, and the shop was shown it twice.
+
+    `Haier Air Fryer Series Microwave Oven` spells its own line in the sheet's Title and the row's
+    Description repeats it (`Category: Convection Air Fryer Series`, `Unique Feature: Built In Air
+    Fryer`), so the leftover-word reader and the Air Fryer feature check both hand the name slot the
+    same phrase.  The slot was deduped against a snapshot of what the Title printed BEFORE its own
+    words went in, so the second copy walked straight through: HEAD shipped
+    `... - HMW-30AFS Fryer Air Fryer` (the stranding that snapshot left behind), and clearing the
+    stranding without clearing the snapshot ships `... - HMW-30AFS Air Fryer Air Fryer`.
+    One fact, one token -- the rule `subtype_line_words` applies to his own `SubType:` line, applied
+    to the name slot.
+    """
+    source_title = "Haier Air Fryer Series Microwave Oven 30 Ltr (HMW-30AFR)"
+    source_description = (
+        "The Haier HMW-30AFR is a 30 L air fryer microwave oven. It offers touch control controls.\n"
+        "Key Specifications:\n"
+        "• Capacity: 30 Ltr\n"
+        "• Control Type: Touch Control\n"
+        "• Category: Convection Air Fryer Series\n"
+        "• Unique Feature: Built In Air Fryer"
+    )
+    extraction = without_leading_type_words(extract_model(source_title, source_description))
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="Microwave Oven",
+        source_title=source_title,
+        source_description=source_description,
+    )
+    assert result.title.count("Air Fryer") == 1
+    assert result.title == (
+        "Haier 30 Ltr Convection Microwave Oven - HMW-30AFR Air Fryer - 1 Year Warranty"
+    )

@@ -6,6 +6,7 @@ it owns are pinned here directly, at the reader, and not only through a Title.
 
 from sku_handle import (
     ModelExtraction,
+    extract_model,
     parse_capacity,
     resolve_capacity,
     tonnage_from_model_code,
@@ -154,3 +155,17 @@ def test_only_an_air_conditioner_is_read_from_a_model_number() -> None:
         "dawlance",
         _code("DW-20X"),
     ) == "20 Ltr"
+
+
+def test_a_warranty_duration_glued_to_its_number_is_never_a_model_code() -> None:
+    """`- 10Years Warranty` is the promise clause; the code sits in the clause before it."""
+    result = extract_model(
+        "Dawlance 12 Cu Ft Pearl Copper Refrigerator - 9173WB Pearl - 10Years Warranty", ""
+    )
+    assert result.code == "9173WB"
+
+
+def test_a_screen_resolution_glued_to_its_number_is_never_a_model_code() -> None:
+    """`1080p` states the panel, not the machine; the sheet's own code is `55P6K`."""
+    result = extract_model("TCL 55 Inch 4K LED TV - 55P6K - 1080p Smart TV", "")
+    assert result.code == "55P6K"
