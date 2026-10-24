@@ -13,8 +13,9 @@ from description_builder import (
     build_description_bundle,
     build_seo_title,
     parse_description,
+    subtype_label,
 )
-from models import DescriptionBundle
+from models import DescriptionBundle, SpecRow
 
 TAB_BLOCK = (
     "The Dawlance DF-500 DD Inverter White is a 15 cu ft freezer, finished in White."
@@ -304,3 +305,167 @@ def test_seo_padding_never_shreds_the_title_into_words() -> None:
     assert ", 1.5." not in seo
     assert ", Ton." not in seo
     assert ", Air." not in seo
+
+
+def test_the_programs_own_subtype_label_stays_out_of_every_shopper_field() -> None:
+    """`SubType:` is a field name this program reads, not a spec a shop wrote for a buyer.
+
+    Hiding it must not blind the reader: the line still answers the row's type question, it only
+    stops being rendered.  The shopper already learns the value from the Title and from DigiMall's
+    `Attribute_Air Conditioner Type` cell, so nothing about the product is concealed -- only the
+    plumbing is.
+    """
+    description = (
+        "The Haier HBU-18HE is a split air conditioner.\n"
+        "Key Specifications:\n"
+        "• SubType: Cassette\n"
+        "• Capacity: 1.5 Ton\n"
+        "• Color: White"
+    )
+    bundle = _bundle(
+        description,
+        brand="Haier",
+        model="HBU-18HE",
+        product_type="Air Conditioner",
+        breadcrumb_leaf="Air Conditioners",
+        capacity="1.5 Ton",
+        title="Haier 1.5 Ton White Cassette Air Conditioner - HBU-18HE - 10 Year Compressor Warranty",
+        feature_tokens=["White", "1.5 Ton"],
+    )
+    labels = [row.label for row in bundle.spec_rows]
+    assert "SubType" not in labels
+    assert "SubType" not in bundle.description_html
+    assert "SubType" not in bundle.short_description
+    assert "SubType" not in bundle.seo_description
+    assert "Capacity" in labels and "Color" in labels  # its neighbours are real specs
+    assert subtype_label(description) == "Cassette"
+
+
+def test_a_warranty_already_printed_as_a_row_is_not_repeated_in_key_features() -> None:
+    """The same fact twice in one table is worse than the missing bullet.
+
+    Real sheet, sheet row 324: the shop's warranty bullets sit inside his "Key Features" run, and
+    :mod:`warranty` now prints each of them as its own row.  A run left holding those same words
+    showed `4-Year PCB Warranty: Yes, 10-Year Compressor Warranty: Yes` under Key Features AND as
+    two rows.  The non-warranty features are untouched, and a warranty the reader could not place
+    stays in the run -- only what already has a row is cut.
+    """
+    description = (
+        "The Homage HES-1222S is a 1.0 Ton inverter split air conditioner.\n"
+        "Key Features:\n"
+        "• 4-Year PCB Warranty: Yes\n"
+        "• 10-Year Compressor Warranty: Yes\n"
+        "• Fast Cool Mode\n"
+    )
+    bundle = _bundle(
+        description,
+        warranty_rows=[
+            SpecRow("Compressor Warranty", "10 Year", is_warranty=True),
+            SpecRow("PCB Warranty", "4 Year", is_warranty=True),
+        ],
+    )
+    features = [row.value for row in bundle.spec_rows if row.label == "Key Features"]
+    assert features == ["Fast Cool Mode"]
+
+
+def test_two_warranty_rows_never_print_the_word_warranty_twice() -> None:
+    """Real sheet, sheet row 596: `• Warranty: 1 Year, 10 Years` -- two numbers, no parts.
+
+    The rename exists so a warranty row never collides with a spec row of the same name.  Applying
+    it to a label that already ends in the word printed `Warranty Warranty: 10 Years`, so the
+    second row keeps the label the shop's own line gives it.
+    """
+    bundle = _bundle(
+        "The Super Asia SA-260 is a 10 kg washing machine.\n",
+        warranty_rows=[
+            SpecRow("Warranty", "1 Year", is_warranty=True),
+            SpecRow("Warranty", "10 Years", is_warranty=True),
+        ],
+    )
+    labels = [row.label for row in bundle.spec_rows]
+    assert "Warranty Warranty" not in labels
+    assert labels.count("Warranty") == 2
+
+
+def test_a_feature_that_only_shares_the_part_word_with_a_row_keeps_its_own_claim() -> None:
+    """Cutting a duplicate needs the number too, or the cut eats a claim the table never prints.
+
+    `10-Year Compressor Warranty: Yes` restates the row, so it goes.  `Extended Compressor Warranty
+    For First Buyers` shares only the part word: the shop is promising something the table does not
+    say, and deleting it hides a fact he wrote -- the opposite of the rule this run exists for.
+    """
+    description = (
+        "The Haier HPU-24VN3 is a 2.0 Ton inverter split air conditioner.\n"
+        "Key Features:\n"
+        "• Extended Compressor Warranty For First Buyers\n"
+        "• 10-Year Compressor Warranty: Yes\n"
+    )
+    bundle = _bundle(
+        description,
+        product_type="Air Conditioner",
+        warranty_rows=[SpecRow("Compressor Warranty", "10 Years", is_warranty=True)],
+    )
+    features = [row.value for row in bundle.spec_rows if row.label == "Key Features"]
+    assert features == ["Extended Compressor Warranty For First Buyers"]
+
+
+def test_a_subtype_line_spaced_his_way_is_hidden_the_same_way() -> None:
+    """The reader folds punctuation when it looks for the program's field, so the hide must too.
+
+    `• Sub Type: Cassette` answers the row's type question exactly like `SubType:` does -- so it was
+    used for the Title AND printed in the shopper's table, because the filter compared spellings.
+    """
+    description = (
+        "The Haier HBU-18HE is a split air conditioner.\n"
+        "Key Specifications:\n"
+        "• Sub Type: Cassette\n"
+        "• Capacity: 1.5 Ton\n"
+    )
+    bundle = _bundle(
+        description,
+        brand="Haier",
+        model="HBU-18HE",
+        product_type="Air Conditioner",
+        breadcrumb_leaf="Air Conditioners",
+        capacity="1.5 Ton",
+    )
+    labels = [row.label for row in bundle.spec_rows]
+    assert "Sub Type" not in labels
+    assert subtype_label(description) == "Cassette"
+
+
+def test_a_feature_stating_a_different_number_is_never_the_row_s_fact() -> None:
+    """`10 Years Compressor Warranty` is not the fact the table shows as `Compressor | 1 Year`.
+
+    Comparing only the digits let the row's `1` match inside the bullet's `10`, so the bullet was
+    cut and the shop's 10-year claim reached no row at all -- the number has to be a whole number.
+    """
+    description = (
+        "The Kenwood KES-1270S is a 1 Ton inverter split air conditioner.\n"
+        "Key Features:\n"
+        "• 10 Years Compressor Warranty\n"
+    )
+    bundle = _bundle(
+        description,
+        product_type="Air Conditioner",
+        warranty_rows=[SpecRow("Compressor Warranty", "1 Year", is_warranty=True)],
+    )
+    features = [row.value for row in bundle.spec_rows if row.label == "Key Features"]
+    assert features == ["10 Years Compressor Warranty"]
+
+
+def test_one_fact_written_two_ways_still_prints_once() -> None:
+    """`10 Yr` and `10 Years` are the same duration, so the bullet repeats the row and leaves."""
+    description = (
+        "The Kenwood KES-1270S is a 1 Ton inverter split air conditioner.\n"
+        "Key Features:\n"
+        "• 10 Yr Compressor Warranty\n"
+        "• Turbo Cool Mode\n"
+    )
+    bundle = _bundle(
+        description,
+        product_type="Air Conditioner",
+        warranty_rows=[SpecRow("Compressor Warranty", "10 Years", is_warranty=True)],
+    )
+    features = [row.value for row in bundle.spec_rows if row.label == "Key Features"]
+    assert features == ["Turbo Cool Mode"]

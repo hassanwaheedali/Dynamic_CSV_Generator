@@ -209,6 +209,11 @@ def parse_description(description: str) -> ParsedSpecs:
     )
 
 
+def _is_subtype_label(label: str) -> bool:
+    """Whether a label is this program's own sub-type field, however the row spaced or hyphenated it."""
+    return re.sub(r"[^a-z0-9]", "", label.lower()) == "subtype"
+
+
 def subtype_label(description: str) -> str:
     """The sheet's own sub-type statement: a `SubType: Heat & Cool` line, value exactly as written.
 
@@ -217,7 +222,7 @@ def subtype_label(description: str) -> str:
     `Type:`, `Door Type:` and `Air Conditioner Type:` answer different questions.
     """
     for label, value in parse_description(strip_markup_keep_lines(description)).labelled:
-        if re.sub(r"[^a-z0-9]", "", label.lower()) == "subtype":
+        if _is_subtype_label(label):
             return clean_inline(value)
     return ""
 
@@ -318,6 +323,73 @@ def _is_boilerplate_feature(feature: str, brand: str = "", model: str = "") -> b
     brand_l = brand.lower().strip()
     model_l = model.lower().strip()
     return bool(brand_l and model_l and brand_l in norm and model_l in norm)
+
+
+def _fact_matcher(value: str) -> re.Pattern[str]:
+    """Match a warranty duration the way the shop re-writes it: `10 Years`, `10-Year`, `10 Yrs`.
+
+    The bare digits are not enough -- a row's `1 Year` must not be found inside `10 Years` -- so the
+    number is matched as one whole number with its unit, and a value carrying no number at all
+    (`Official Brand Warranty`) is matched as the phrase it is.
+    """
+    number = re.search(r"\d+", value)
+    if not number:
+        return re.compile(re.escape(value.strip()), re.IGNORECASE)
+    if re.search(r"(?i)y(ea)?rs?", value):
+        unit = r"year|yr"
+    elif re.search(r"(?i)mo", value):
+        unit = r"month|mo"
+    else:
+        unit = ""
+    tail = rf"\s*(?:{unit})s?\b" if unit else r"\b"
+    return re.compile(rf"\b{number.group()}{tail}", re.IGNORECASE)
+
+
+def _printed_warranty_terms(
+    warranty_rows: list[SpecRow],
+) -> tuple[list[tuple[str, re.Pattern[str]]], list[re.Pattern[str]]]:
+    """What the warranty table already shows: each row's part word with its own duration, plus bare rows.
+
+    A row labelled ``Warranty`` states no part, so its value is the whole fact -- a feature bullet
+    carrying the same fact is the same fact.
+    """
+    facts: list[tuple[str, re.Pattern[str]]] = []
+    unnamed: list[re.Pattern[str]] = []
+    for row in warranty_rows:
+        if not row.is_warranty:
+            continue
+        value = re.sub(r"\s+", " ", row.value).strip().lower()
+        if not value:
+            continue
+        if row.label.lower() == "warranty":
+            unnamed.append(_fact_matcher(value))
+            continue
+        part = re.sub(r"(?i)\s*warrant(?:y|ies)\s*$", "", row.label).strip().lower()
+        if part:
+            facts.append((part, _fact_matcher(value)))
+    return facts, unnamed
+
+
+def _states_a_printed_warranty(
+    feature: str,
+    facts: list[tuple[str, re.Pattern[str]]],
+    unnamed: list[re.Pattern[str]],
+) -> bool:
+    """Whether this feature bullet is a warranty fact the table already prints as its own row.
+
+    A warranty written as a bullet is collected by :mod:`warranty` and printed as a row, so leaving
+    the same words inside "Key Features" shows the buyer the fact twice.  A bullet repeats a row
+    only when it names the same part AND the same duration: `Extended Compressor Warranty For First
+    Buyers` shares only a word with the `Compressor Warranty | 10 Years` row, and cutting it would
+    delete a claim the table never prints.
+    """
+    lowered = re.sub(r"\s+", " ", feature.replace("-", " ")).strip().lower()
+    if "warrant" not in lowered:
+        return False
+    return any(
+        re.search(rf"\b{re.escape(part)}\b", lowered) and duration.search(lowered)
+        for part, duration in facts
+    ) or any(matcher.search(lowered) for matcher in unnamed)
 
 
 def _bullet_sentence(value: str, label: str) -> str:
@@ -746,7 +818,14 @@ def build_description_bundle(
         # Warranty facts come only from warranty.py, which knows the brand's
         # reference terms.  Emitting the source's own warranty line as well would
         # print the same fact twice ("Motor Warranty: 10" and "10 Years").
-        if "warrant" in label.lower() or label.lower() in (
+        # `SubType` is this program's own field name, not a spec a shop wrote for a buyer: measured
+        # on the 752-row sheet, 19 rows carry the line and all 19 were written here, to settle a type
+        # question the Title and Description disagreed about.  It answers that question silently --
+        # :func:`subtype_label` reads the source text, not this table -- and the buyer already
+        # learns the value from the Title and from DigiMall's `Attribute_..._Type` cell.  It is
+        # recognised the same way the reader recognises it, punctuation folded, because
+        # `• Sub Type: Cassette` settles the very same question and would otherwise be printed.
+        if "warrant" in label.lower() or _is_subtype_label(label) or label.lower() in (
             "brand", "model", "specification", "specifications"
         ):
             continue
@@ -756,12 +835,22 @@ def build_description_bundle(
     if not parsed.labelled and not parsed.thin:
         rows.append(SpecRow("Type", product_type))
     if parsed.key_features:
+        # Warranty facts are printed by warranty.py as their own rows; the ones it printed leave
+        # the "Key Features" run so the buyer does not read them twice.  A warranty the reader
+        # could not place stays exactly where the shop put it.
+        printed_facts, printed_unnamed = _printed_warranty_terms(warranty_rows)
+        features = [
+            f
+            for f in parsed.key_features
+            if not _states_a_printed_warranty(f, printed_facts, printed_unnamed)
+        ]
         clean_kf = [
             _clean_feature(f)
-            for f in parsed.key_features
+            for f in features
             if not _is_boilerplate_feature(f, brand=brand, model=model)
         ]
-        rows.append(SpecRow("Key Features", ", ".join(clean_kf or parsed.key_features)))
+        if features:
+            rows.append(SpecRow("Key Features", ", ".join(clean_kf or features)))
     rows.extend(warranty_rows)
 
     deduped: list[SpecRow] = []
@@ -771,11 +860,11 @@ def build_description_bundle(
         key = row.label.lower()
         if key in seen and not row.is_warranty:
             continue
-        if key in seen:
-            # Two different facts share one label -- the source's own
-            # "Motor: Normal" and the brand's "Motor: 10 Years".  The warranty
-            # row is the one renamed, so the source's wording is never touched
-            # and the duplicate label disappears from the table.
+        # Two different facts share one label -- the source's own "Motor: Normal" and the brand's
+        # "Motor: 10 Years".  The warranty row is the one renamed, so the source's wording is never
+        # touched and the duplicate label disappears from the table.  A label that already ends in
+        # the word is left alone: renaming "Warranty" made the table print "Warranty Warranty".
+        if key in seen and not key.endswith("warranty"):
             row = dataclasses.replace(row, label=f"{row.label} Warranty")
             key = row.label.lower()
         seen.add(key)

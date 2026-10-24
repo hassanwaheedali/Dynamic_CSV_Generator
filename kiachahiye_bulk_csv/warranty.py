@@ -134,27 +134,37 @@ def has_explicit_non_numeric_term(warranty_text: str) -> bool:
 _DURATION_RE = re.compile(
     r"\b(\d{1,2})\s*-?\s*(years?|yrs?|months?|mos?)\b", re.IGNORECASE
 )
-# Matches a warranty clause line, keeping any part name in front of the word
-# "warranty" -- "Motor Warranty: 10" must arrive with "Motor" intact, or the
-# part label is lost.
+# Matches a warranty clause line, keeping whatever the shop wrote in front of the word
+# "warranty" -- "Motor Warranty: 10" must arrive with "Motor" intact, or the part label is lost,
+# and so must "10 years compressor warranty: Yes", whose number sits in front of the word and is
+# therefore the answer itself.  The colon is required: it is what makes a line a labelled clause,
+# while prose that merely mentions a warranty belongs to the sentence path below.  The prefix
+# stops at a full stop and at 40 characters for the same reason -- an opening sentence about the
+# product names its parts in passing, and is not a label.
 _WARRANTY_VALUE_RE = re.compile(
-    r"(?im)^[ \t]*(?:•\s*)?(?P<label>(?:[A-Za-z][A-Za-z /-]{0,28}?)?warrant(?:y|ies))"
-    r"\s*:?[ \t]+(?P<value>[^\n\r]+)"
+    r"(?im)^[ \t]*(?:[-•*]\s*)?(?P<label>[^.\n\r:]{0,40}?warrant(?:y|ies))"
+    r"\s*:[ \t]+(?P<value>[^\n\r]+)"
 )
 _WARRANTY_SENTENCE_RE = re.compile(r"(?i)([^.\n\r]{0,120}warrant[^.\n\r]{0,120})")
+#: The ways the shop writes "this warranty never expires", spelled once for every reader.
+_LIFETIME_PHRASE = r"lifetime|life\s*time|full\s+life"
 # Terms that ARE the answer, even though they carry no number: the row is
 # saying there is no warranty, or that it never expires.  These are never
 # replaced by a reference table.
 _EXPLICIT_TERM_RE = re.compile(
-    r"(?i)\b(n/?a|not\s+applicable|no\s+warrant(?:y|ies)|lifetime|"
-    r"life\s*time|full\s+life)\b"
+    rf"(?i)\b(n/?a|not\s+applicable|no\s+warrant(?:y|ies)|{_LIFETIME_PHRASE})\b"
 )
 
 # Which component counts as the headline when several parts are stated.
+# The empty entry is the row's own bare term -- a `• Warranty: 10 Years` line that names no
+# part.  It ranks right after the three big parts, because that line IS the number a shopper
+# buys on; a rider such as `• PCB Warranty: 4 Years` must not push it out of the Title.
+_UNNAMED_STATED_TERM = ""
 HEADLINE_PRIORITY: tuple[str, ...] = (
     "compressor",
     "motor",
     "panel",
+    _UNNAMED_STATED_TERM,
     "pcb",
     "evaporator",
     "thermostat",
@@ -163,6 +173,18 @@ HEADLINE_PRIORITY: tuple[str, ...] = (
     "parts",
     "general",
 )
+
+#: `Lifetime` answers the warranty question without a number, so the part that states it keeps
+#: its own row.  ``N/A`` / ``no warranty`` are NOT turned into durations: those rows already take
+#: the explicit-term path, which leaves the Title without a warranty tail.
+_LIFETIME_TERM_RE = re.compile(rf"(?i)\b({_LIFETIME_PHRASE})\b")
+
+
+def _heads_the_row(part: str, wanted: str) -> bool:
+    """Whether a stated part answers the headline question ``wanted`` asks."""
+    if wanted == _UNNAMED_STATED_TERM:
+        return not _names_a_component(part)
+    return wanted in part.lower()
 
 
 _PART_LABELS: dict[str, str] = {
@@ -179,6 +201,20 @@ _PART_LABELS: dict[str, str] = {
     "parts": "Parts Warranty",
     "service": "Service Warranty",
 }
+
+#: The components that can push the row's own bare line out of the Title are exactly the rungs
+#: above -- not every label this reader knows how to print.  `Free Service` names a promise, not a
+#: ranked part, so it must not cost the shop his own headline number; and a word counts only as
+#: itself, so `panel` inside a longer word names nothing.  A clause whose leftover words match
+#: none of them names no part, whatever those words are (`• Warranty: 10 Years Real Free
+#: Warranty` states his term, not a component).
+_COMPONENT_WORD_RE = re.compile(
+    r"(?i)\b(" + "|".join(word for word in HEADLINE_PRIORITY if word) + r")\b"
+)
+
+
+def _names_a_component(part: str) -> bool:
+    return _COMPONENT_WORD_RE.search(part) is not None
 
 
 @dataclass(frozen=True)
@@ -213,24 +249,61 @@ def normalise_duration(match: re.Match[str]) -> str:
     return f"{number} {unit_out}"
 
 
+def _states_an_answer(clause: str) -> bool:
+    """Whether a warranty clause actually answers the question, or only says "Yes".
+
+    ``• Warranty: Yes`` names no duration, so collecting it would replace the brand's reference
+    terms with a row that tells the buyer nothing.  The answer is looked for in the WHOLE clause,
+    because ``• 10 years compressor warranty: Yes`` answers it too -- he wrote his number in front
+    of the word and only a "Yes" after it.
+    """
+    return bool(
+        _DURATION_RE.search(clause)
+        or _EXPLICIT_TERM_RE.search(clause)
+        or parse_bare_years(clause.split(":", 1)[-1])
+    )
+
+
 def find_stated_warranty_text(text: str) -> str | None:
-    """The warranty clause stated by the row itself, or ``None``."""
-    match = _WARRANTY_VALUE_RE.search(text)
-    if match:
+    """Every warranty clause the row states, joined -- not only the first one.
+
+    ``• Compressor Warranty: 10 Years`` followed by ``• Parts Warranty: 5 Years`` is TWO facts;
+    reading only the first line deleted the second from the table and from every attribute, which
+    breaks the rule that whatever the shop writes must reach the output.
+
+    Order of authority: a labelled ``Warranty:`` line that states an answer beats prose that states
+    one, and either beats a line that states none (``• Warranty: Yes`` tells a buyer nothing and
+    would otherwise replace the real fact).  A plain "Warranty" label adds nothing -- the row is
+    already labelled "Warranty", so prefixing it would print the word twice ("Warranty | Warranty:
+    N/A").  A part name in front of it IS information and is kept ("Motor Warranty: 10").
+    """
+    clauses: list[str] = []
+    for match in _WARRANTY_VALUE_RE.finditer(text):
         label = match.group("label").strip()
         value = match.group("value").strip()
-        if value:
-            # A plain "Warranty:" label adds nothing -- the fallback row is
-            # already labelled "Warranty", and prefixing it would print the word
-            # twice ("Warranty | Warranty: N/A").  A part name in front of it is
-            # real information and is kept ("Motor Warranty: 10").
-            if label.lower() in ("warranty", "warranties"):
-                return value
-            return f"{label}: {value}"
-    match = _WARRANTY_SENTENCE_RE.search(text)
-    if match:
-        return match.group(1).strip(" -•")
-    return None
+        if not value:
+            continue
+        clause = (
+            value if label.lower() in ("warranty", "warranties") else f"{label}: {value}"
+        )
+        if clause not in clauses:
+            clauses.append(clause)
+    answering = [clause for clause in clauses if _states_an_answer(clause)]
+    if answering:
+        return ", ".join(answering)
+
+    every = [match.group(1).strip(" -•") for match in _WARRANTY_SENTENCE_RE.finditer(text)]
+    sentences = [
+        sentence
+        for sentence in every
+        if _DURATION_RE.search(sentence) or _EXPLICIT_TERM_RE.search(sentence)
+    ]
+    if sentences:
+        return ", ".join(sentences)
+    # Nothing in the row states an answer.  `• Warranty: Official Brand Warranty` is still what he
+    # wrote, and dropping it would delete his warranty from the table and let the brand's
+    # reference numbers answer for a product whose terms he stated himself.
+    return ", ".join(clauses or sentences or every) or None
 
 
 def parse_warranty_parts(warranty_text: str) -> list[StatedPart]:
@@ -251,6 +324,13 @@ def parse_warranty_parts(warranty_text: str) -> list[StatedPart]:
                 duration = bare
                 label = _label_for(qualifier)
                 qualifier = label.replace(" Warranty", "") if label != "Warranty" else ""
+        if duration is None and _LIFETIME_TERM_RE.search(chunk):
+            # `Lifetime` is this part's answer; without it the part has no row at all.  The word
+            # is the answer and not the part, so it leaves the name: a bare `• Warranty: Lifetime`
+            # line stays the row's own unnamed term and prints `Warranty: Lifetime`, never
+            # `Lifetime Warranty: Lifetime`.
+            duration = "Lifetime"
+            qualifier = _LIFETIME_TERM_RE.sub("", qualifier).strip(" -,")
         parts.append(StatedPart(part=qualifier, duration=duration, raw=chunk))
     return parts
 
@@ -260,7 +340,12 @@ def _label_for(qualifier: str) -> str:
     for key, label in _PART_LABELS.items():
         if key in lowered:
             return label
-    cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", qualifier).strip(" -,")
+    # `• 10 Years Nationwide Warranty: Yes` names the part `Nationwide`, and the "Yes" after the
+    # colon is no answer at all -- keeping it printed "Nationwide : Yes Warranty" inside a Title.
+    # The cut comes AFTER the part lookup above, because a line written `Warranty: 10 Years
+    # Compressor` names its part beyond the colon and must still be recognised.
+    head = qualifier.split(":", 1)[0]
+    cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", head).strip(" -,")
     cleaned = re.sub(r"(?i)^(official|brand|the)\b\s*", "", cleaned).strip()
     if not cleaned or re.match(r"^\d+$", cleaned):
         return "Warranty"
@@ -270,11 +355,19 @@ def _label_for(qualifier: str) -> str:
 def build_stated_rows(warranty_text: str) -> list[SpecRow]:
     """Rows for the Description table: parts kept separate, never collapsed."""
     rows: list[SpecRow] = []
+    seen: set[tuple[str, str]] = set()
     for part in parse_warranty_parts(warranty_text):
-        if part.duration:
-            rows.append(
-                SpecRow(label=_label_for(part.part), value=part.duration, is_warranty=True)
-            )
+        if not part.duration:
+            continue
+        label = _label_for(part.part)
+        key = (label.lower(), part.duration.lower())
+        # The same fact written twice -- once in the opening sentence, once as a bullet -- is one
+        # row.  Two identical rows made the table's duplicate-label rename print
+        # `Compressor Warranty Warranty`.
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(SpecRow(label=label, value=part.duration, is_warranty=True))
     if not rows:
         # No parsable duration -- keep the text as found rather than inventing one.
         return [SpecRow(label="Warranty", value=warranty_text.strip(), is_warranty=True)]
@@ -288,7 +381,7 @@ def headline_duration(parts: list[StatedPart]) -> str | None:
         return None
     for wanted in HEADLINE_PRIORITY:
         for part in dated:
-            if wanted in part.part.lower():
+            if _heads_the_row(part.part, wanted):
                 return part.duration
     return dated[0].duration
 
@@ -329,6 +422,21 @@ def resolve_warranty(
     return rows, (entries[0][1] if entries else None), f"reference-{brand_key}"
 
 
+def _headline_part_name(part_name: str) -> str:
+    """The part word a Title should carry for a clause, or ``Warranty`` when it names none.
+
+    ``Real Free Warranty`` and ``Manufacturer`` are the shop's own words after his number, not
+    components this module knows; keeping them means the Title never has to borrow a part from the
+    brand's reference table that he did not claim.  Anything past the colon is his answer, not his
+    part, so it leaves the name -- `Nationwide: Yes` printed inside a Title otherwise.
+    """
+    head = part_name.split(":", 1)[0]
+    cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", head).strip(" -:")
+    if not cleaned or re.match(r"^\d+$", cleaned):
+        return "Warranty"
+    return cleaned.title()
+
+
 def headline_part_and_duration(
     parts: list[StatedPart],
 ) -> tuple[str, str] | None:
@@ -338,14 +446,17 @@ def headline_part_and_duration(
         return None
     for wanted in HEADLINE_PRIORITY:
         for part_name, duration in dated:
-            if wanted in part_name.lower():
-                return wanted.title(), duration
+            if _heads_the_row(part_name, wanted):
+                # A known component is named by the rung's word; a clause naming none is named by
+                # whatever the shop wrote beside his number.
+                return (
+                    _headline_part_name(part_name)
+                    if wanted == _UNNAMED_STATED_TERM
+                    else wanted.title(),
+                    duration,
+                )
     part_name, duration = dated[0]
-    cleaned = re.sub(r"(?i)\bwarrant(?:y|ies)\b", "", part_name).strip(" -:")
-    if re.match(r"^\d+$", cleaned):
-        cleaned = ""
-    return (cleaned.title() if cleaned else "Warranty"), duration
-
+    return _headline_part_name(part_name), duration
 
 
 def format_main_warranty(part: str, duration: str) -> str:
