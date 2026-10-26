@@ -211,6 +211,37 @@ def _usable_code(candidate: str) -> bool:
     return not (CAPACITY_ONLY_RE.match(value) or _UNIT_GLUED_RE.match(value))
 
 
+#: The unit vocabulary the sheet itself uses for a size -- the same words `_UNIT_GLUED_RE` is built
+#: from, so a number is judged a measure by one list, not two.
+_SIZE_WORD_RE = "|".join(sorted(SIZE_UNIT_WORDS, key=lambda w: (-len(w), w)))
+
+
+def _stated_as_a_size(digits: str, text: str) -> bool:
+    """Does the row itself write these digits as a measure -- `32 Inch`, `12 Cu Ft`, `6 kg`?"""
+    return re.search(rf"(?i)\b{re.escape(digits)}[\s.\-]*(?:{_SIZE_WORD_RE})\b", text) is not None
+
+
+def _paren_digit_code(value: str, text: str) -> bool:
+    """A last paren of pure digits is the part number these sheets hang there -- unless it is a size.
+
+    `_usable_code` demands a letter, because a bare number in a Title is usually a measure: `(32)`
+    on a `32 Inch` panel, `(12)` on a `12 Cu Ft` fridge.  Dawlance writes its refrigerator numbers
+    with no letter at all -- `(9173)`, `(9106)`, `(91999)`, ten rows of them -- and refusing those
+    left the rows with no code in the Title and a fallback SKU built out of title words, so four
+    different machines all shipped as `Dawlance Coral Red Freezer-On-Top Refrigerator - Acce`.
+
+    The row settles the question itself, which is why no list of codes is kept: digits the sheet
+    states next to a unit are a size, and digits it states with no unit anywhere are the part
+    number.  Three digits or fewer stay refused -- every digit-only code on this sheet is four or
+    five digits, while a one- or two-digit paren is a count or a size.
+    """
+    return (
+        len(value) >= 4
+        and value.isdigit()
+        and not _stated_as_a_size(value, text)
+    )
+
+
 def extract_model(title: str, description: str) -> ModelExtraction:
     """Resolve one row's model code, most trustworthy source first."""
     match = MODEL_LABEL_RE.search(description)
@@ -223,6 +254,8 @@ def extract_model(title: str, description: str) -> ModelExtraction:
     if group:
         value = clean_model_code(group)
         if _usable_code(value):
+            return ModelExtraction(value, "title-parenthetical", "high")
+        if _paren_digit_code(value, f"{title}\n{description}"):
             return ModelExtraction(value, "title-parenthetical", "high")
 
     if " - " in title:

@@ -169,3 +169,34 @@ def test_a_screen_resolution_glued_to_its_number_is_never_a_model_code() -> None
     """`1080p` states the panel, not the machine; the sheet's own code is `55P6K`."""
     result = extract_model("TCL 55 Inch 4K LED TV - 55P6K - 1080p Smart TV", "")
     assert result.code == "55P6K"
+
+
+def test_a_paren_of_pure_digits_is_the_code_these_sheets_hang_there() -> None:
+    """Real rows 212-216, 238, 397, 414, 664, 697: Dawlance writes `(9173)` with no letter in it.
+
+    A code with no letter was refused outright, so ten rows shipped with no code in the Title and a
+    fallback SKU built out of title words -- four of them the SAME string, `Dawlance Coral Red
+    Freezer-On-Top Refrigerator - Acce - ...`, for four different machines.
+    """
+    result = extract_model(
+        "Dawlance Acce Glass Door Freezer-On-Top Refrigerator (9173)-Coral Red",
+        "The Dawlance REF 9173 Acce Coral Red is a refrigerator with Direct Cool cooling.",
+    )
+    assert result.code == "9173"
+    assert result.source == "title-parenthetical"
+    assert result.confidence == "high"
+
+
+def test_a_number_the_row_states_as_a_size_is_still_not_a_model_code() -> None:
+    """`(32)` on a `32 Inch` panel is the size repeated, and the row says so itself."""
+    result = extract_model(
+        "Haier 32 Inch Smart Google LED TV (32)",
+        "The Haier H32K85FX is a 32 inch smart LED TV.",
+    )
+    assert result.code != "32"
+
+
+def test_a_short_paren_number_is_a_count_not_a_part_number() -> None:
+    """`(6)` on a `6 Cu Ft` fridge, `(2)` on a 2-door: one and two digits are never a code here."""
+    assert extract_model("Dawlance Bedroom Series Refrigerator (6)", "A 6 Cu Ft refrigerator.").code != "6"
+    assert extract_model("Dawlance Double Door Refrigerator (2)", "A refrigerator.").code == ""
