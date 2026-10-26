@@ -76,6 +76,7 @@ from textutils import (
     strip_markup_keep_lines,
 )
 from title_builder import build_title, without_leading_type_words, word_identity
+from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor
 from warranty import TERM_LINES, resolve_warranty
 from writers import (
     ALFA_HEADER,
@@ -216,7 +217,10 @@ def resolve_weight(
 # ---------------------------------------------------------------------------
 # Per-row resolution
 # ---------------------------------------------------------------------------
-def read_rows(rows: list[InputRow]) -> tuple[list[RowAnalysis], Corpus]:
+def read_rows(
+    rows: list[InputRow],
+    vendor_cfg: VendorConfig | None = None,
+) -> tuple[list[RowAnalysis], Corpus]:
     """Read the whole sheet once and vote which words name a product line, for which brand.
 
     The vote is a property of the RUN, not of a row: `ECO` is a name because Midea rows stand it
@@ -231,9 +235,13 @@ def read_rows(rows: list[InputRow]) -> tuple[list[RowAnalysis], Corpus]:
     """
     analyses: list[RowAnalysis] = []
     for row in rows:
-        brand = resolve_brand(row.brand, row.title).raw
+        brand = resolve_brand(row.brand, row.title, vendor_cfg=vendor_cfg).raw
         text = f"{row.title}\n{row.description}"
-        product_type = resolve_product_type(resolve_category(row.categories, text, text), brand)[0]
+        product_type = resolve_product_type(
+            resolve_category(row.categories, text, text, vendor_cfg=vendor_cfg),
+            brand,
+            vendor_cfg=vendor_cfg,
+        )[0]
         analyses.append(
             analyze_row(
                 row.title.strip(),
@@ -266,6 +274,7 @@ def resolve_row(
     finalise: bool,
     analysis: RowAnalysis | None = None,
     corpus: Corpus | None = None,
+    vendor_cfg: VendorConfig | None = None,
 ) -> ProductRecord:
     """Resolve one input row into a single shared ProductRecord.
 
@@ -286,7 +295,7 @@ def resolve_row(
             f"row {row.row_number}: analysis does not belong to this row"
         )
 
-    brand = resolve_brand(row.brand, row.title)
+    brand = resolve_brand(row.brand, row.title, vendor_cfg=vendor_cfg)
     effective_brand = brand.raw
     if brand.digi_id is None:
         flags.flag(
@@ -301,24 +310,28 @@ def resolve_row(
             platform="alfa",
         )
 
-    category = resolve_category(row.categories, text, text)
+    category = resolve_category(row.categories, text, text, vendor_cfg=vendor_cfg)
     if category.digi_path is None:
-        is_ac_silent = "inverter/non-inverter signal" in category.reason
+        digi_reason = category.digi_reason or category.reason
+        is_ac_silent = "inverter/non-inverter signal" in digi_reason
         flags.flag(
             row.row_number,
             row.title,
             CAT_AC_INVERTER_UNKNOWN if is_ac_silent else CAT_CATEGORY_DIGI,
-            f"{category.reason} -- DigiMall Category left empty",
+            f"{digi_reason} -- DigiMall Category left empty",
             platform="digi",
         )
     if category.alfa_id is None:
+        alfa_reason = category.alfa_reason or category.reason
         flags.flag(
             row.row_number, row.title, CAT_CATEGORY_ALFA,
-            f"{category.reason} -- Alfa Category left empty",
+            f"{alfa_reason} -- Alfa Category left empty",
             platform="alfa",
         )
 
-    product_type, inferred = resolve_product_type(category, effective_brand)
+    product_type, inferred = resolve_product_type(
+        category, effective_brand, vendor_cfg=vendor_cfg
+    )
     if inferred:
         flags.flag(
             row.row_number, row.title, CAT_PRODUCT_TYPE_INFERRED,
@@ -354,9 +367,15 @@ def resolve_row(
         model = extraction.code
         used = extraction
 
+    title_formula = vendor_cfg.title_formula if vendor_cfg is not None else "standard"
+    strict_rebuild = (
+        vendor_cfg.strict_title_rebuild if vendor_cfg is not None else None
+    )
     title_result = build_title(
         effective_brand, used, product_type, row.title, row.description,
+        strict_rebuild=strict_rebuild,
         analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
+        title_formula=title_formula,
     )
     if title_result.strategy == "kept-with-light-cleanup":
         flags.flag(
@@ -518,12 +537,15 @@ def resolve_row(
     )
     variant_suffix = format_variant(variant_tokens)
 
+    sku_prefix = vendor_cfg.sku_prefix if vendor_cfg is not None else None
     if not finalise:
-        sku_registry.register_base(build_sku_token(model))
+        sku_registry.register_base(build_sku_token(model, prefix=sku_prefix))
         handle_registry.register_base(build_handle_token(model, product_type))
         sku = handle = ""
     else:
-        sku, sku_numeric = sku_registry.assign(build_sku_token(model), variant_suffix)
+        sku, sku_numeric = sku_registry.assign(
+            build_sku_token(model, prefix=sku_prefix), variant_suffix
+        )
         handle, handle_numeric = handle_registry.assign(
             build_handle_token(model, product_type),
             f"{variant_suffix} -{product_type}".strip() if variant_suffix else "",
@@ -547,10 +569,12 @@ def resolve_row(
                 f"Handle disambiguated with the variant suffix: {handle}",
             )
 
-    option1_color = (
-        title_result.color_token
-        or getattr(CONFIG, "DEFAULT_PRODUCT_TYPE_COLORS", {}).get(product_type, "")
+    color_defaults = (
+        vendor_cfg.default_product_type_colors
+        if vendor_cfg is not None
+        else getattr(CONFIG, "DEFAULT_PRODUCT_TYPE_COLORS", {})
     )
+    option1_color = title_result.color_token or color_defaults.get(product_type, "")
 
     return ProductRecord(
         row_number=row.row_number,
@@ -662,6 +686,7 @@ def run(
     rows: list[InputRow],
     flags: QCFlagCollector,
     prepared: tuple[list[RowAnalysis], Corpus] | None = None,
+    vendor_cfg: VendorConfig | None = None,
 ) -> list[ProductRecord]:
     # The SKU registry upper-cases everything it hands out; the Handle registry
     # slugs it.  Both are applied inside the registry, so a suffix can never
@@ -674,7 +699,7 @@ def run(
     sku_registry = UniqueRegistry(upper_sku_normaliser)
     handle_registry = UniqueRegistry(handle_normaliser)
     if prepared is None:
-        analyses, corpus = read_rows(rows)
+        analyses, corpus = read_rows(rows, vendor_cfg=vendor_cfg)
     else:
         analyses, corpus = prepared
     # The vote is a fact about THIS sheet: a corpus read from another one would print its brands'
@@ -694,7 +719,7 @@ def run(
     for index, row in enumerate(rows):
         resolve_row(
             row, scratch, sku_registry, handle_registry, finalise=False,
-            analysis=analyses[index], corpus=corpus,
+            analysis=analyses[index], corpus=corpus, vendor_cfg=vendor_cfg,
         )
     records: list[ProductRecord] = []
     for index, row in enumerate(rows, start=1):
@@ -703,7 +728,7 @@ def run(
         records.append(
             resolve_row(
                 row, flags, sku_registry, handle_registry, finalise=True,
-                analysis=analyses[index - 1], corpus=corpus,
+                analysis=analyses[index - 1], corpus=corpus, vendor_cfg=vendor_cfg,
             )
         )
     return records
@@ -933,7 +958,14 @@ def main(argv: list[str] | None = None) -> int:
         "--platform", choices=("both", "digi", "alfa"), default="both",
         help="produce only this upload: write its file and report its findings (default: both)",
     )
+    parser.add_argument(
+        "--vendor",
+        choices=list(VENDOR_REGISTRY),
+        default=None,
+        help="which vendor's config to use (e.g. kiachahiye, ajmer)",
+    )
     args = parser.parse_args(argv)
+    vendor_cfg = get_vendor(args.vendor) if args.vendor is not None else None
 
     # One platform chosen means that platform only: the other file is not written, so an output
     # folder for an Alfa upload holds no DigiMall CSV to grab by mistake.
@@ -945,15 +977,23 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(ALFA_HEADER)} Alfa columns")
 
     flags = QCFlagCollector()
-    prepared = read_rows(rows)
-    records = run(rows, flags, prepared)
+    prepared = read_rows(rows, vendor_cfg=vendor_cfg)
+    records = run(rows, flags, prepared, vendor_cfg=vendor_cfg)
 
     labels = " + ".join("DigiMall" if p == "digi" else "Alfa" for p in scope)
     print(f"Writing the {labels} file{'s' if len(scope) > 1 else ''}")
     if "digi" in scope:
-        write_csv(args.digi, DIGI_HEADER, [build_digi_row(r).values for r in records])
+        write_csv(
+            args.digi,
+            DIGI_HEADER,
+            [build_digi_row(r, vendor_cfg=vendor_cfg).values for r in records],
+        )
     if "alfa" in scope:
-        write_csv(args.alfa, ALFA_HEADER, [build_alfa_row(r).values for r in records])
+        write_csv(
+            args.alfa,
+            ALFA_HEADER,
+            [build_alfa_row(r, vendor_cfg=vendor_cfg).values for r in records],
+        )
     flags.write_csv(args.qc, args.platform)
     write_title_sample(args.sample_titles, records)
 

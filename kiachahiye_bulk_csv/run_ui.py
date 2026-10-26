@@ -6,10 +6,15 @@ audit result, files to upload).  The full raw output of every stage is saved to
 ``run.log`` next to the generated files, so nothing is hidden.
 
 Usage (normally via run_pipeline.bat):
-    python run_ui.py                      # default sheet from config.py
+    python run_ui.py                      # asks which sheet, then which platform to run for
     python run_ui.py "D:\\path\\SHEET.csv"  # any sheet -> data/output/<sheet>/
+    python run_ui.py --alfa               # Alfa only (also --digi, --platform both|digi|alfa)
     python run_ui.py --no-tests           # skip the test stage
     python run_ui.py --plain              # no colours / box drawing
+
+A chosen platform is the only thing this run produces: that file is written, gated and reported on,
+and the other platform's file is not written at all.  ``both`` (the default) does both uploads.
+Nothing is asked when the answers are on the command line or nobody is at the keyboard.
 
 Exit code: 0 = clean, 1 = a blocking stage failed, 2 = audit failed.
 """
@@ -30,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import config as CONFIG
+from vendor_config import VENDOR_REGISTRY, get_vendor
 
 try:
     import msvcrt  # Windows only: single-key prompt at the end
@@ -132,7 +138,14 @@ class UI:
             self.write(f"{t.paint(t.v, colour)} {pad(line, inner)} {t.paint(t.v, colour)}")
         self.write(t.paint(t.bl + t.h * (WIDTH - 2) + t.br, colour))
 
-    def banner(self, sheet: Path, out_dir: Path, py: str) -> None:
+    def banner(
+        self,
+        sheet: Path,
+        out_dir: Path,
+        py: str,
+        upload: str = "",
+        vendor_label: str = "",
+    ) -> None:
         t = self.t
         if t.fancy:
             os.system("")  # keeps legacy conhost happy
@@ -145,12 +158,14 @@ class UI:
             return text if len(text) <= room else ("…" if t.fancy else "~") + text[-(room - 1):]
 
         info = [
+            f"{t.paint('Vendor  ', t.grey)} {vendor_label}" if vendor_label else "",
             f"{t.paint('Sheet   ', t.grey)} {clip(sheet.name)}",
+            f"{t.paint('Upload  ', t.grey)} {upload}" if upload else "",
             f"{t.paint('Output  ', t.grey)} {clip(str(out_dir))}",
             f"{t.paint('Python  ', t.grey)} {py}",
             f"{t.paint('Started ', t.grey)} {time.strftime('%A %d %B %Y, %H:%M:%S')}",
         ]
-        self.box("RUN CONTEXT", info, t.blue)
+        self.box("RUN CONTEXT", [line for line in info if line], t.blue)
         self.write()
 
     def overall(self, done: int, total: int, label: str) -> None:
@@ -293,10 +308,151 @@ FLAG_LABELS = {
 }
 
 
+# ───────────────────────────────── questions ────────────────────────────────
+def parse_choice(answer: str, count: int, default: int) -> int | None:
+    """Which numbered choice an answer means, or None when it is not one of them.
+
+    Enter alone takes the default; anything outside the list is refused rather than guessed at.
+    """
+    text = answer.strip()
+    if not text:
+        return default
+    # isdecimal, not isdigit: "²" is a digit that int() refuses to read.
+    if text.isdecimal() and 1 <= int(text) <= count:
+        return int(text) - 1
+    return None
+
+
+def elide(text: str, room: int) -> str:
+    """Shorten a name past its middle, so the start of it and its extension both still read."""
+    if len(text) <= room:
+        return text
+    return f"{text[: room - 7]}...{text[-4:]}"
+
+
+def menu(ui: UI, heading: str, entries: list[tuple[str, str]], default: int) -> int | None:
+    """Ask one numbered question and return the chosen index, or None to take the default.
+
+    None means nobody is at the keyboard -- a piped or automated run gets the default instead of
+    waiting for an answer that will never come.
+    """
+    t = ui.t
+    if not sys.stdin.isatty():
+        return None
+    # UI.box pads a line but never truncates it, so the widest name and the widest hint are fitted
+    # to the panel together before anything is drawn.
+    mark = len(str(len(entries))) + 3  # "[10] "
+    room = WIDTH - 4 - mark  # what one line has left over for its name and its hint together
+    # The hint is the reason a row is worth noticing -- an error name, a row count -- so it takes
+    # the larger share of the line, and a long sheet name is the thing that gets shortened.
+    hint_room = min(max(len(hint) for _label, hint in entries), room * 3 // 5)
+    column = min(50, room - hint_room - 1, max(len(label) for label, _hint in entries) + 1)
+    lines = [
+        f"{t.paint(f'[{index}]', t.bold, t.cyan)} {pad(elide(label, column), column)}"
+        f" {t.paint(elide(hint, hint_room), t.grey)}"
+        for index, (label, hint) in enumerate(entries, 1)
+    ]
+    ui.write()
+    ui.box(heading, lines, t.cyan)
+    while True:
+        try:
+            answer = input(f"  {t.paint(f'Choose 1-{len(entries)}', t.grey)}"
+                           f"{t.paint(f'  [Enter = {default + 1}]', t.grey)}: ")
+        except EOFError:
+            return default
+        picked = parse_choice(answer, len(entries), default)
+        if picked is not None:
+            return picked
+        ui.write(f"  {t.paint(f'{t.bad} {answer.strip()!r} is not one of those numbers.', t.red)}")
+
+
+PLATFORM_ENTRIES = [
+    ("Both platforms", "write + gate both files"),
+    ("DigiMall only", "write + gate the DigiMall file"),
+    ("Alfa only", "write + gate the Alfa file"),
+]
+PLATFORM_NAMES = ("both", "digi", "alfa")
+# What each choice puts on disk -- only the chosen upload is written, and only it is gated.
+PLATFORM_LABELS = {
+    "both": "DigiMall + Alfa",
+    "digi": "DigiMall only (Alfa not written)",
+    "alfa": "Alfa only (DigiMall not written)",
+}
+GEN_LABELS = {"both": "DigiMall + Alfa", "digi": "DigiMall", "alfa": "Alfa"}
+UPLOAD_LABELS = {"digi": "DigiMall", "alfa": "Alfa"}
+# Which of the two uploads this run produces, in the order the screens list them.
+PLATFORM_FILES = {"both": ("digi", "alfa"), "digi": ("digi",), "alfa": ("alfa",)}
+
+
+def scope_note(platform: str) -> str:
+    """What a single-platform run did not produce -- short enough to sit inside a panel.
+
+    UI.box pads a line but never truncates it, so anything longer than WIDTH-4 pushes the box's
+    own right border off the screen.
+    """
+    if platform == "both":
+        return ""
+    other = UPLOAD_LABELS["digi" if platform == "alfa" else "alfa"]
+    return f"Written and proved: {UPLOAD_LABELS[platform]} only. No {other} file exists."
+
+
+def ask_vendor(ui: UI) -> str:
+    """Which vendor (store) to generate for. Listed from VENDOR_REGISTRY, no hardcoding."""
+    entries = [
+        (cfg.display_name, f"SKU prefix: {cfg.sku_prefix}-")
+        for cfg in VENDOR_REGISTRY.values()
+    ]
+    keys = list(VENDOR_REGISTRY)
+    choice = menu(ui, "VENDOR  ·  which store are you generating for?", entries, 0)
+    return keys[choice if choice is not None else 0]
+
+
+def ask_upload(ui: UI) -> str:
+    """Which upload this run is proving: both files are always generated, one or both is gated."""
+    choice = menu(ui, "UPLOAD  ·  which platform are you uploading today?",
+                  PLATFORM_ENTRIES, PLATFORM_NAMES.index("both"))
+    return PLATFORM_NAMES[choice if choice is not None else 0]
+
+
+def ask_sheet(ui: UI) -> Path | None:
+    """Which sheet in data/input to run, or None to keep the configured default."""
+    folder = PKG / "data" / "input"
+    sheets = sorted(folder.glob("*.csv"), key=lambda p: p.name.lower())
+    if not sheets:
+        return None
+
+    def shape(path: Path) -> str:
+        try:
+            return f"{count_rows(path):,} rows"
+        except Exception as exc:  # a sheet the reader cannot open is still a name he can pick
+            return f"cannot be read ({type(exc).__name__})"
+
+    entries = [(path.name, shape(path)) for path in sheets]
+    default = next(
+        (i for i, path in enumerate(sheets) if path.resolve() == CONFIG.INPUT_FILE.resolve()), 0
+    )
+    choice = menu(ui, "SHEET  ·  which file do you want to generate from?", entries, default)
+    return sheets[choice] if choice is not None else None
+
+
 # ──────────────────────────────────── main ──────────────────────────────────
 def main() -> int:
     ap = argparse.ArgumentParser(description=APP_NAME)
-    ap.add_argument("sheet", nargs="?", type=Path, help="source CSV (default: config.INPUT_FILE)")
+    ap.add_argument("sheet", nargs="?", type=Path, help="source CSV (asks for it when omitted)")
+    flags = ap.add_mutually_exclusive_group()
+    flags.add_argument("--platform", dest="platform", choices=PLATFORM_NAMES,
+                       help="produce and gate only this platform (skips the question)")
+    flags.add_argument("--digi", dest="platform", action="store_const", const="digi",
+                       help="same as --platform digi")
+    flags.add_argument("--alfa", dest="platform", action="store_const", const="alfa",
+                       help="same as --platform alfa")
+    ap.add_argument(
+        "--vendor",
+        dest="vendor",
+        choices=list(VENDOR_REGISTRY),
+        default=None,
+        help="vendor key from vendor_config.py (skips the question when supplied)",
+    )
     ap.add_argument("--no-tests", action="store_true", help="skip the test stage")
     ap.add_argument("--plain", action="store_true", help="no colours or box drawing")
     ap.add_argument("--no-wait", action="store_true", help="do not wait for a key at the end")
@@ -308,8 +464,12 @@ def main() -> int:
     ui = UI(Theme(fancy))
     t = ui.t
 
-    sheet = (args.sheet or CONFIG.INPUT_FILE).resolve()
-    out_dir = PKG / "data" / "output" / sheet.stem
+    vendor_key = args.vendor or ask_vendor(ui)
+    vendor_cfg = get_vendor(vendor_key)
+    platform = args.platform or ask_upload(ui)
+    sheet = (args.sheet or ask_sheet(ui) or CONFIG.INPUT_FILE).resolve()
+    scope_phrase = {"both": "both platforms", "digi": "DigiMall only", "alfa": "Alfa only"}[platform]
+    out_dir = PKG / "data" / "output" / vendor_key / sheet.stem
     digi = out_dir / "digi" / "digimall_bulk_import.csv"
     alfa = out_dir / "alfa" / "alfa_bulk_import.csv"
     qc = out_dir / "qc_report.csv"
@@ -319,7 +479,10 @@ def main() -> int:
     log_path = out_dir / "run.log"
     py = sys.executable
 
-    ui.banner(sheet, out_dir, f"{sys.version.split()[0]}")
+    vendor_label = f"{vendor_cfg.display_name} (SKU: {vendor_cfg.sku_prefix}-)"
+    ui.banner(
+        sheet, out_dir, sys.version.split()[0], PLATFORM_LABELS[platform], vendor_label
+    )
 
     # ── preflight ──
     problems = []
@@ -342,21 +505,32 @@ def main() -> int:
     ).returncode == 0
     run_tests = (not args.no_tests) and have_pytest and (PKG / "tests").exists()
 
+    # One chosen platform is the only thing this run touches: its file is the only one written,
+    # the gate reads only it, and the worklists are built from it.
+    scope = PLATFORM_FILES[platform]
+    paths = {"digi": digi, "alfa": alfa}
+    uploads: list[str] = []
+    for name in scope:
+        uploads += [f"--{name}", str(paths[name])]
+
     main_cmd = [
-        py, "main.py", "--input", str(sheet),
-        "--digi", str(digi), "--alfa", str(alfa),
-        "--qc", str(qc), "--sample-titles", str(titles),
+        py, "main.py", "--input", str(sheet), "--vendor", vendor_key, *uploads,
+        "--qc", str(qc), "--sample-titles", str(titles), "--platform", platform,
     ]
-    audit_cmd = [py, "audit.py", "--input", str(sheet), "--digi", str(digi), "--alfa", str(alfa),
-                 "--qc", str(qc), "--evidence", str(evidence)]
-    thin_cmd = [py, "thin_report.py", "--input", str(sheet), "--digi", str(digi), "--qc", str(qc),
-                "--out", str(thin)]
+    audit_cmd = [
+        py, "audit.py", "--input", str(sheet), "--vendor", vendor_key, *uploads,
+        "--qc", str(qc), "--evidence", str(evidence), "--platform", platform,
+    ]
+    thin_cmd = [py, "thin_report.py", "--input", str(sheet), "--built", str(paths[scope[0]]),
+                "--qc", str(qc), "--out", str(thin)]
 
     stages = [
         ("Quality gate  ·  unit tests" if fancy else "Quality gate - unit tests",
          [py, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"] if run_tests else None),
-        ("Generate  ·  DigiMall + Alfa" if fancy else "Generate - DigiMall + Alfa", main_cmd),
-        ("Verify  ·  row-by-row audit" if fancy else "Verify - row-by-row audit", audit_cmd),
+        (f"Generate  ·  {GEN_LABELS[platform]}" if fancy
+         else f"Generate - {GEN_LABELS[platform]}", main_cmd),
+        (f"Verify  ·  audit ({scope_phrase})" if fancy
+         else f"Verify - audit ({scope_phrase})", audit_cmd),
         ("Review  ·  weak descriptions" if fancy else "Review - weak descriptions", thin_cmd),
     ]
     total = len(stages)
@@ -367,7 +541,8 @@ def main() -> int:
     audit_fails: list[str] = []
 
     with log_path.open("w", encoding="utf-8") as log:
-        log.write(f"{APP_NAME} run {time.strftime('%Y-%m-%d %H:%M:%S')}\nsheet: {sheet}\n")
+        log.write(f"{APP_NAME} run {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                  f"vendor: {vendor_key}\nsheet: {sheet}\nupload: {platform}\n")
         for i, (name, cmd) in enumerate(stages, 1):
             if cmd is None:
                 res = StageResult(name, "skip", 0.0,
@@ -407,7 +582,8 @@ def main() -> int:
         ui.write(f"  {t.paint('Full log:', t.grey)} {log_path}")
         if audit_fails and r is results[2]:
             ui.write()
-            ui.box("AUDIT FAILURES", [t.paint(x[: WIDTH - 6], t.red) for x in audit_fails[:15]], t.red)
+            ui.box(f"AUDIT FAILURES  ·  {scope_phrase}",
+                   [t.paint(x[: WIDTH - 6], t.red) for x in audit_fails[:15]], t.red)
 
     # ── management summary ──
     if not blocked:
@@ -418,24 +594,31 @@ def main() -> int:
         sev_totals: Counter = Counter()
         for (sev, _f), n in qc_counts.items():
             sev_totals[sev] += n
-        rows_out = {"DigiMall": count_rows(digi) if digi.exists() else 0,
-                    "Alfa": count_rows(alfa) if alfa.exists() else 0}
+        rows_out = {UPLOAD_LABELS[name]: count_rows(paths[name]) for name in scope}
 
         verdict_ok = not audit_failed
         verdict = (
-            t.paint(f"{t.ok}  READY TO UPLOAD", t.bold, t.green)
-            if verdict_ok else t.paint(f"{t.bad}  DO NOT UPLOAD — AUDIT FAILED", t.bold, t.red)
+            t.paint(f"{t.ok}  READY TO UPLOAD  ·  {scope_phrase.upper()}", t.bold, t.green)
+            if verdict_ok
+            else t.paint(f"{t.bad}  DO NOT UPLOAD  ·  AUDIT FAILED  ·  {scope_phrase.upper()}",
+                         t.bold, t.red)
         )
+        lines = [verdict]
+        note = scope_note(platform)
+        if note:
+            lines.append(t.paint(note, t.grey))
         ui.write()
-        ui.box("VERDICT", [verdict], t.green if verdict_ok else t.red)
+        ui.box("VERDICT", lines, t.green if verdict_ok else t.red)
         ui.write()
 
+        # One label column for the whole panel, so every value starts at the same character.
         kpi = [
-            f"{t.paint('Source rows        ', t.grey)} {rows_in:,}",
-            f"{t.paint('DigiMall rows      ', t.grey)} {rows_out['DigiMall']:,}",
-            f"{t.paint('Alfa rows          ', t.grey)} {rows_out['Alfa']:,}",
-            f"{t.paint('Audit              ', t.grey)} {results[2].detail}",
-            f"{t.paint('Total run time     ', t.grey)} {fmt_time(total_time)}",
+            f"{t.paint(pad('Source rows', 20), t.grey)} {rows_in:,}",
+            *(f"{t.paint(pad(f'{label} rows', 20), t.grey)} {count:,}"
+              for label, count in rows_out.items()),
+            f"{t.paint(pad('Audit', 20), t.grey)} {results[2].detail} "
+            f"{t.paint(f'· {scope_phrase}', t.grey)}",
+            f"{t.paint(pad('Total run time', 20), t.grey)} {fmt_time(total_time)}",
         ]
         ui.box("SUMMARY", kpi, t.cyan)
 
@@ -464,8 +647,17 @@ def main() -> int:
             )
 
         ui.write()
+        # A single-platform run does not write the other file, but an earlier run may have left it
+        # in this folder -- named as stale rather than hidden, so an old CSV is never uploaded
+        # believing it was proved today.
+        stale = [
+            (paths[name], f"STALE   {UPLOAD_LABELS[name]}")
+            for name in ("digi", "alfa")
+            if name not in scope and paths[name].exists()
+        ]
         files = [
-            (digi, "UPLOAD  DigiMall"), (alfa, "UPLOAD  Alfa"),
+            *[(paths[name], f"UPLOAD  {UPLOAD_LABELS[name]}") for name in scope],
+            *stale,
             (qc, "review  QC report"), (thin, "review  weak descriptions"),
             (evidence, "proof   row-by-row check"), (log_path, "log     full run output"),
         ]
@@ -476,12 +668,17 @@ def main() -> int:
                     shown = path.relative_to(PKG)
                 except ValueError:
                     shown = path
-                tag = t.paint(pad(label, 26), t.green if label.startswith("UPLOAD") else t.grey)
+                tag = t.paint(
+                    pad(label, 26),
+                    t.green if label.startswith("UPLOAD") else t.red if label.startswith("STALE")
+                    else t.grey,
+                )
                 text = str(shown)
                 if len(text) > 39:
                     text = "…" + text[-38:] if t.fancy else "~" + text[-38:]
                 lines.append(f"{tag}{pad(text, 39)} {t.paint(fmt_size(path).rjust(8), t.grey)}")
-        ui.box("FILES", lines, t.blue)
+        ui.box("FILES  ·  STALE = left by an earlier run, not written today" if stale
+               else "FILES", lines, t.blue)
 
     ui.write()
     if not args.no_wait:
