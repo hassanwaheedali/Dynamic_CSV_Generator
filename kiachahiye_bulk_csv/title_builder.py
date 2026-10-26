@@ -18,6 +18,7 @@ colour, series, inverter or warranty word is ever invented.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -1582,6 +1583,64 @@ def extract_feature(
     return " ".join(kept[:2])
 
 
+TitleFormulaFn = Callable[[dict[str, str]], str]
+
+
+def _apply_formula(
+    slots: dict[str, str],
+    formula: str | TitleFormulaFn,
+) -> str:
+    """Apply a vendor-specific formula to the extracted, deduplicated title slots."""
+    if callable(formula):
+        return formula(slots)
+    if formula == "standard":
+        segments = [s for s in (slots["part1"], slots["part2"], slots["part3"]) if s]
+        return " - ".join(segments)
+    if formula in ("brand_first_extended", "ajmer_variant"):
+        if slots["model"]:
+            model_tok = slots["model"]
+            brand_tok = slots["brand"]
+            if brand_tok:
+                prefix_re = re.compile(
+                    rf"^{re.escape(brand_tok)}(?:\s+|\s*-\s*)", re.IGNORECASE
+                )
+                stripped = prefix_re.sub("", model_tok).strip()
+                if stripped:
+                    model_tok = stripped
+            head = " ".join(t for t in (brand_tok, model_tok) if t).strip()
+            body = " ".join(
+                t
+                for t in (
+                    slots["capacity"],
+                    slots["color"],
+                    slots["inverter"],
+                    slots["subtype"],
+                    slots["product_type"],
+                    slots["feature"],
+                )
+                if t
+            ).strip()
+        else:
+            head = " ".join(
+                t
+                for t in (
+                    slots["brand"],
+                    slots["product_type"],
+                    slots["subtype"],
+                    slots["capacity"],
+                    slots["color"],
+                    slots["inverter"],
+                )
+                if t
+            ).strip()
+            body = slots["feature"].strip()
+        tail = slots["warranty"].strip()
+        return " - ".join(s for s in (head, body, tail) if s)
+    raise ValueError(
+        f"Unknown title_formula {formula!r}. Add it to title_builder._apply_formula."
+    )
+
+
 def build_title(
     brand: str,
     extraction: ModelExtraction,
@@ -1594,6 +1653,7 @@ def build_title(
     corpus: Corpus | None = None,
     capacity: str | None = None,
     identity: str | None = None,
+    title_formula: str | TitleFormulaFn = "standard",
 ) -> TitleResult:
     """Build one Title using our formula.
 
@@ -1664,7 +1724,9 @@ def build_title(
                 # dropping it would empty a platform column.  It belongs in the [Subtype] slot.
                 carried_subtype = curated
 
-    should_rebuild = strict_rebuild or (extraction.confidence in ("high", "medium"))
+    should_rebuild = bool(
+        strict_rebuild or (extraction.confidence in ("high", "medium"))
+    )
     slot_printed = False
     identity_printed = ""
     subtype: str = ""
@@ -1804,8 +1866,11 @@ def build_title(
                     else ("class" if stranded_subtype else "")
                 )
             )
+        slot_names = ("brand", "capacity", "color", "inverter", "subtype", "product_type")
+        raw_slots = (brand, capacity, title_color, inverter, subtype, product_type)
+        deduped_slots: dict[str, str] = dict.fromkeys(slot_names, "")
         part1_pieces: list[str] = []
-        for raw_piece in (brand, capacity, title_color, inverter, subtype, product_type):
+        for slot_name, raw_piece in zip(slot_names, raw_slots, strict=True):
             piece = clean_inline(raw_piece)
             if not piece:
                 continue
@@ -1815,17 +1880,21 @@ def build_title(
             if joined and all(word_printed(word, joined) for word in piece.split()):
                 continue
             part1_pieces.append(piece)
+            deduped_slots[slot_name] = piece
         part1 = " ".join(part1_pieces)
 
         part2_pieces: list[str] = []
+        model_slot = ""
         if extraction.confidence in ("high", "medium") and extraction.code:
-            part2_pieces.append(clean_inline(extraction.code))
+            model_slot = clean_inline(extraction.code)
+            part2_pieces.append(model_slot)
         elif extraction.code and extraction.source != "fallback":
             clean_code = clean_inline(extraction.code)
             brand_token = re.sub(r"[^A-Za-z0-9]", "", brand).upper()
             if brand_token and clean_code.upper().startswith(f"{brand_token}-"):
                 clean_code = clean_code[len(brand_token) + 1:].strip()
             if clean_code and clean_code.lower() not in part1.lower():
+                model_slot = clean_code
                 part2_pieces.append(clean_code)
         if extraction.confidence == "none":
             # A row with no model code is sold by the name and number IT wrote, so that pair is
@@ -1833,8 +1902,10 @@ def build_title(
             if identity is None:
                 identity = word_identity(source_title, brand)
             if identity:
-                part2_pieces.append(clean_inline(identity))
+                model_slot = clean_inline(identity)
+                part2_pieces.append(model_slot)
                 identity_printed = identity
+        feature_slot = ""
         if feature:
             clean_feat = clean_inline(feature)
             # What the Title prints so far, GROWING as words are accepted.  It used to be a snapshot
@@ -1852,7 +1923,8 @@ def build_title(
                 feat_words.append(word)
                 printed = f"{printed} {word}"
             if feat_words:
-                part2_pieces.append(" ".join(feat_words))
+                feature_slot = " ".join(feat_words)
+                part2_pieces.append(feature_slot)
             # The voted name counts as printed only when EVERY one of its words survived the dedupe
             # above.  On the Orient `Icon` rows the name is a word of the model code, so the slot
             # empties and a substring test on the finished Title would still hit; on the Kenwood
@@ -1873,8 +1945,16 @@ def build_title(
             ):
                 part3 = clean_warr
 
-        segments = [s for s in (part1, part2, part3) if s]
-        combined = " - ".join(segments)
+        slots = {
+            **deduped_slots,
+            "model": model_slot,
+            "feature": feature_slot,
+            "warranty": part3,
+            "part1": part1,
+            "part2": part2,
+            "part3": part3,
+        }
+        combined = _apply_formula(slots, title_formula)
 
         title = clean_inline(_trim_to_limit(combined, TITLE_MAX))
         strategy = "rebuilt"

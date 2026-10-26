@@ -27,8 +27,13 @@ added by hand, after a human has seen it in the QC report.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from models import ResolvedBrand
 from textutils import normalize
+
+if TYPE_CHECKING:
+    from vendor_config import VendorConfig
 
 # ===========================================================================
 #  EDIT HERE -- DigiMall brand ids
@@ -54,20 +59,20 @@ BRANDS_DIGI: dict[str, int] = {
 #  EDIT HERE -- Alfa brand ids
 # ===========================================================================
 BRANDS_ALFA: dict[str, int] = {
-    "super asia": 4395,
+    "super general": 4133,
     "midea": 3821,
-    "pel": 3767,
-    "xioami": 3763,
+    "philips": 3802,
+    "anex": 3789,
+    "braun": 3768,
+    "hisense": 3766,
     "westpoint": 3762,
     "gree": 3678,
     "kenwood": 3677,
+    "orient": 3676,
     "ecostar": 3675,
     "haier": 3674,
     "dawlance": 3673,
-    "tcl": 3667,
-    # "orient":  <-- NOT on Alfa's list. Add the real id here if it exists.
-    # "homage":  <-- NOT on Alfa's list. Add the real id here.
-    # "hisense": <-- NOT on Alfa's list. Add the real id here.
+    "samsung": 3669,
 }
 
 # ===========================================================================
@@ -119,37 +124,69 @@ BRAND_DISPLAY_MAP: dict[str, str] = {
     "jackpot": "Jackpot",
     "xiaomi": "Xiaomi",
     "xioami": "Xiaomi",
+    "super general": "Super General",
+    "philips": "Philips",
+    "braun": "Braun",
+    "samsung": "Samsung",
 }
 
 
-def extract_brand(title: str = "", fallback_brand: str = "") -> str:
+def extract_brand(
+    title: str = "",
+    fallback_brand: str = "",
+    display_map: dict[str, str] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> str:
     """Extract canonical brand name from title prefix, falling back to fallback_brand."""
+    active_map = display_map if display_map is not None else BRAND_DISPLAY_MAP
     if title:
         title_norm = title.strip().lower()
-        for key in sorted(BRAND_DISPLAY_MAP, key=len, reverse=True):
+        for key in sorted(active_map, key=len, reverse=True):
             if title_norm.startswith(key + " ") or title_norm == key:
-                return BRAND_DISPLAY_MAP[key]
+                return active_map[key]
     fallback = fallback_brand.strip()
-    return BRAND_DISPLAY_MAP.get(fallback.lower(), fallback)
+    if not fallback:
+        return ""
+    direct = active_map.get(fallback.lower())
+    if direct is not None:
+        return direct
+    canon = canonical_brand_key(fallback, aliases=aliases)
+    return active_map.get(canon, fallback)
 
 
-def canonical_brand_key(raw_brand: str) -> str:
+def canonical_brand_key(
+    raw_brand: str,
+    aliases: dict[str, str] | None = None,
+) -> str:
     """Normalise a source brand string to its canonical lookup key."""
+    active_aliases = aliases if aliases is not None else BRAND_ALIASES
     key = normalize(raw_brand)
-    return BRAND_ALIASES.get(key, key)
+    return active_aliases.get(key, key)
 
 
-def resolve_brand(raw_brand: str, title: str = "") -> ResolvedBrand:
+def resolve_brand(
+    raw_brand: str,
+    title: str = "",
+    vendor_cfg: VendorConfig | None = None,
+) -> ResolvedBrand:
     """Resolve one brand string against both platform lists, independently.
 
     If title is supplied and starts with a known brand (e.g. Nasgas, iFFalcon, Jackpot),
     that brand takes precedence over raw_brand.
     """
-    effective = extract_brand(title, raw_brand) if title else raw_brand
-    key = canonical_brand_key(effective)
+    brands_digi = vendor_cfg.digi.brands if vendor_cfg is not None else BRANDS_DIGI
+    brands_alfa = vendor_cfg.alfa.brands if vendor_cfg is not None else BRANDS_ALFA
+    aliases = vendor_cfg.brand_aliases if vendor_cfg is not None else BRAND_ALIASES
+    display_map = (
+        vendor_cfg.brand_display_map if vendor_cfg is not None else BRAND_DISPLAY_MAP
+    )
+    effective = extract_brand(
+        title, raw_brand, display_map=display_map, aliases=aliases
+    )
+    key = canonical_brand_key(effective, aliases=aliases)
     return ResolvedBrand(
         raw=effective,
         normalized=key,
-        digi_id=BRANDS_DIGI.get(key),
-        alfa_id=BRANDS_ALFA.get(key),
+        digi_id=brands_digi.get(key),
+        alfa_id=brands_alfa.get(key),
     )

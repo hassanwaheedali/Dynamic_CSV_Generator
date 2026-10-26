@@ -331,7 +331,7 @@ def find_series_token(text: str, banned: frozenset[str] = frozenset()) -> str:
                 continue
         elif word.isupper() or lookup_is_acronym(word):
             continue
-        return word
+        return str(word)
     return ""
 
 
@@ -552,9 +552,10 @@ def taps_conflict(title: str, description: str) -> tuple[str, str] | None:
 # ---------------------------------------------------------------------------
 #  SKU / Handle builders
 # ---------------------------------------------------------------------------
-def build_sku_token(model: str) -> str:
-    """``KIA-`` plus the compact, upper-cased model code."""
-    return f"{SKU_PREFIX}-{compact_model(model)}".strip("-")
+def build_sku_token(model: str, prefix: str | None = None) -> str:
+    """``KIA-`` (or ``<prefix>-``) plus the compact, upper-cased model code."""
+    p = prefix if prefix is not None else SKU_PREFIX
+    return f"{p}-{compact_model(model)}".strip("-")
 
 
 def build_handle_token(model: str, product_type: str) -> str:

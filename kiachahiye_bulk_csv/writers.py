@@ -13,10 +13,14 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from config import VENDOR_ALFA as VENDOR_ALFA  # edit in config.py
 from config import VENDOR_DIGI as VENDOR_DIGI
 from models import AlfaOutputRow, DigiOutputRow, ProductRecord
+
+if TYPE_CHECKING:
+    from vendor_config import VendorConfig
 
 # Both Vendor constants come from config.py -- the one file to edit when a
 # vendor spelling ever changes.  They are re-exported here so every existing
@@ -146,9 +150,13 @@ def _record_common(record: ProductRecord, vendor: str) -> dict[str, str]:
     }
 
 
-def build_digi_row(record: ProductRecord) -> DigiOutputRow:
+def build_digi_row(
+    record: ProductRecord,
+    vendor_cfg: VendorConfig | None = None,
+) -> DigiOutputRow:
     """Project one ProductRecord into DigiMall's 66-column schema (section 2A)."""
-    values = _record_common(record, VENDOR_DIGI)
+    vendor = vendor_cfg.digi.vendor_name if vendor_cfg is not None else VENDOR_DIGI
+    values = _record_common(record, vendor)
     values["Brands"] = "" if record.brand.digi_id is None else str(record.brand.digi_id)
     values["Category"] = record.category.digi_path or ""
     values["Short Description"] = _single_line(record.description.short_description)
@@ -158,13 +166,17 @@ def build_digi_row(record: ProductRecord) -> DigiOutputRow:
     return DigiOutputRow(values=values)
 
 
-def build_alfa_row(record: ProductRecord) -> AlfaOutputRow:
+def build_alfa_row(
+    record: ProductRecord,
+    vendor_cfg: VendorConfig | None = None,
+) -> AlfaOutputRow:
     """Project one ProductRecord into Alfa's 28-column schema (section 2B).
 
     No Short Description, no Commission Percentage, and none of the 36
     Attribute_* columns exist in this file.
     """
-    values = _record_common(record, VENDOR_ALFA)
+    vendor = vendor_cfg.alfa.vendor_name if vendor_cfg is not None else VENDOR_ALFA
+    values = _record_common(record, vendor)
     values["Brands"] = "" if record.brand.alfa_id is None else str(record.brand.alfa_id)
     # Alfa's Category is the BARE LEAF ID only -- never a joined path.
     values["Category"] = record.category.alfa_id or ""
