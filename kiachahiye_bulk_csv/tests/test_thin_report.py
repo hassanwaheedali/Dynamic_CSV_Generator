@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import sys
 from pathlib import Path
 from typing import Any
@@ -77,7 +78,7 @@ def test_report_finds_the_one_line_row_and_leaves_the_rich_row_out(
     parsed = main.read_input(result["digi_path"].parent.parent / "input.csv")
     rows = thin_report.build_rows(
         parsed,
-        thin_report.read_digi_facts(result["digi_path"]),
+        thin_report.read_listing_facts(result["digi_path"]),
         thin_report.read_flags(result["qc_path"]),
     )
     titles = [row[4] for row in rows]
@@ -98,3 +99,17 @@ def test_the_report_writes_the_documented_header(tmp_path: Path) -> None:
 def test_source_shape_counts_characters_and_non_empty_lines(chars: int, lines: int) -> None:
     text = "x" * chars if lines else ""
     assert thin_report.source_shape(text) == (chars, lines)
+
+
+def test_an_upload_with_no_short_description_column_is_not_judged_on_bullets(
+    tmp_path: Path,
+) -> None:
+    """The Alfa file has no Short Description column -- reading it must not call every row thin."""
+    path = tmp_path / "alfa_bulk_import.csv"
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
+        writer.writerow(["Title", "Description", "Product Type"])
+        writer.writerow(["A", "<table><tr><td>Color</td><td>Black</td></tr></table>", "Freezer"])
+    facts = thin_report.read_listing_facts(path)
+    assert facts[2][1] is None, "no column at all is not the same as an empty one"
+    assert thin_report.classify(chars=2000, lines=8, spec_rows=4, bullets=facts[2][1])[0] == ""

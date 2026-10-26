@@ -413,7 +413,12 @@ def _match_alias(text: str, column: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _match_warranty(headline: str | None) -> tuple[str | None, str | None]:
+def match_warranty(headline: str | None) -> tuple[str | None, str | None]:
+    """The DigiMall word for a warranty headline, and the raw signal behind it.
+
+    The second half of the answer is the signal the QC report names when the first half is
+    ``None`` -- the platform's closed list has no value for it, so no caller may write one in.
+    """
     if not headline:
         return None, None
     lookup = _allowed_lookup("Attribute_Warranty")
@@ -443,7 +448,7 @@ def build_attributes(
             continue
 
         if column == "Attribute_Warranty":
-            value, signal = _match_warranty(warranty_headline)
+            value, signal = match_warranty(warranty_headline)
         elif column == "Attribute_Product Type":
             value, signal = (
                 (product_type, product_type) if product_type in allowed_values else (None, None)

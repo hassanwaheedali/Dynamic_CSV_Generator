@@ -70,17 +70,21 @@ def source_shape(description: str) -> tuple[int, int]:
     return len(text), len(lines)
 
 
-def classify(*, chars: int, lines: int, spec_rows: int, bullets: int) -> tuple[str, str, str]:
+def classify(
+    *, chars: int, lines: int, spec_rows: int, bullets: int | None
+) -> tuple[str, str, str]:
     """Return ``(severity, issues, why)`` for one row.  Severity is "" when fine.
 
     ``high``   -- the listing is visibly poor: a one-line Description, a very
                   short one, or a table with no real specification rows.
     ``medium`` -- usable, but the source could say much more: a short
                   Description, or fewer than the three Short Description bullets
-                  the spec asks for where the row could support them.
+                  the spec asks for where the row could support them.  ``bullets``
+                  is None when the upload has no Short Description field to grade.
     """
     issues: list[str] = []
     why: list[str] = []
+    thin_bullets = bullets is not None and bullets < THIN_SHORT_BULLETS
     if lines == 1:
         issues.append("one-line Description")
         why.append("the source Description is a single line, so the listing has no product narrative")
@@ -90,13 +94,13 @@ def classify(*, chars: int, lines: int, spec_rows: int, bullets: int) -> tuple[s
     if spec_rows <= THIN_SPEC_ROWS:
         issues.append(f"only {spec_rows} spec row(s) in the listing")
         why.append("the published table is nearly empty")
-    if bullets < THIN_SHORT_BULLETS:
+    if thin_bullets:
         issues.append(f"{bullets} Short Description bullet(s)")
         why.append("the marketplace's short spec block is nearly empty")
 
     if lines == 1 or chars < THIN_DESCRIPTION_CHARS or spec_rows <= THIN_SPEC_ROWS:
         severity = "high"
-    elif chars < SHORT_DESCRIPTION_CHARS or bullets < THIN_SHORT_BULLETS:
+    elif chars < SHORT_DESCRIPTION_CHARS or thin_bullets:
         severity = "medium"
     else:
         severity = ""
@@ -111,18 +115,21 @@ def read_output(path: Path) -> list[dict[str, str]]:
         return [dict(zip(header, values)) for values in reader if values]  # noqa: B905
 
 
-def read_digi_facts(path: Path) -> dict[int, tuple[int, int, str]]:
+def read_listing_facts(path: Path) -> dict[int, tuple[int, int | None, str]]:
     """``sheet row number -> (spec rows shown, short-description bullets, type)``.
 
     Row numbers start at 2 to match ``read_input`` and the QC report: the first
-    data row of the sheet is row 2.
+    data row of the sheet is row 2.  ``bullets`` is None when the file has no Short
+    Description column at all -- the Alfa upload does not -- which is a different thing
+    from an empty one and must not be graded as one.
     """
-    facts: dict[int, tuple[int, int, str]] = {}
+    facts: dict[int, tuple[int, int | None, str]] = {}
     for index, row in enumerate(read_output(path), start=2):
         html = row["Description"]
+        short = row.get("Short Description")
         facts[index] = (
             len(_SPEC_ROW_RE.findall(html)),
-            len(_BULLET_RE.findall(row["Short Description"])),
+            len(_BULLET_RE.findall(short)) if short is not None else None,
             row["Product Type"].strip(),
         )
     return facts
@@ -143,14 +150,14 @@ def read_flags(path: Path) -> dict[int, list[str]]:
 
 def build_rows(
     parsed: list[InputRow],
-    facts: dict[int, tuple[int, int, str]],
+    facts: dict[int, tuple[int, int | None, str]],
     flagged: dict[int, list[str]],
 ) -> list[list[str]]:
     """Every row worth a second look, worst first, as ready-to-write cells."""
     found: list[tuple[str, int, list[str]]] = []
     for row in parsed:
         chars, lines = source_shape(row.description)
-        spec_rows, bullets, product_type = facts.get(row.row_number, (0, 0, ""))
+        spec_rows, bullets, product_type = facts.get(row.row_number, (0, None, ""))
         severity, issues, why = classify(
             chars=chars, lines=lines, spec_rows=spec_rows, bullets=bullets
         )
@@ -171,7 +178,7 @@ def build_rows(
                     str(chars),
                     str(lines),
                     str(spec_rows),
-                    str(bullets),
+                    "" if bullets is None else str(bullets),
                     why,
                     "; ".join(flagged.get(row.row_number, [])),
                 ],
@@ -204,13 +211,16 @@ def print_summary(rows: list[list[str]], total: int, path: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Thin-Description worklist")
     parser.add_argument("--input", type=Path, default=INPUT_FILE)
-    parser.add_argument("--digi", type=Path, default=DIGI_OUTPUT)
+    parser.add_argument(
+        "--built", type=Path, default=DIGI_OUTPUT,
+        help="the upload this run wrote -- either platform's file",
+    )
     parser.add_argument("--qc", type=Path, default=QC_REPORT)
     parser.add_argument("--out", type=Path, default=THIN_REPORT)
     args = parser.parse_args(argv)
 
     parsed = read_input(args.input)
-    rows = build_rows(parsed, read_digi_facts(args.digi), read_flags(args.qc))
+    rows = build_rows(parsed, read_listing_facts(args.built), read_flags(args.qc))
     write_report(args.out, rows)
     print_summary(rows, len(parsed), args.out)
     return 0

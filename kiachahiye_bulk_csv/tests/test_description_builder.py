@@ -368,12 +368,13 @@ def test_a_warranty_already_printed_as_a_row_is_not_repeated_in_key_features() -
     assert features == ["Fast Cool Mode"]
 
 
-def test_two_warranty_rows_never_print_the_word_warranty_twice() -> None:
+def test_two_answers_to_one_warranty_question_print_one_row() -> None:
     """Real sheet, sheet row 596: `• Warranty: 1 Year, 10 Years` -- two numbers, no parts.
 
     The rename exists so a warranty row never collides with a spec row of the same name.  Applying
-    it to a label that already ends in the word printed `Warranty Warranty: 10 Years`, so the
-    second row keeps the label the shop's own line gives it.
+    it to a label that already ends in the word printed `Warranty Warranty: 10 Years`, and leaving
+    both rows printed `Warranty` twice -- a label a shop's table never repeats.  One question, one
+    row, with his numbers in the order he wrote them.
     """
     bundle = _bundle(
         "The Super Asia SA-260 is a 10 kg washing machine.\n",
@@ -383,8 +384,10 @@ def test_two_warranty_rows_never_print_the_word_warranty_twice() -> None:
         ],
     )
     labels = [row.label for row in bundle.spec_rows]
-    assert "Warranty Warranty" not in labels
-    assert labels.count("Warranty") == 2
+    assert len(labels) == len(set(labels))
+    assert [
+        (row.label, row.value) for row in bundle.spec_rows if row.label == "Warranty"
+    ] == [("Warranty", "1 Year, 10 Years")]
 
 
 def test_a_feature_that_only_shares_the_part_word_with_a_row_keeps_its_own_claim() -> None:

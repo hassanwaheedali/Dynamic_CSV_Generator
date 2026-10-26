@@ -867,6 +867,17 @@ def build_description_bundle(
         if key in seen and not key.endswith("warranty"):
             row = dataclasses.replace(row, label=f"{row.label} Warranty")
             key = row.label.lower()
+        # One label sells one question, so a second answer joins the first instead of printing the
+        # label twice: `• Warranty: 1 Year, 10 Years` names no part and states two numbers, and
+        # both are his, in his order.  A rename would have invented a word he never wrote.
+        if key in seen:
+            for index, earlier in enumerate(deduped):
+                if earlier.label.lower() == key:
+                    deduped[index] = dataclasses.replace(
+                        earlier, value=f"{earlier.value}, {row.value}"
+                    )
+                    break
+            continue
         seen.add(key)
         deduped.append(row)
 
