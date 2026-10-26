@@ -155,7 +155,14 @@ class QCFlagCollector:
             }
         return out
 
-    def write_csv(self, path: Path) -> None:
+    def write_csv(self, path: Path, platform: str = "both") -> None:
+        """Write the report.
+
+        ``platform`` narrows it to one upload: a finding about a file this run never wrote is
+        not news about the file in hand, and a worklist of DigiMall cells is no help to a shop
+        uploading to Alfa.  A flag marked ``both`` touches either file, so it always stays.
+        """
+        keep = {"both", "digi", "alfa"} if platform == "both" else {platform, "both"}
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
@@ -170,6 +177,8 @@ class QCFlagCollector:
                 ]
             )
             for flag in sorted(self.flags, key=lambda f: (f.row_number, f.category)):
+                if flag.platform not in keep:
+                    continue
                 writer.writerow(
                     [
                         flag.row_number,

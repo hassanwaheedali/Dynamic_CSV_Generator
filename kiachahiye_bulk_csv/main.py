@@ -68,6 +68,7 @@ from sku_handle import (
     upper_sku_normaliser,
 )
 from textutils import (
+    colour_disagreements,
     find_weight_in_text,
     parse_weight_cell,
     parse_weight_unit,
@@ -406,6 +407,21 @@ def resolve_row(
         text, brand.normalized, product_type
     )
 
+    other_colors = colour_disagreements(text, row.title)
+    if other_colors and title_result.color_token:
+        # The row states a colour twice and the two statements disagree, so one of them is wrong: the
+        # Title ships -- it is the name he gave this machine, while `• Product Color:` is a form he
+        # fills in and `Black` stands stamped on every Dawlance refrigerator row on this sheet.
+        # Overriding a line silently would leave him reading a colour he never sold, so the losing
+        # statement is named in the QC report for him to look at (owner ruling).
+        flags.flag(
+            row.row_number, row.title, CAT_TITLE_DESCRIPTION_CONFLICT,
+            f"This row ships {title_result.color_token!r} as its colour, but the row also states "
+            f"{' and '.join(repr(color) for color in other_colors)} -- the Title's colour wins and "
+            f"prints in the Title and in Option1 Value. Write "
+            f"`Color: {title_result.color_token}` on the row to settle it.",
+        )
+
     description = build_description_bundle(
         brand=effective_brand,
         model=model if used.confidence != "none" else "",
@@ -735,14 +751,20 @@ def print_summary(
     digi_path: Path,
     alfa_path: Path,
     corpus: Corpus | None = None,
+    upload: str = "both",
 ) -> None:
+    # Only the uploads this run actually produced are reported on; a DigiMall finding is not news
+    # in an Alfa run.
+    scope: tuple[str, ...] = ("digi", "alfa") if upload == "both" else (upload,)
     total = len(records)
     print()
     print("=" * 78)
     print(f"RUN COMPLETE -- {total} rows processed")
     print("=" * 78)
-    print(f"  DigiMall file : {digi_path}")
-    print(f"  Alfa file     : {alfa_path}")
+    if "digi" in scope:
+        print(f"  DigiMall file : {digi_path}")
+    if "alfa" in scope:
+        print(f"  Alfa file     : {alfa_path}")
 
     summary = flags.platform_summary(total)
     print()
@@ -751,6 +773,8 @@ def print_summary(
         ("digi", "DigiMall", digi_path),
         ("alfa", "Alfa", alfa_path),
     ):
+        if platform not in scope:
+            continue
         stats = summary[platform]
         print(
             f"  {label:9} need review: {stats['rows_need_review']:5} | "
@@ -760,10 +784,12 @@ def print_summary(
 
     print()
     print("PER-PLATFORM CELL COUNTS")
-    print(f"  DigiMall Category empty : {flags.count(CAT_CATEGORY_DIGI):5} rows")
-    print(f"  Alfa     Category empty : {flags.count(CAT_CATEGORY_ALFA):5} rows")
-    print(f"  DigiMall Brands empty   : {flags.count(CAT_BRAND_DIGI):5} rows")
-    print(f"  Alfa     Brands empty   : {flags.count(CAT_BRAND_ALFA):5} rows")
+    if "digi" in scope:
+        print(f"  DigiMall Category empty : {flags.count(CAT_CATEGORY_DIGI):5} rows")
+        print(f"  DigiMall Brands empty   : {flags.count(CAT_BRAND_DIGI):5} rows")
+    if "alfa" in scope:
+        print(f"  Alfa     Category empty : {flags.count(CAT_CATEGORY_ALFA):5} rows")
+        print(f"  Alfa     Brands empty   : {flags.count(CAT_BRAND_ALFA):5} rows")
     print(f"  AC rows with unknown inverter status : {flags.count(CAT_AC_INVERTER_UNKNOWN):5} rows")
 
     print()
@@ -781,9 +807,11 @@ def print_summary(
         (CAT_TITLE_DROPPED_WORDS, "Rebuilt Title dropped extra source words"),
         (CAT_SERIES_SINGLE_ROW, "Series name believed from a single row"),
         (CAT_SUBTYPE_LINE_UNUSED, "SubType: line added no word to the Title"),
-        (CAT_TITLE_DESCRIPTION_CONFLICT, "Title and Description disagree (type or size)"),
+        (CAT_TITLE_DESCRIPTION_CONFLICT, "Title and Description disagree (type, size or colour)"),
         (CAT_PRODUCT_TYPE_INFERRED, "Product Type inferred from breadcrumb"),
     ):
+        if category == CAT_ATTRIBUTE_EMPTY and "digi" not in scope:
+            continue  # the Attribute_* cells live only in the DigiMall file
         print(f"  {label:60} {flags.count(category):5} rows")
 
     # ---- the explicit "not found in the lookup table" listing you asked for --
@@ -823,6 +851,8 @@ def print_summary(
         ("digi", "BRANDS_DIGI", "brands.py"),
         ("alfa", "BRANDS_ALFA", "brands.py"),
     ):
+        if platform not in scope:
+            continue
         misses = brand_misses[platform]
         if not misses:
             print(f"  {platform.upper():5} none -- every brand resolved")
@@ -837,6 +867,8 @@ def print_summary(
         ("digi", "CATEGORY_DIGI_PATHS", "categories.py"),
         ("alfa", "CATEGORY_ALFA_IDS", "categories.py"),
     ):
+        if platform not in scope:
+            continue
         misses = category_misses[platform]
         if not misses:
             print(f"  {platform.upper():5} none -- every breadcrumb resolved")
@@ -845,19 +877,23 @@ def print_summary(
         for name, count in misses.most_common():
             print(f"          {name!r} -> {count} rows left with an empty Category cell")
 
-    print()
-    print("ATTRIBUTE VALUES NOT IN THE VOCABULARY YET (DigiMall Attribute_* cells left empty)")
-    gaps = flags.attribute_gaps()
-    if not gaps:
-        print("  none -- every signal the sheet stated is on the allowed list")
-    else:
-        total = sum(gaps.values())
-        print(f"  {total} empty cells across {len(gaps)} column/string pairs "
-              "-- edit ALLOWED in attributes.py:")
-        for (column, raw), count in gaps.most_common(12):
-            print(f"          {column} <- {raw!r} on {count} rows")
-        if len(gaps) > 12:
-            print(f"          ... and {len(gaps) - 12} more pairs; the full list is in the QC report")
+    if "digi" in scope:
+        print()
+        print("ATTRIBUTE VALUES NOT IN THE VOCABULARY YET (DigiMall Attribute_* cells left empty)")
+        gaps = flags.attribute_gaps()
+        if not gaps:
+            print("  none -- every signal the sheet stated is on the allowed list")
+        else:
+            total = sum(gaps.values())
+            print(f"  {total} empty cells across {len(gaps)} column/string pairs "
+                  "-- edit ALLOWED in attributes.py:")
+            for (column, raw), count in gaps.most_common(12):
+                print(f"          {column} <- {raw!r} on {count} rows")
+            if len(gaps) > 12:
+                print(
+                    f"          ... and {len(gaps) - 12} more pairs; "
+                    "the full list is in the QC report"
+                )
 
     print()
     print("WARRANTY COVERAGE")
@@ -893,7 +929,15 @@ def main(argv: list[str] | None = None) -> int:
         "--sample-titles", type=Path, default=TITLE_SAMPLE,
         help="write a before/after Title review file to this path",
     )
+    parser.add_argument(
+        "--platform", choices=("both", "digi", "alfa"), default="both",
+        help="produce only this upload: write its file and report its findings (default: both)",
+    )
     args = parser.parse_args(argv)
+
+    # One platform chosen means that platform only: the other file is not written, so an output
+    # folder for an Alfa upload holds no DigiMall CSV to grab by mistake.
+    scope: tuple[str, ...] = ("digi", "alfa") if args.platform == "both" else (args.platform,)
 
     print(f"Reading {args.input}")
     rows = read_input(args.input)
@@ -904,13 +948,16 @@ def main(argv: list[str] | None = None) -> int:
     prepared = read_rows(rows)
     records = run(rows, flags, prepared)
 
-    print("Writing output files")
-    write_csv(args.digi, DIGI_HEADER, [build_digi_row(r).values for r in records])
-    write_csv(args.alfa, ALFA_HEADER, [build_alfa_row(r).values for r in records])
-    flags.write_csv(args.qc)
+    labels = " + ".join("DigiMall" if p == "digi" else "Alfa" for p in scope)
+    print(f"Writing the {labels} file{'s' if len(scope) > 1 else ''}")
+    if "digi" in scope:
+        write_csv(args.digi, DIGI_HEADER, [build_digi_row(r).values for r in records])
+    if "alfa" in scope:
+        write_csv(args.alfa, ALFA_HEADER, [build_alfa_row(r).values for r in records])
+    flags.write_csv(args.qc, args.platform)
     write_title_sample(args.sample_titles, records)
 
-    print_summary(records, flags, args.digi, args.alfa, prepared[1])
+    print_summary(records, flags, args.digi, args.alfa, prepared[1], args.platform)
     print()
     print(f"  QC report        : {args.qc}")
     print(f"  Title sample     : {args.sample_titles}")
