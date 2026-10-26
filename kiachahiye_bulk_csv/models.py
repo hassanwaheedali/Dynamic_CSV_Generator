@@ -54,6 +54,8 @@ class ResolvedCategory:
     alfa_id: str | None
     matched_key: str | None = None
     reason: str = ""
+    digi_reason: str = ""
+    alfa_reason: str = ""
 
 
 @dataclass(frozen=True)

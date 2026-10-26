@@ -28,10 +28,12 @@ from pathlib import Path
 # These are deliberately different strings, and neither is ever taken from the
 # input sheet's own Vendor column (that column is read and then ignored).
 #   DigiMall importer expects:  KiaChahiye PVT LTD
-#   Alfa importer expects:      Kia Chahiye Pvt Ltd
+#   Alfa importer expects:      Ajmer Electronics
 # Do not make them match each other.
+# These stay for backward compatibility with any code that does `from config import VENDOR_DIGI`.
+# New code reads vendor_cfg.digi.vendor_name and vendor_cfg.alfa.vendor_name from vendor_config.py.
 VENDOR_DIGI = "KiaChahiye PVT LTD"
-VENDOR_ALFA = "Kia Chahiye Pvt Ltd"
+VENDOR_ALFA = "Ajmer Electronics"
 
 # ===========================================================================
 #  EDIT HERE -- files and folders
