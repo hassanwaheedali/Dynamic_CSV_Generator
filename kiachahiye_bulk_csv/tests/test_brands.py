@@ -15,7 +15,7 @@ def test_lists_match_the_spec_exactly() -> None:
     assert BRANDS_ALFA["dawlance"] == 3673
     assert BRANDS_DIGI["gree"] == 3790 and BRANDS_ALFA["gree"] == 3678
     assert len(BRANDS_DIGI) == 12
-    assert len(BRANDS_ALFA) == 11
+    assert len(BRANDS_ALFA) == 14
 
 
 def test_dawlance_ids_differ_between_platforms() -> None:
@@ -38,20 +38,25 @@ def test_superasia_spacing_alias_is_needed_and_works() -> None:
     resolved = resolve_brand("Superasia")
     assert resolved.normalized == "super asia"
     assert resolved.digi_id == 3776
-    assert resolved.alfa_id == 4395
-
-
-def test_orient_is_missing_from_alfa_only() -> None:
-    resolved = resolve_brand("Orient")
-    assert resolved.digi_id == 3769
     assert resolved.alfa_id is None
 
 
-def test_homage_and_hisense_are_missing_from_both() -> None:
-    for brand in ("Homage", "Hisense"):
-        resolved = resolve_brand(brand)
-        assert resolved.digi_id is None, brand
-        assert resolved.alfa_id is None, brand
+def test_orient_resolves_for_both() -> None:
+    resolved = resolve_brand("Orient")
+    assert resolved.digi_id == 3769
+    assert resolved.alfa_id == 3676
+
+
+def test_homage_is_missing_from_both() -> None:
+    resolved = resolve_brand("Homage")
+    assert resolved.digi_id is None
+    assert resolved.alfa_id is None
+
+
+def test_hisense_resolves_for_alfa() -> None:
+    resolved = resolve_brand("Hisense")
+    assert resolved.digi_id is None
+    assert resolved.alfa_id == 3766
 
 
 def test_no_fuzzy_matching_ever() -> None:

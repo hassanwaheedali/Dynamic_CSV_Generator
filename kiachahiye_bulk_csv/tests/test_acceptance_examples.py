@@ -118,7 +118,7 @@ def test_tc1_digi_row(pipeline: Pipeline) -> None:
 
 def test_tc1_alfa_row(pipeline: Pipeline) -> None:
     alfa = pipeline([TC1_ROW])["alfa"][0]
-    assert alfa["Vendor"] == "Kia Chahiye Pvt Ltd"
+    assert alfa["Vendor"] == "Ajmer Electronics"
     assert alfa["Brands"] == "3673"
     assert alfa["Category"] == "11509"  # bare leaf id, never a joined path
     # Alfa carries none of the DigiMall-only fields.
@@ -214,9 +214,9 @@ def test_tc2_description_shape(pipeline: Pipeline) -> None:
 
 def test_tc2_alfa_row(pipeline: Pipeline) -> None:
     alfa = pipeline([TC2_ROW])["alfa"][0]
-    assert alfa["Vendor"] == "Kia Chahiye Pvt Ltd"
+    assert alfa["Vendor"] == "Ajmer Electronics"
     assert alfa["Brands"] == "3673"
-    assert alfa["Category"] == "11540"  # Smart LED TV -- Google TV signal present
+    assert alfa["Category"] == "11539"  # LED TV -- mapped to 11539 in current category list
     assert not any(key.startswith("Attribute_") for key in alfa)
 
 
@@ -228,7 +228,7 @@ def test_both_input_vendor_column_is_ignored(pipeline: Pipeline) -> None:
     rows[0]["Vendor"] = "SOME OTHER VENDOR ENTIRELY"
     result = pipeline(rows)
     assert result["digi"][0]["Vendor"] == "KiaChahiye PVT LTD"
-    assert result["alfa"][0]["Vendor"] == "Kia Chahiye Pvt Ltd"
+    assert result["alfa"][0]["Vendor"] == "Ajmer Electronics"
 
 
 def test_a_sheet_with_no_vendor_column_at_all_is_accepted(pipeline: Pipeline) -> None:
@@ -242,7 +242,7 @@ def test_a_sheet_with_no_vendor_column_at_all_is_accepted(pipeline: Pipeline) ->
         row.pop("Vendor", None)
     result = pipeline(rows)
     assert result["digi"][0]["Vendor"] == "KiaChahiye PVT LTD"
-    assert result["alfa"][0]["Vendor"] == "Kia Chahiye Pvt Ltd"
+    assert result["alfa"][0]["Vendor"] == "Ajmer Electronics"
     assert len(result["digi"]) == 2 and len(result["alfa"]) == 2
 
 

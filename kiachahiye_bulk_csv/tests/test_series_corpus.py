@@ -690,12 +690,13 @@ def test_the_vote_reads_both_sheets_and_proves_the_names_the_shop_uses() -> None
     # Known misses, measured here so they stay visible rather than silently accepted: a feature
     # word that one brand states in two or more rows still earns that brand, because no table
     # calls it a type.  This is the vocabulary gap (plan T5), not a voting bug.
-    for feature in ("wifi", "iot", "cooking", "flat"):
+    for feature in ("wifi", "iot", "flat"):
         assert feature in earned or feature in corpus.blacklisted, feature
     # `solo` sat on that list until the Microwave Oven table claimed it, and it joins the gap the
     # same way every other type word does: refused before it can be voted, so it earns no brand and
     # is not blacklisted for wanting evidence either.
-    for type_word in ("solo", "grill", "convection", "top load", "bottom load", "table top"):
+    # `cooking` now also belongs to this set since "Cooking range" is in category vocabulary.
+    for type_word in ("solo", "grill", "convection", "top load", "bottom load", "table top", "cooking"):
         assert type_word not in earned, type_word
         assert type_word not in corpus.blacklisted, type_word
 

@@ -24,18 +24,18 @@ REAL_BREADCRUMBS = [
      "11639_11643_11791_11792", "11506", "Washing Machine"),
     ("Electronics / Kitchen appliances / Microwaves",
      "11639_11643_11661_11666", "11519", "Microwave Oven"),
-    ("LED TV / Smart LED TV / TCL LED", None, "11540", "LED TV"),
+    ("LED TV / Smart LED TV / TCL LED", None, "11539", "LED TV"),
     ("Electronics / Home appliances / Deep Freezer",
-     "11639_11643_11661_11788", "11508", "Deep Freezer"),
+     "11639_11643_11661_11788", None, "Deep Freezer"),
     ("Electronics / Home appliances / Water dispenser",
      "11639_11643_11661_11669", "11509", "Water Dispenser"),
-    ("Electronics / Home appliances / Geysers", None, "11510", "Geyser"),
+    ("Electronics / Home appliances / Geysers", None, None, "Geyser"),
     ("Electronics / Home appliances / Air cooler",
      "11639_11643_11653_11654", "11511", "Air Cooler"),
     ("Electronics / Home appliances / Air purifier & humdifier",
      "11639_11643_11653_11655", None, "Air Purifier"),
-    ("LED TV / Smart LED TV / Haier LED", None, "11540", "LED TV"),
-    ("LED TV / Smart LED TV / Dawlance LED", None, "11540", "LED TV"),
+    ("LED TV / Smart LED TV / Haier LED", None, "11539", "LED TV"),
+    ("LED TV / Smart LED TV / Dawlance LED", None, "11539", "LED TV"),
 ]
 
 
@@ -55,10 +55,11 @@ def test_ac_breadcrumbs_need_text_inverter_signal() -> None:
     breadcrumb = "Electronics / Home appliances / AC / AC's 2026 / Gree AC 2026"
     inverter = resolve_category(breadcrumb, "Gree Zeno DC Inverter Split AC", "")
     assert inverter.digi_path == "11639_11643_11653_11782_11783"
-    assert inverter.alfa_id == "11505"
+    assert inverter.alfa_id == "12353"
 
     non_inverter = resolve_category(breadcrumb, "Gree Non Inverter Split AC", "")
     assert non_inverter.digi_path == "11639_11643_11653_11782_11784"
+    assert non_inverter.alfa_id == "12353"
 
 
 def test_ac_silent_on_inverter_leaves_digi_blank_but_alfa_resolves() -> None:
@@ -66,7 +67,7 @@ def test_ac_silent_on_inverter_leaves_digi_blank_but_alfa_resolves() -> None:
     breadcrumb = "Electronics / Home appliances / AC"
     resolved = resolve_category(breadcrumb, "Dawlance Infinity Pro Split AC 1 Ton", "")
     assert resolved.digi_path is None
-    assert resolved.alfa_id == "11505"
+    assert resolved.alfa_id == "12353"
     assert "inverter" in resolved.reason.lower()
     assert resolve_product_type(resolved, "Dawlance")[0] == "Air Conditioner"
 
@@ -83,13 +84,13 @@ def test_led_tv_is_always_blank_on_digimall() -> None:
         assert "no DigiMall category exists for LED TV" in resolved.reason
 
 
-def test_led_tv_smart_split_on_alfa() -> None:
-    """Alfa picks the leaf from the row's own text; no signal -> the plain leaf."""
+def test_led_tv_resolves_to_single_leaf_on_alfa() -> None:
+    """Alfa maps all LED TVs to 11539 in current category list."""
     plain = resolve_category("LED TV / Smart LED TV / Haier LED", "", "Haier LED TV 32")
     assert plain.alfa_id == "11539"
     for signal in ("Google TV", "Android TV", "Smart LED TV", "Andriod"):
         smart = resolve_category("LED TV / Smart LED TV / Haier LED", "", signal)
-        assert smart.alfa_id == "11540", signal
+        assert smart.alfa_id == "11539", signal
 
 
 def test_stop_segments_do_not_fall_through_to_a_parent() -> None:
@@ -105,10 +106,10 @@ def test_stop_segments_do_not_fall_through_to_a_parent() -> None:
         assert resolve_product_type(resolved, "TCL")[0] == product_type
 
 
-def test_geysers_have_no_digimall_key_but_resolve_on_alfa() -> None:
+def test_geysers_have_no_digimall_key_and_no_alfa_key() -> None:
     resolved = resolve_category("Electronics / Home appliances / Geysers", "Gas geyser", "")
     assert resolved.digi_path is None
-    assert resolved.alfa_id == "11510"
+    assert resolved.alfa_id is None
     assert "heaters" in CATEGORY_DIGI_PATHS  # the key exists, but is not a geyser match
 
 

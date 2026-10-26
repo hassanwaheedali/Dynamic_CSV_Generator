@@ -69,7 +69,7 @@ def test_no_suffixed_column_names_from_the_old_single_file_design() -> None:
 
 def test_the_two_vendor_constants_are_different_strings() -> None:
     assert VENDOR_DIGI == "KiaChahiye PVT LTD"
-    assert VENDOR_ALFA == "Kia Chahiye Pvt Ltd"
+    assert VENDOR_ALFA == "Ajmer Electronics"
     assert VENDOR_DIGI != VENDOR_ALFA
 
 

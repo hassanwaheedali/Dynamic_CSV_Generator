@@ -44,7 +44,7 @@ def _row(**overrides: str) -> InputRow:
 # --------------------------------------------------------------------------
 def test_vendor_constants_are_distinct_and_never_cross_used() -> None:
     assert VENDOR_DIGI == "KiaChahiye PVT LTD"
-    assert VENDOR_ALFA == "Kia Chahiye Pvt Ltd"
+    assert VENDOR_ALFA == "Ajmer Electronics"
     assert VENDOR_DIGI != VENDOR_ALFA
 
 
