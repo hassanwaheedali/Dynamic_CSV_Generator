@@ -1093,9 +1093,7 @@ def colour_words() -> frozenset[str]:
     :data:`textutils.COLOR_NON_MODIFIERS` is deliberately NOT used -- the repo's own table puts
     `pro`, `plus`, `door` and `top` in it, which is that table saying these are not colours.
     """
-    return frozenset(
-        word.lower() for word in (*textutils.BASE_COLORS, *textutils.COLOR_MODIFIERS)
-    )
+    return textutils.PAINT_WORDS
 
 
 def _abbreviates_noise_word(piece: str) -> bool:

@@ -283,17 +283,12 @@ def find_base_color(text: str) -> str | None:
     ``Grey``/``Gray`` are folded to ``Grey`` because §9's own colour list writes
     them as a single entry.
     """
-    cleaned_text = text
-    for phrase in FALSE_COLOR_PHRASES:
-        cleaned_text = re.sub(phrase, "", cleaned_text, flags=re.IGNORECASE)
+    cleaned_text = _strip_false_color_phrases(text)
 
     match = _COLOR_RE.search(cleaned_text)
     if match is None:
         return None
-    word = match.group(1).lower()
-    if word == "gray":
-        word = "grey"
-    return word.title()
+    return _spell_colour(match.group(1))
 
 
 COLOR_MODIFIERS: frozenset[str] = frozenset(
@@ -325,88 +320,278 @@ COLOR_NON_MODIFIERS: frozenset[str] = frozenset(
 )
 
 
+def _drop_option_words(words: list[str]) -> list[str]:
+    """Product and spec nouns out of a colour phrase (`Color: HC White` is White)."""
+    return [word for word in words if word.lower() not in COLOR_NON_MODIFIERS]
+
+
+#: The words that say how a machine is PAINTED: the base colours and their marketing modifiers.
+#: One table, and `series_corpus.colour_words()` hands this same set to the series reader, so the
+#: paint vocabulary cannot drift apart between the two.
+PAINT_WORDS: frozenset[str] = frozenset(
+    word.lower() for word in (*BASE_COLORS, *COLOR_MODIFIERS)
+)
+
+#: Cut on every non-letter, the repo's own convention for reading a Title word by word: a sheet that
+#: hyphenates its paint (`Pearl-Copper`) then spends the same words as one that spaces them, and a
+#: code's fragments (`HWD`, `BP`, `S`) are no more paint than the digits between them.
+_TITLE_WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)*")
+
+
+def _strip_false_color_phrases(text: str) -> str:
+    for phrase in FALSE_COLOR_PHRASES:
+        text = re.sub(phrase, "", text, flags=re.IGNORECASE)
+    return text
+
+
+def color_label_value(text: str) -> str | None:
+    r"""The colour the row's own ``Color:`` / ``Product Color:`` line states, or ``None``.
+
+    The label is the contract, and a contract is punctuated: the value must stand behind a
+    separator (``:``, ``-``, ``=``, or the tab a spec block uses).  Without one, `Color Depth Black`
+    and the scraped column head `Color Pattern        Black` are sentences about the picture,
+    and the separator-less reader sold `Depth Black` and `Pattern Black` -- phrases no shop
+    wrote -- as the colourway.
+
+    The colourway the label states is kept WHOLE ("Color: Blaze Purple",
+    "Color: Dark Jade Silver").  A two-word cap used to cut "Dark Jade Silver" down to
+    "Dark Jade"; the ceiling is three, because a colour name is a head with a modifier or
+    two, while a longer run is a scraped variant picker ("Color: Choose an option Hairline
+    Golden Hairline Red Hairline …") and reading that as one colour invents a phrase no shop
+    wrote.  The value is bounded to ITS OWN LINE: `[ \t]+`, never `\s+`, which also matches
+    newlines and used to swallow the next spec line's first word ("Color: White\nDuzin Series"
+    read the colour as "White Duzin"), and it ends at the first punctuation, so
+    "Color: Blaze Purple, Inverter AC" stops at the comma.
+    """
+    m_color_line = re.search(
+        r"(?im)^[ \t]*(?:•\s*)?(?:product\s+|appliance\s+|body\s+)?colo(?:u)?r"
+        r"(?:\s*(?:name|code))?\s*[:\-=\t]\s*"
+        r"([A-Za-z][A-Za-z'\-]*(?:[ \t]+[A-Za-z][A-Za-z'\-]*){0,2})",
+        _strip_false_color_phrases(text),
+    )
+    if not m_color_line:
+        return None
+    words = _drop_option_words(m_color_line.group(1).split())
+    if any(word.lower() in BASE_COLORS for word in words):
+        return _spell_colour(" ".join(words))
+    return None
+
+
+def color_in_title(title: str) -> str | None:
+    """The colourway spelled inside a Title, or ``None`` when the Title states none.
+
+    Two readings, both anchored on the Title and both confined to words the repo's own colour
+    tables call colours.  The first is the tail behind the last separator (`(9178-WB)-Meadow
+    Green`), which is where these sheets hang the variant name, and it keeps up to three words
+    because `Hazel Red Blaze` is one name and cutting it to `Red Blaze` merges it with the plain
+    `Red Blaze` row beside it.  The second is the Title's own LAST run of paint words, wherever it
+    stands: real row 697 writes `... 6 Cu Ft Silver (9106)` with no separator and no marketing word
+    in front of it, and a reader that only knew those two shapes reported a Title stating no
+    colour -- so the `• Product Color: Black` stamp on every Dawlance row sold the machine Black.
+
+    Last, not first, because the sheet puts the paint next to its code: `PEL Silver Line Digital
+    Microwave Oven 23 Ltr Black` sells the `Silver Line` range in Black, and reading the first
+    colour word sold it Silver and left `Line` behind to be resold as the series.
+    """
+    scope_title = title.strip()
+
+    m_hyphen = re.search(
+        r"-\s*([A-Za-z]+(?:[ \t]+[A-Za-z]+){0,2})\s*$", scope_title
+    )
+    if m_hyphen:
+        words = [w.lower() for w in m_hyphen.group(1).strip().split()]
+        if any(w in BASE_COLORS for w in words) and not any(
+            w in COLOR_NON_MODIFIERS for w in words
+        ):
+            return _spell_colour(" ".join(words))
+
+    phrases = paint_phrases(scope_title)
+    if phrases:
+        return _spell_colour(phrases[-1])
+    return None
+
+
+def _spell_colour(phrase: str) -> str:
+    """The phrase in the spelling §9's colour list uses: `Gray` and `Grey` are one entry."""
+    words = [word.title() for word in phrase.split()]
+    return " ".join("Grey" if word == "Gray" else word for word in words)
+
+
+def paint_phrases(title: str) -> list[str]:
+    """Every colour phrase the Title writes as one run of paint words, in the order it wrote them.
+
+    A run must hold a base colour: `Pearl` alone is Haier's line, not a paint.  One word that is
+    not a colour is carried along when paint stands on BOTH sides of it, because the sheet writes
+    `Silver Strip Black` and `Silver Strip Grey` as single colourways and the owner's ruling is to
+    print the full phrase -- but a word beside a product noun, a size or a code never travels, so
+    `12 Cu Ft Silver` is still Silver and `Silver Line Digital` is still a range name.
+    """
+    words = _TITLE_WORD_RE.findall(_strip_false_color_phrases(title))
+    keys = [word.lower() for word in words]
+    runs: list[list[int]] = []
+    current: list[int] = []
+    bridged = False
+
+    def painted(key: str) -> bool:
+        return key in PAINT_WORDS and key not in COLOR_NON_MODIFIERS
+
+    def holds_a_colour(run: list[int]) -> bool:
+        return any(keys[index] in BASE_COLORS for index in run)
+
+    for index, key in enumerate(keys):
+        if painted(key):
+            current.append(index)
+            continue
+        following = keys[index + 1] if index + 1 < len(keys) else ""
+        if current and not bridged and key not in COLOR_NON_MODIFIERS and painted(following):
+            current.append(index)
+            bridged = True
+            continue
+        runs.append(current)
+        current, bridged = [], False
+    runs.append(current)
+
+    phrases: list[str] = []
+    for run in runs:
+        # A paint word standing in front of a product noun belongs to that noun, not to the paint:
+        # `Pearl Copper Steel Door` is the Pearl Copper machine with a steel door.  It is dropped
+        # only while the phrase still names a colour without it -- `Burgundy 11 Cu Ft` and
+        # `Oven Silver 20 Ltr` keep the word they are, because the noun after them is a size.
+        trimmed_run = run
+        while len(trimmed_run) > 1:
+            after = keys[trimmed_run[-1] + 1] if trimmed_run[-1] + 1 < len(keys) else ""
+            if after not in COLOR_NON_MODIFIERS or not holds_a_colour(trimmed_run[:-1]):
+                break
+            trimmed_run = trimmed_run[:-1]
+        if holds_a_colour(trimmed_run):
+            phrases.append(" ".join(words[index] for index in trimmed_run))
+    return phrases
+
+
+def color_in_prose(text: str) -> str | None:
+    """The colour a sentence in the row states -- `finished in`, `available in`, `product color:`."""
+    m_desc = re.search(
+        r"(?:finished in|product color:[ \t]*|available in)[ \t]*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\b",
+        _strip_false_color_phrases(text),
+        re.IGNORECASE,
+    )
+    if not m_desc:
+        return None
+    words = m_desc.group(1).split()
+    filtered = _drop_option_words(words)
+    if any(w.lower() in BASE_COLORS for w in filtered):
+        return _spell_colour(" ".join(filtered))
+    return None
+
+
+def colour_disagreements(text: str, title: str = "") -> list[str]:
+    """Every OTHER colour this row states, once the Title's own paint has been taken.
+
+    Owner ruling: a row that states two colours ships the Title's and is handed back for review, so
+    the losing statement is collected rather than quietly dropped.  Only a sentence the shop wrote
+    ABOUT the paint counts -- a second colour phrase in the Title itself, its `Color:` line, or a
+    `finished in`/`available in` clause.  A colour word merely sitting in a spec cell is not a
+    statement, and reading one as such would flag half the sheet.
+    """
+    painted = color_in_title(title) if title else None
+    if not painted:
+        return []
+    earlier = paint_phrases(title)[:-1]
+    stated: list[str] = []
+    for candidate in (
+        *(_spell_colour(phrase) for phrase in earlier),
+        *(
+            found
+            for found in (color_label_value(text), color_in_prose(text))
+            if found
+        ),
+    ):
+        if _same_paint(candidate, painted) or any(
+            _same_paint(candidate, kept) for kept in stated
+        ):
+            continue
+        stated.append(candidate)
+    return stated
+
+
+def _same_paint(one: str, other: str) -> bool:
+    return _extends_a_colour(one, other) or _extends_a_colour(other, one)
+
+
+def _extends_a_colour(short: str, long: str) -> bool:
+    """Does ``long`` say the paint ``short`` names, with words added IN FRONT of it?
+
+    A colourway is its head colour with its modifiers ahead of it -- `Grey`, `Dark Grey`,
+    `Silver Grey` are one paint written three ways -- so the short spelling has to sit at the END of
+    the long one.  `Black` inside `Black White` does not: that is a SECOND paint written after the
+    one the Title chose, and a row that does that is a row stating two colours, not one colour
+    stated twice.  Treating any containment as a restatement let the spec line append its own word
+    and ship a compound the shop never put in his Title, with no flag to show him.
+    """
+    head = _colour_words(short)
+    tail = _colour_words(long)
+    if not head or len(head) > len(tail):
+        return False
+    return tail[-len(head):] == head
+
+
+def _colour_words(phrase: str) -> list[str]:
+    """One spelling per colour: `Manhattan Gray` and `Manhattan Grey` are the same paint."""
+    return [w.lower().replace("gray", "grey") for w in phrase.split()]
+
+
+def names_the_same_colour(one: str, other: str) -> bool:
+    """``Red Blaze`` and ``Hazel Red Blaze`` are one colourway, stated twice, not two colours."""
+    needles = _colour_words(one)
+    haystack = _colour_words(other)
+    if not needles:
+        return False
+    return any(
+        haystack[i : i + len(needles)] == needles for i in range(len(haystack) - len(needles) + 1)
+    )
+
+
+def _fuller(one: str, other: str) -> str:
+    return one if len(one.split()) >= len(other.split()) else other
+
+
 def find_full_color(text: str, title: str = "") -> str | None:
     """Return the full colour name (e.g. ``Crimson Red``, ``Meadow Green``, ``White``), or ``None``.
 
     When a marketing or descriptive modifier is present, returns the full colour phrase.
     Otherwise falls back to :func:`find_base_color`.
+
+    The Title is read FIRST because it is the name the shop gave this machine, while a spec line is
+    a form he fills in: `• Product Color: Black` stands on every Dawlance refrigerator row on the
+    sheet -- 140 rows shipped Black, Meadow Green and Crimson Red among them -- and reading the
+    stamp first sold those machines the wrong paint.  Two sides stating the same colourway still
+    print the fuller spelling, and when the Title states no colour at all the label keeps the
+    contract it always had.
     """
     # The pipeline hands this the row's whole text AND its Title, and that text already opens with
     # the Title -- prepending it a second time scans the same words twice for no second answer.
     full_text = text if (not title or text.startswith(title)) else f"{title}\n{text}"
-    scope_title = title or text.splitlines()[0]
+    cleaned_full_text = _strip_false_color_phrases(full_text)
 
-    # Clean false-positive phrases (like 'Golden Fin')
-    cleaned_full_text = full_text
-    for phrase in FALSE_COLOR_PHRASES:
-        cleaned_full_text = re.sub(phrase, "", cleaned_full_text, flags=re.IGNORECASE)
+    painted = color_in_title(title) if title else None
+    labeled = color_label_value(full_text)
+    # 'finished in <Color>' or 'available in <Color>' in the row's own prose
+    prose = color_in_prose(cleaned_full_text)
+    if painted:
+        # Another side spelling the SAME paint fuller is not a second colour: `11 Cu Ft Grey` beside
+        # `finished in Silver Grey` is one colourway, and the row loses words if the shorter ships.
+        # It is only a fuller spelling when the words are added in FRONT of the Title's colour -- a
+        # word added BEHIND it (`Black White`) is a second paint, and the Title's own word ships.
+        for stated in (labeled, prose):
+            if stated and _extends_a_colour(painted, stated):
+                painted = _fuller(painted, stated)
+        return painted
+    if labeled:
+        return labeled
+    if prose:
+        return prose
 
-    # 1. Explicit 'Color:' or 'Product Color:' spec line anywhere in text.
-    #    The label is the contract, and a contract is punctuated: the value must stand behind a
-    #    separator (`:`, `-`, `=`, or the tab a spec block uses).  Without one, `Color Depth Black`
-    #    and the scraped column head `Color Pattern        Black` are sentences about the picture,
-    #    and the separator-less reader sold `Depth Black` and `Pattern Black` -- phrases no shop
-    #    wrote -- as the colourway.
-    #    The colourway the label states is kept WHOLE ("Color: Blaze Purple",
-    #    "Color: Dark Jade Silver").  A two-word cap used to cut "Dark Jade Silver" down to
-    #    "Dark Jade"; the ceiling is now three, because a colour name is a head with a modifier or
-    #    two, while a longer run is a scraped variant picker ("Color: Choose an option Hairline
-    #    Golden Hairline Red Hairline …") and reading that as one colour invents a phrase no shop
-    #    wrote.  Product and spec nouns are still dropped
-    #    ("Color: HC White" is White: `HC` is the model suffix, not paint).  The value is bounded
-    #    to ITS OWN LINE: `[ \t]+`, never `\s+`, which also matches newlines and used to swallow
-    #    the next spec line's first word ("Color: White\nDuzin Series" read the colour as "White
-    #    Duzin"), and it ends at the first punctuation, so "Color: Blaze Purple, Inverter AC"
-    #    stops at the comma.
-    m_color_line = re.search(
-        r"(?im)^[ \t]*(?:•\s*)?(?:product\s+|appliance\s+|body\s+)?colo(?:u)?r"
-        r"(?:\s*(?:name|code))?\s*[:\-=\t]\s*"
-        r"([A-Za-z][A-Za-z'\-]*(?:[ \t]+[A-Za-z][A-Za-z'\-]*){0,2})",
-        cleaned_full_text,
-    )
-    if m_color_line:
-        words = [
-            word for word in m_color_line.group(1).split()
-            if word.lower() not in COLOR_NON_MODIFIERS
-        ]
-        if any(word.lower() in BASE_COLORS for word in words):
-            return " ".join(word.title() for word in words)
-
-    # 2. Hyphen color at end of title: e.g. '-(9173-WB)-Crimson Red' or '-Crimson Red'
-    m_hyphen = re.search(r"-\s*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\s*$", scope_title.strip())
-    if m_hyphen:
-        cand = m_hyphen.group(1).strip()
-        words = cand.lower().split()
-        if any(w in BASE_COLORS for w in words) and not any(
-            w in COLOR_NON_MODIFIERS for w in words
-        ):
-            return " ".join(w.title() for w in words)
-
-    # 3. 'finished in <Color>' or 'Product Color: <Color>' in details
-    m_desc = re.search(
-        r"(?:finished in|product color:[ \t]*|available in)[ \t]*([A-Za-z]+(?:[ \t]+[A-Za-z]+)?)\b",
-        cleaned_full_text,
-        re.IGNORECASE,
-    )
-    if m_desc:
-        cand = m_desc.group(1).strip()
-        words = cand.lower().split()
-        if any(w in BASE_COLORS for w in words):
-            filtered = [w for w in words if w not in COLOR_NON_MODIFIERS]
-            if any(w in BASE_COLORS for w in filtered):
-                return " ".join(w.title() for w in filtered)
-
-    # 4. Known modifier + base color in title
-    base_re = "|".join(BASE_COLORS)
-    m_mod = re.search(rf"\b([A-Za-z]+)\s+({base_re})\b", scope_title, re.IGNORECASE)
-    if m_mod:
-        mod, base = m_mod.group(1).lower(), m_mod.group(2).lower()
-        if mod in COLOR_MODIFIERS and mod not in COLOR_NON_MODIFIERS:
-            if base == "gray":
-                base = "grey"
-            return f"{mod.title()} {base.title()}"
-
-    # 5. Fallback to base color
+    # Fallback to base color
     return find_base_color(cleaned_full_text)
 
 
