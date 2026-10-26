@@ -50,7 +50,7 @@ Faida: ek nazar mein pata chal jata hai ke naya Title kaise banaya ja raha hai (
 
 ## 5 — `row_check.csv` (3600 lines = 1800 × 2 platforms)
 
-Har row ka **saboot**: DigiMall aur Alfa dono ke liye ek ek line, columns mein Title, SKU, Handle, Category, Brands, Product Type, Warranty, Tags count, SEO length, aur `Verdict` = PASS.
+Har row ka **saboot**: DigiMall aur Alfa dono ke liye ek ek line, columns mein Title, SKU, Handle, Category, Brands, Product Type, Warranty, Tags count, SEO length, aur `Verdict` = PASS. `--alfa` ya `--digi` se chalaya to sirf usi platform ki lines hoti hain — jo file likhi hi nahi gayi uska saboot nahi banta.
 
 Ye audit.py likhta hai (`--evidence` ke sath) — matlab ye "humne kaha theek hai" nahi, balke **checker ki likhi hui gawahi** hai. 3600/3600 PASS.
 
@@ -75,7 +75,7 @@ run_pipeline.bat                                        → data/output/Products
 run_pipeline.bat "…\TEST_100_PRODUCTS.csv"              → data/output/TEST_100_PRODUCTS/…
 ```
  
-Har sheet folder ke andar 2 platform folders (`alfa/`, `digi/`) aur saari report files hoti hain. Root `data/output/` bilkul saaf rehta hai.
+Jo platform chuna jaata hai, usi ka folder banta hai: `--alfa` par sirf `alfa/`, `--digi` par sirf `digi/`, aur `both` (default) par dono. Saari report files folder ke bahar rehti hain, aur root `data/output/` bilkul saaf rehta hai. Screen par `STALE` likha ho to wo file kis aur run ki purani hai — aaj ke run ne use likha hi nahi.
 
 ## Description sudharne wala step (`data/output/cleaned/`)
 

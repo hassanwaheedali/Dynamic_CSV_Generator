@@ -50,6 +50,7 @@ ignore = [
     "PLR0913",  # too many arguments
     "PLR0915",  # too many statements
     "PLR0917",  # too many positional arguments
+    "PLR0911",  # too many return statements
 ]
 
 [lint.per-file-ignores]

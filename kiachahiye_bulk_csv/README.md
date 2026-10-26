@@ -30,13 +30,24 @@ kiachahiye_bulk_csv/data/output/
 └── row_check.csv                      # one line per row per platform (the row-by-row proof)
 ```
 
-Then run the pre-upload checker, which re-reads the source sheet and both files
-and prints the checklist from `CHECKLIST.md`:
+Then run the pre-upload checker, which re-reads the source sheet and the upload
+files it is given and prints its checklist as it runs -- every rule is a
+`check(...)` line in `audit.py`, and the screen shows each one as `[PASS]` or `[FAIL]`:
 
 ```bash
 python3 audit.py --evidence data/output/row_check.csv     # exit 0 only if every check passes
-python3 -m pytest tests/ -q                               # 142 tests
+python3 -m pytest tests/ -q                               # 485 tests
 ```
+
+`--platform digi` / `--platform alfa` runs one upload from end to end: `main.py`
+writes only that file, `qc_report.csv` carries only its findings, and `audit.py`
+opens only it. A rule about a column the other platform holds is not a rule this
+upload can break, so an Alfa run never produces a DigiMall CSV and never blocks on
+a DigiMall cell (34 checks for DigiMall, 35 for Alfa, 48 for both). Under `both` the
+shared rules are read from the DigiMall file, because it carries Alfa's 28 shared
+columns and more; the Alfa file is then proved by its own schema, Vendor, Category
+shape and the cross-file checks (same SKUs, same Handles, same weights, shared
+column prefix).
 
 ### Optional weight column
 
@@ -86,7 +97,7 @@ the default path and replaces the real sheet's review file.
 ### Checks
 
 ```bash
-python -m pytest tests/ -q                       # 142 tests, incl. both acceptance cases
+python -m pytest tests/ -q                       # 485 tests, incl. both acceptance cases
 python -m mypy --strict --ignore-missing-imports $(ls *.py)   # production code
 python -m mypy --strict --ignore-missing-imports --explicit-package-bases $(ls *.py) tests/*.py
 ruff check .                                     # lint, policy in ruff.toml
@@ -244,7 +255,7 @@ listing that row actually produced, and writes the weak ones worst-first:
 
 ```bash
 python3 thin_report.py            # uses the paths in config.py
-python3 thin_report.py --input X.csv --digi Y.csv --qc Z.csv --out W.csv
+python3 thin_report.py --input X.csv --built Y.csv --qc Z.csv --out W.csv
 ```
 
 | Column | Meaning |
@@ -490,10 +501,9 @@ kiachahiye_bulk_csv/
 ├── clean_descriptions.py   rewrite a messy Description column into clean bullets (pre-step)
 ├── ruff.toml               lint policy, every ignore commented
 ├── README.md               this file
-├── CHECKLIST.md            the pre-upload checklist and the audit result
 ├── OUTPUTS_GUIDE.md        Roman-Urdu guide: kaunsi file kis kaam ki hai
 ├── WHAT_CHANGED.md         code + CSV change log, verified on two products
-├── tests/                  142 tests, including both acceptance cases
+├── tests/                  485 tests, including both acceptance cases
 └── data/
     ├── input/              the source sheet
     └── output/             the two CSVs, the QC report, the Title sample, row_check.csv,
