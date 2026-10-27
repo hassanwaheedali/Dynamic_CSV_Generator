@@ -1540,3 +1540,385 @@ def test_a_word_the_title_already_prints_is_not_sold_again_behind_the_code() -> 
     assert result.title == (
         "Haier 30 Ltr Convection Microwave Oven - HMW-30AFR Air Fryer - 1 Year Warranty"
     )
+
+
+def test_vip_pipe_scenario_a_series_and_model_code() -> None:
+    """Scenario A: Series sits in Position 3, Technical Model sits in rear pipe segment."""
+    extraction = ModelExtraction(code="MSAG2B-12HRDN1-QC0", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Midea",
+        extraction=extraction,
+        product_type="Air Conditioner",
+        source_title="Midea Eco MSAG2B-12HRDN1-QC0 DC Inverter AC 1.5 Ton White",
+        source_description=(
+            "Model: MSAG2B-12HRDN1-QC0\nCapacity: 1.5 Ton\nColor: White\nEco Series\n"
+            "Key Specifications:\n"
+            "• Golden Fin: Anti-corrosion coating\n"
+            "• Dual Filter: High density filter\n"
+            "• Fireproof Electric Control Box: Safe housing\n"
+            "Warranty: 12 Year Compressor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    # Series 'Eco' in Position 3, (White) bracketed
+    assert "Midea 1.5 Ton Eco Inverter Air Conditioner (White)" in result.title
+    # Technical model code in rear pipe segment before warranty
+    assert " | MSAG2B-12HRDN1-QC0 | 12 Year Compressor Warranty" in result.title
+    # USPs dynamically extracted
+    assert "Golden Fin" in result.title
+    assert "Dual Filter" in result.title
+    assert result.usp_tokens == ("Golden Fin", "Dual Filter", "Fireproof Electric Control Box")
+
+
+def test_vip_pipe_scenario_b_codeless_popular_identity() -> None:
+    """Scenario B: Popular identity sits in Position 3, rear slot is empty (no duplicate)."""
+    extraction = ModelExtraction(code="", source="", confidence="none")
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Air Conditioner",
+        source_title="Dawlance 15 Econo + Inverter Split Air Conditioner 1 Ton White",
+        source_description=(
+            "Capacity: 1 Ton\nColor: White\nInverter AC\n"
+            "Highlights:\n"
+            "• Gold Fin Protection\n"
+            "• Low Voltage Startup\n"
+            "Warranty: 12 Year Compressor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    # Popular identity 'Econo 15' in Position 3
+    assert "Dawlance 1 Ton Econo 15 Inverter Split Air Conditioner (White)" in result.title
+    # Rear model is not repeated
+    assert "| Econo" not in result.title.rsplit("|", 1)[0]  # not repeated before warranty
+    assert result.title.endswith("| 12 Year Compressor Warranty")
+
+
+def test_vip_pipe_scenario_c_model_code_only() -> None:
+    """Scenario C: When no series exists, Position 3 is skipped and Model is in rear slot."""
+    extraction = ModelExtraction(code="DW-6100", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Washing Machine",
+        source_title="Dawlance Semi Automatic Top Load Washing Machine White DW-6100",
+        source_description=(
+            "Model: DW-6100\nColor: White\n"
+            "Highlights:\n"
+            "• Deep Clean Pulsator\n"
+            "• Rust Proof Body\n"
+            "Warranty: 10 Year Motor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    # Position 3 skipped: Brand -> Type directly
+    assert result.title.startswith("Dawlance Semi Automatic Top Load Washing Machine (White)")
+    assert " | DW-6100 | 10 Year Motor Warranty" in result.title
+
+
+def test_vip_pipe_color_parentheses_and_led_tv_omission() -> None:
+    """LED TV category omits color bracket; other categories include ([Color])."""
+    extraction = ModelExtraction(code="", source="", confidence="none")
+    tv_result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="LED TV",
+        source_title="Dawlance 32 Inch Kore Google HD LED TV Black",
+        source_description="Size: 32 Inch\nColor: Black\nHighlights:\n• Dolby Audio\nWarranty: 2 Year Panel Warranty",
+        title_formula="vip_pipe",
+    )
+    assert "(Black)" not in tv_result.title
+    assert "Black" not in tv_result.title
+    assert tv_result.title.startswith("Dawlance 32 Inch Kore Google LED TV |")
+
+
+def test_vip_pipe_budget_protection_does_not_truncate_model_or_warranty() -> None:
+    """USPs are budget-checked so Model Code and Warranty are never truncated within 255 chars."""
+    extraction = ModelExtraction(
+        code="EXTREMELY-LONG-MODEL-CODE-NUMBER-1234567890-SERIES-EDITION", source="model-line", confidence="high"
+    )
+    long_desc = (
+        "Model: EXTREMELY-LONG-MODEL-CODE-NUMBER-1234567890-SERIES-EDITION\n"
+        "Color: Crimson Burgundy Red\n"
+        "Capacity: 2 Ton\n"
+        "Highlights:\n"
+        "• Golden Fin Protection\n"
+        "• Dual Filter Clean\n"
+        "• Self Cleaning Drive\n"
+        "Warranty: 12 Year Compressor And 6 Year Parts Official Brand Warranty"
+    )
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Air Conditioner",
+        source_title=(
+            "Dawlance Super Extended Massive Title With Enormous Amount Of Extra Words To Force "
+            "Severe Budget Pressure On Segment One 2 Ton Crimson Burgundy Red"
+        ),
+        source_description=long_desc,
+        title_formula="vip_pipe",
+    )
+    assert len(result.title) <= 255
+    # Model code and warranty MUST be preserved intact in rear pipe slots
+    expected_tail = " | EXTREMELY-LONG-MODEL-CODE-NUMBER-1234567890-SERIES-EDITION | 12 Year Compressor Warranty"
+    assert result.title.endswith(expected_tail)
+    assert "(" not in result.title.rsplit(" | ", 2)[0] or ")" in result.title.rsplit(" | ", 2)[0]
+
+
+def test_usfd_haier_h32k85fx_spec_leak_eliminated() -> None:
+    """Haier H32K85FX: spec table headers (Screen Size, Resolution, HDMI) must NEVER leak into USPs."""
+    extraction = ModelExtraction(code="H32K85FX", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="LED TV",
+        source_title="Haier 32 Inch Bezel Less Google TV (H32K85FX)",
+        source_description=(
+            "Screen Size: 32\"\n"
+            "Resolution: 1366*768\n"
+            "Operating System: Google TV\n"
+            "Refresh Rate: 60Hz\n"
+            "HDMI: 3\n"
+            "USB: 2\n"
+            "Net Dimension: 715.7*180.8*464.1mm\n"
+            "Packaging Dimension: 800x118x495 mm\n"
+            "Voltage: 100-240V 50/60Hz\n"
+            "Warranty: 2 Year Panel Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    # Zero USPs survive since all rows are spec questions/measurements
+    assert result.usp_tokens == ()
+    assert "Screen Size" not in result.title
+    assert "Resolution" not in result.title
+    assert "HDMI" not in result.title
+    assert "Refresh Rate" not in result.title
+    assert "||" not in result.title
+    assert result.title == "Haier 32 Inch Google LED TV | H32K85FX | 2 Year Panel Warranty"
+
+
+def test_usfd_dawlance_wd1051hc_water_dispenser() -> None:
+    """Dawlance WD-1051 HC: Cooling Capacity/Control System dropped; Refrigerator Compartment kept."""
+    extraction = ModelExtraction(code="WD-1051 HC", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Water Dispenser",
+        source_title="Dawlance 2 Taps Water Dispenser White - (WD-1051 HC)",
+        source_description=(
+            "Model: WD-1051 HC White\n"
+            "Cooling Capacity: 2.5 L/Hour\n"
+            "Heating Capacity: 5 L/Hour\n"
+            "Cold Water Tank: 3.5 Liters\n"
+            "Hot Water Tank: 1.6 Liters\n"
+            "Control System: Mechanical\n"
+            "Special Feature: Refrigerator Compartment\n"
+            "Voltage: 220-240V / 50Hz\n"
+            "Dimensions (WxDxH): 34.5 x 35.5 x 107.6 cm\n"
+            "Weight: 17.25 kg\n"
+            "Color: HC White\n"
+            "Warranty: 3 Years Compressor, 1 Year General Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "Cooling Capacity" not in result.title
+    assert "Control System" not in result.title
+    assert "Dimensions" not in result.title
+    assert "Refrigerator Compartment" in result.title
+    expected_title = (
+        "Dawlance 2 Taps Water Dispenser (White) | Refrigerator Compartment | "
+        "WD-1051 HC | 3 Year Compressor Warranty"
+    )
+    assert result.title == expected_title
+
+
+def test_usfd_dawlance_dw6100_washing_machine_zero_noise_collapse() -> None:
+    """Dawlance DW-6100: technical spec table rows must not leak, collapsing cleanly to 0 USPs."""
+    extraction = ModelExtraction(code="DW-6100", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Washing Machine",
+        source_title="Dawlance Top Load Semi Automatic Washing Machine White (DW-6100)",
+        source_description=(
+            "Body Type: Plastic\n"
+            "Motor / Compressor: Induction\n"
+            "Voltage: 220 V\n"
+            "Frequency: 50 Hz\n"
+            "Color: White\n"
+            "Lid Color & Material: White Opaque\n"
+            "Set Weight: 16 kg\n"
+            "Width: 56 cm\n"
+            "Warranty: 10 Year Motor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert result.usp_tokens == ()
+    assert "Body Type" not in result.title
+    assert "Set Weight" not in result.title
+    assert "||" not in result.title
+    assert result.title == "Dawlance Semi Automatic Top Load Washing Machine (White) | DW-6100 | 10 Year Motor Warranty"
+
+
+def test_usfd_negative_and_boolean_rules() -> None:
+    """Negative claims dropped; positive booleans promoted unless parameter stems."""
+    extraction = ModelExtraction(code="TEST-TV-01", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="TCL",
+        extraction=extraction,
+        product_type="LED TV",
+        source_title="TCL 55 Inch 4K UHD Smart LED TV (TEST-TV-01)",
+        source_description=(
+            "Key Features:\n"
+            "• 3D: No\n"
+            "• 8K: No\n"
+            "• Screen Size: Yes\n"
+            "• Child Lock: Yes\n"
+            "• Voice Assistant: True\n"
+            "• Bluetooth: 1\n"
+            "Warranty: 2 Year Panel Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "3D" not in result.title
+    assert "8K" not in result.title
+    assert "Screen Size" not in result.title
+    assert "Child Lock" in result.title
+    assert "Voice Assistant" in result.title
+    assert "Bluetooth" in result.title
+
+
+def test_usfd_spec_value_promotion_and_multi_value_splitting() -> None:
+    """Non-boolean descriptive values promoted, multi-value cells split on comma/semicolon."""
+    extraction = ModelExtraction(code="TEST-REF-01", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="Refrigerator",
+        source_title="Haier 15 Cu Ft Refrigerator Red (TEST-REF-01)",
+        source_description=(
+            "Cooling Technology: No Frost\n"
+            "Special Feature: Built-In Ice Maker\n"
+            "Smart Features: Dolby Audio, Multi Air Flow\n"
+            "Warranty: 10 Year Compressor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "Cooling Technology" not in result.title
+    assert "Special Feature" not in result.title
+    assert "Smart Features" not in result.title
+    assert "Built-In Ice Maker" in result.title
+    assert "Dolby Audio" in result.title
+    assert "Multi Air Flow" in result.title
+
+
+def test_usfd_multi_word_features_not_killed_by_parameter_stems() -> None:
+    """Multi-word marketing phrases containing parameter words (e.g. voltage, body, mode) survive."""
+    extraction = ModelExtraction(code="TEST-MW-01", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Air Conditioner",
+        source_title="Dawlance 1.5 Ton AC White (TEST-MW-01)",
+        source_description=(
+            "Key Features:\n"
+            "• Low Voltage Startup\n"
+            "• Rust Proof Body\n"
+            "• Eco Mode\n"
+            "• Stainless Steel Tank\n"
+            "Warranty: 12 Year Compressor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "Low Voltage Startup" in result.title
+    assert "Rust Proof Body" in result.title
+    assert "Eco Mode" in result.title
+
+
+def test_usfd_tech_acronyms_accepted() -> None:
+    """Acronyms lacking Latin vowels (HDR10, DTS, VRR) are recognized and preserved."""
+    extraction = ModelExtraction(code="TEST-TV-HDR", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="TCL",
+        extraction=extraction,
+        product_type="LED TV",
+        source_title="TCL 55 Inch LED TV (TEST-TV-HDR)",
+        source_description=(
+            "Highlights:\n"
+            "• HDR10\n"
+            "• DTS\n"
+            "• VRR\n"
+            "Warranty: 2 Year Panel Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "HDR10" in result.title
+    assert "DTS" in result.title
+    assert "VRR" in result.title
+
+
+def test_usfd_hyphenated_features_not_killed_as_model_codes() -> None:
+    """Hyphenated uppercase words without digits (Wi-Fi, No-Frost) and number combos (T-3) survive."""
+    extraction = ModelExtraction(code="TEST-HYPH-01", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Gree",
+        extraction=extraction,
+        product_type="Air Conditioner",
+        source_title="Gree 1.5 Ton Inverter AC (TEST-HYPH-01)",
+        source_description=(
+            "Key Features:\n"
+            "• Wi-Fi\n"
+            "• T-3 Compressor\n"
+            "• 3-in-1 Filter\n"
+            "Warranty: 10 Year Compressor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "Wi-Fi" in result.title
+    assert "T-3 Compressor" in result.title
+    assert "3-in-1 Filter" in result.title
+
+
+def test_usfd_multi_air_flow_on_air_conditioner() -> None:
+    """Multi Air Flow is not dropped on an Air Conditioner despite 'Air' being in the product type."""
+    extraction = ModelExtraction(code="TEST-AC-AIR", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="Air Conditioner",
+        source_title="Haier 1.5 Ton DC Inverter Air Conditioner White (TEST-AC-AIR)",
+        source_description=(
+            "Highlights:\n"
+            "• Multi Air Flow\n"
+            "• Golden Fin\n"
+            "Warranty: 10 Year Compressor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "Multi Air Flow" in result.title
+    assert "Golden Fin" in result.title
+
+
+def test_usfd_type_b_spec_rows_promoted() -> None:
+    """Spec table Type B rows (e.g. Cooling System: No Frost, Audio: Dolby Atmos) promote feature values."""
+    extraction = ModelExtraction(code="TEST-TYPEB-01", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="PEL",
+        extraction=extraction,
+        product_type="Refrigerator",
+        source_title="PEL 14 Cu Ft Refrigerator Silver (TEST-TYPEB-01)",
+        source_description=(
+            "Cooling System: No Frost\n"
+            "Audio: Dolby Atmos\n"
+            "Connectivity: Bluetooth 5.0\n"
+            "Screen Size: 55 Inch\n"
+            "Warranty: 10 Year Compressor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "Cooling System" not in result.title
+    assert "Audio" not in result.title
+    assert "Screen Size" not in result.title
+    assert "No Frost" in result.title
+    assert "Dolby Atmos" in result.title
+    assert "Bluetooth 5.0" in result.title

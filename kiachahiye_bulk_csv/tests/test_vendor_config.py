@@ -131,6 +131,9 @@ def test_sku_prefix_legacy_default() -> None:
 
 def test_title_formula_strategies() -> None:
     """Both built-in title formula strategies and custom callables work cleanly."""
+    assert KIACHAHIYE.title_formula == "vip_pipe"
+    assert AJMER.title_formula == "standard"
+
     extraction = ModelExtraction(code="HWM 120-1708", source="title", confidence="high")
     std_res = build_title(
         brand="Haier",

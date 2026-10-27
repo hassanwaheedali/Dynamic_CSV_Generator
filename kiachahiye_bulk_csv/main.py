@@ -450,7 +450,7 @@ def resolve_row(
         capacity=title_result.capacity_token,
         warranty_rows=warranty_rows,
         description=row.description,
-        title=title_result.title,
+        title=title_result.seo_base_title or title_result.title,
         has_real_model=used.confidence != "none",
         feature_tokens=[
             # A name-and-number is ONE fact and is handed over whole: `build_seo_title` sheds its

@@ -195,6 +195,8 @@ class TitleResult:
     """
 
     subtype_undecided_columns: tuple[str, ...] = ()
+    usp_tokens: tuple[str, ...] = ()
+    seo_base_title: str = ""
     """The `Attribute_... Type` columns an unsettled disagreement leaves this row unable to answer.
 
     DigiMall's matcher reads the Title first and his Description next, and the Description is where
@@ -581,11 +583,11 @@ def extract_inverter(text: str) -> str:
 
 def _trim_to_limit(title: str, limit: int) -> str:
     """Longest whole-word prefix within ``limit``, never ending on a stray
-    conjunction or a half-written unit."""
+    conjunction, open bracket, or a half-written unit."""
     if len(title) <= limit:
         return title
-    cut = title[: limit + 1].rsplit(" ", 1)[0].rstrip(" ,-/")
-    return cut or title[:limit].rstrip(" ,-/")
+    cut = title[: limit + 1].rsplit(" ", 1)[0].rstrip(" ,-/|(")
+    return cut or title[:limit].rstrip(" ,-/|(")
 
 
 def dropped_words(source_title: str, final_title: str) -> tuple[str, ...]:
@@ -1583,6 +1585,301 @@ def extract_feature(
     return " ".join(kept[:2])
 
 
+PARAMETER_QUESTION_STEMS: frozenset[str] = frozenset(
+    {
+        "size", "dimension", "dimensions", "width", "height", "depth", "weight",
+        "voltage", "frequency", "power", "current", "capacity", "refrigerant", "volume",
+        "rate", "ratio", "temperature", "type", "color", "colour", "model",
+        "brand", "warranty", "price", "resolution", "port", "ports", "shelf", "pocket",
+        "input", "output", "inlet", "outlet", "system", "installation", "class",
+        "btu", "hertz", "amps", "watts", "seer", "eer", "operating",
+        "hdmi", "usb", "tank", "faucet", "taps", "speed", "rpm", "gross", "net",
+        "load", "loading", "stand", "cabinet", "material", "lid", "body", "door", "doors",
+        "mode", "modes", "format", "speaker", "speakers",
+        "accessory", "accessories", "package", "packaging", "packing",
+        "series", "inverter", "grade", "motor", "compressor",
+    }
+)
+
+USP_DISCARD_WORDS: frozenset[str] = frozenset(
+    {
+        "details", "specification", "specifications", "specs", "features", "feature",
+        "overview", "description", "note", "notes", "general", "basic", "item", "items",
+        "manual", "standard", "conventional", "top", "front", "single", "double",
+        "yes", "no", "true", "false", "na", "n/a", "none", "nil", "other", "others",
+        "direct cool", "direct cooling",
+    }
+)
+
+EXACT_PARAMETER_QUESTIONS: frozenset[str] = frozenset(
+    {
+        "screen size", "cooling capacity", "heating capacity", "rating power",
+        "control system", "body type", "net dimension", "packaging dimension",
+        "refresh rate", "contrast ratio", "audio output", "set weight",
+        "cold water tank", "hot water tank", "display type", "screen type",
+        "product color", "door type", "climate class", "energy class",
+        "voltage", "frequency", "dimensions", "weight", "resolution", "hdmi", "usb",
+    }
+)
+
+QUESTION_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "type", "size", "capacity", "system", "weight", "rate", "ratio",
+        "dimension", "dimensions", "class", "voltage", "frequency", "input", "output",
+        "specifications", "specification", "specs", "details",
+    }
+)
+
+KNOWN_ACRONYMS: frozenset[str] = frozenset(
+    {
+        "hdr", "hdr10", "hdr10+", "dts", "vrr", "allm", "memc", "qled", "oled",
+        "uhd", "fhd", "hd", "4k", "8k", "led", "ipx4", "bldc",
+    }
+)
+
+USP_WARRANTY_WORDS: frozenset[str] = frozenset(
+    {
+        "warranty", "guarantee", "official", "year", "years", "yr", "yrs",
+    }
+)
+
+SPEC_MEASUREMENT_STEMS: frozenset[str] = frozenset(
+    {
+        "size", "dimension", "dimensions", "width", "height", "depth", "weight",
+        "voltage", "frequency", "power", "current", "capacity", "refrigerant", "volume",
+        "temperature", "color", "colour", "model", "brand", "warranty", "price",
+        "port", "ports", "shelf", "pocket", "input", "output", "inlet", "outlet",
+        "taps", "tank", "faucet", "speed", "rpm", "gross", "net", "material", "body", "lid",
+        "system", "motor", "compressor",
+    }
+)
+
+FEATURE_HEADER_STEMS: frozenset[str] = frozenset(
+    {
+        "feature", "features", "technology", "technologies", "function", "functions",
+        "coating", "coatings", "audio", "sound", "display", "connectivity",
+    }
+)
+
+
+def _is_spec_measurement(text: str) -> bool:
+    """Whether text names a physical dimension, electrical spec, or table measurement question."""
+    words = re.findall(r"[a-z]+", text.lower())
+    return any(w in SPEC_MEASUREMENT_STEMS for w in words)
+
+
+_USP_NEGATIVE_VALS: frozenset[str] = frozenset(
+    {"no", "0", "false", "n/a", "none", "na", "nil", ""}
+)
+
+_USP_POSITIVE_VALS: frozenset[str] = frozenset(
+    {"yes", "1", "true"}
+)
+
+_USP_MEASUREMENT_RE: re.Pattern[str] = re.compile(
+    r"(?:"
+    r"^\d+(?:\.\d+)?\s*(?:[x*×]\s*\d+(?:\.\d+)?)+\s*(?:mm|cm|m|inch|\")?$"
+    r"|^\d+(?:\.\d+)?\s*(?:v|volt|volts|hz|hertz|w|watt|watts|kw|a|amp|amps|kg|kgs|g|gm|liter|liters|litre|litres|ltr|ltrs|l|ml|cm|mm|m|inch|inches|\"|\'|btu|btu/h|c|°c|ton|tons|seer|eer|l/hour)\b"
+    r"|^\d+$"
+    r"|^\d+\s*[-~]\s*\d+\s*(?:mm|cm|m|kg|g|v|w|hz|c|°c|l|ltr|inch)?$"
+    r"|^[-~]\d+\s*(?:°?c|f)?$"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_parameter_question(text: str) -> bool:
+    """Whether candidate text is an exact parameter question or 1-2 word question label."""
+    low = text.lower().strip()
+    if low in EXACT_PARAMETER_QUESTIONS or low in PARAMETER_QUESTION_STEMS:
+        return True
+    words = re.findall(r"[a-z]+", low)
+    if not words:
+        return False
+    return len(words) <= 2 and words[-1] in QUESTION_SUFFIXES
+
+
+def _is_feature_header(text: str) -> bool:
+    """Whether label is a generic feature category header (e.g. Special Feature, Smart Features)."""
+    words = re.findall(r"[a-z]+", text.lower())
+    return any(w in FEATURE_HEADER_STEMS for w in words)
+
+
+def _is_valid_usp(cand: str) -> bool:
+    """Check if candidate string is a concise, non-measurement, valid USP phrase."""
+    cleaned = clean_inline(cand).strip(" :-•·*–—\t\"'“”‘’✔✓★▶►")
+    cleaned = re.sub(r"[\uFFFD\u200B\uFEFF\u00A0]", " ", cleaned).strip()
+    cleaned = re.sub(r"[®™©]", "", cleaned).strip()
+    if len(cleaned) < 2 or len(cleaned) > 35 or len(cleaned.split()) > 4:
+        return False
+    low = cleaned.lower()
+    if low in USP_DISCARD_WORDS or low in EXACT_PARAMETER_QUESTIONS:
+        return False
+        return False
+    words = re.findall(r"[a-zA-Z0-9+]+", cleaned)
+    if not words:
+        return False
+    # Check if has Latin vowel OR matches known industry tech acronyms
+    has_vowel = any(re.search(r"[aeiouy]", w, re.IGNORECASE) for w in words)
+    is_acronym = any(w.lower() in KNOWN_ACRONYMS for w in words) or low in KNOWN_ACRONYMS
+    if not (has_vowel or is_acronym):
+        return False
+    # Reject model codes: requires digits AND letters separated by slash/hyphen (e.g. GS-24PITH15W-T3)
+    if re.search(r"\b(?=[A-Z0-9]*\d)[A-Z0-9]+[/-][A-Z0-9]+\b", cleaned):
+        return False
+    if _USP_MEASUREMENT_RE.search(cleaned):
+        return False
+    return not any(w.lower() in USP_WARRANTY_WORDS for w in words)
+
+
+def extract_usps(
+    source_title: str,
+    source_description: str,
+    product_type: str,
+    said_already: str,
+    max_usps: int = 3,
+) -> tuple[str, ...]:
+    """Extract up to ``max_usps`` high-converting, non-redundant USP phrases purely dynamically.
+
+    Universal Semantic Feature Discovery (USFD):
+    Zero hardcoding & Zero invention: reads exclusively from ``description_builder.parse_description``:
+      1. Genuine marketing bullet highlights from ``parsed.key_features``.
+         - Drops negative claims ("3D: No", "8K: No", "N/A").
+         - Promotes positive booleans ("Google Assistant: Yes" -> "Google Assistant").
+         - Discards spec parameter questions ("Screen Size: 32"").
+      2. Non-parameter marketing feature rows from ``parsed.labelled``.
+         - Never extracts technical table question labels as USPs.
+         - Promotes non-boolean feature values ("Cooling Technology: No Frost" -> "No Frost").
+         - Splits multi-value feature cells on commas and semicolons.
+
+    Args:
+        source_title: Raw product title from the input sheet.
+        source_description: Raw product description from the input sheet.
+        product_type: Resolved canonical product type (e.g. "Air Conditioner").
+        said_already: Text of tokens already printed in Segment 1 / Model for deduplication.
+        max_usps: Maximum number of USP phrases to return (default 3).
+
+    Returns:
+        A tuple of up to ``max_usps`` clean USP strings. Empty tuple if no valid USPs survive.
+    """
+    if not source_description:
+        return ()
+
+    clean_desc = description_builder.strip_markup_keep_lines(source_description)
+    parsed = description_builder.parse_description(clean_desc)
+    candidates: list[str] = []
+
+    # 1. Key features (bullets/em-dashes)
+    for feat in parsed.key_features:
+        cleaned = clean_inline(feat).strip(" :-•·*–—\t\"'“”‘’✔✓★▶►")
+        cleaned = re.sub(r"[\uFFFD\u200B\uFEFF\u00A0]", " ", cleaned).strip()
+        cleaned = re.sub(r"[®™©]", "", cleaned).strip()
+        if not cleaned:
+            continue
+        if ":" in cleaned:
+            k, _, v = cleaned.partition(":")
+            k_clean = k.strip()
+            v_clean = v.strip().lower()
+            if v_clean in _USP_NEGATIVE_VALS:
+                continue
+            if v_clean in _USP_POSITIVE_VALS:
+                if not _is_spec_measurement(k_clean) and _is_valid_usp(k_clean):
+                    candidates.append(k_clean)
+                continue
+            if _is_spec_measurement(k_clean):
+                continue
+            # If the key is a category header (e.g. "Special Features: Dolby Audio, Multi Air Flow")
+            if _is_feature_header(k_clean):
+                for sub in re.split(r"[,;]+", v):
+                    sub_clean = clean_inline(sub)
+                    if _is_valid_usp(sub_clean):
+                        candidates.append(sub_clean)
+                continue
+            # Specific feature before colon (e.g. "Golden Fin: Anti-corrosion")
+            if _is_valid_usp(k_clean):
+                candidates.append(k_clean)
+        elif _is_valid_usp(cleaned):
+            candidates.append(cleaned)
+
+    # 2. Spec rows from parsed.labelled
+    for label, val in parsed.labelled:
+        lbl_clean = clean_inline(label).strip(" :-\t")
+        v_clean = clean_inline(val).strip(" :-\t").lower()
+        if v_clean in _USP_NEGATIVE_VALS:
+            continue
+
+        # If val is boolean positive ("yes", "1", "true"), the feature is in the label!
+        if v_clean in _USP_POSITIVE_VALS:
+            if not _is_spec_measurement(lbl_clean) and _is_valid_usp(lbl_clean):
+                candidates.append(lbl_clean)
+            continue
+
+        # Technical measurement rows (Dimensions, Body Type, Weight, Voltage, Color, etc.) -> SKIP completely!
+        if _is_spec_measurement(lbl_clean):
+            continue
+
+        # Generic grouping header (e.g. "Special Feature", "Smart Features", "Audio", "Display")
+        # -> extract candidate features from the value
+        if _is_feature_header(lbl_clean):
+            for sub in re.split(r"[,;]+", val):
+                sub_clean = clean_inline(sub)
+                if _is_valid_usp(sub_clean):
+                    candidates.append(sub_clean)
+            continue
+
+        # Concise feature name (e.g. "Golden Fin", "Dual Filter", "Child Lock", "Crispo Tray")
+        if _is_valid_usp(lbl_clean):
+            candidates.append(lbl_clean)
+            continue
+
+    if not candidates:
+        return ()
+
+    category_words = {w.lower() for w in re.findall(r"[A-Za-z0-9+]+", product_type)}
+    category_words.update(CATEGORY_WORDS)
+    stopwords = {"and", "with", "for", "the", "of", "to", "in", "by", "on", "at"}
+
+    said_words: set[str] = {
+        w.lower()
+        for w in re.findall(r"[A-Za-z0-9+]+", said_already)
+        if len(w) >= 2 and not w.isdigit() and w.lower() not in category_words and w.lower() not in stopwords
+    }
+    said_words.update(USP_WARRANTY_WORDS)
+
+    selected: list[str] = []
+    seen_phrases: set[str] = set()
+
+    for cand in candidates:
+        cand_clean = clean_inline(cand).strip(" :-•·*–—\t\"'“”‘’✔✓★▶►")
+        cand_clean = re.sub(r"[\uFFFD\u200B\uFEFF\u00A0]", " ", cand_clean).strip()
+        cand_clean = re.sub(r"[®™©]", "", cand_clean).strip()
+        if not _is_valid_usp(cand_clean):
+            continue
+        phrase_key = cand_clean.lower()
+        if phrase_key in seen_phrases:
+            continue
+
+        cand_words = [
+            w.lower()
+            for w in re.findall(r"[A-Za-z0-9+]+", cand_clean)
+            if len(w) >= 2 and not w.isdigit() and w.lower() not in stopwords
+        ]
+        if not cand_words:
+            continue
+
+        if any(w in said_words for w in cand_words):
+            continue
+
+        selected.append(cand_clean)
+        seen_phrases.add(phrase_key)
+        said_words.update(cand_words)
+
+        if len(selected) >= max_usps:
+            break
+
+    return tuple(selected)
+
+
 TitleFormulaFn = Callable[[dict[str, str]], str]
 
 
@@ -1593,6 +1890,29 @@ def _apply_formula(
     """Apply a vendor-specific formula to the extracted, deduplicated title slots."""
     if callable(formula):
         return formula(slots)
+    if formula == "vip_pipe":
+        color_paren = f"({slots['color']})" if slots.get("color") else ""
+        seg1 = " ".join(
+            t
+            for t in (
+                slots["brand"],
+                slots["capacity"],
+                slots.get("front_identity", ""),
+                slots["inverter"],
+                slots["subtype"],
+                slots["product_type"],
+                color_paren,
+            )
+            if t
+        ).strip()
+        usp_list = [u.strip() for u in slots.get("usps", "").split("|") if u.strip()]
+        pipe_parts = [
+            seg1,
+            *usp_list,
+            slots.get("back_model", "").strip(),
+            slots["warranty"].strip(),
+        ]
+        return " | ".join(p for p in pipe_parts if p)
     if formula == "standard":
         segments = [s for s in (slots["part1"], slots["part2"], slots["part3"]) if s]
         return " - ".join(segments)
@@ -1945,20 +2265,93 @@ def build_title(
             ):
                 part3 = clean_warr
 
+        # Determine front_identity and back_model for vip_pipe
+        is_popular_identity = bool(identity_printed) or (identity is not None and model_slot == clean_inline(identity))
+        if is_popular_identity:
+            id_tok = identity_printed or model_slot
+            if feature_slot and feature_slot.lower() not in id_tok.lower():
+                front_identity = f"{id_tok} {feature_slot}".strip()
+            else:
+                front_identity = id_tok.strip()
+            back_model = ""
+        else:
+            front_identity = feature_slot.strip()
+            back_model = model_slot.strip()
+
+        # Color handling: LED TV category omits color from title
+        color_val = deduped_slots.get("color", "")
+        if product_type in OMIT_TITLE_COLOR_CATEGORIES:
+            color_val = ""
+
+        # Extract USPs with budget protection so back_model and warranty are never truncated
+        color_paren = f"({color_val})" if color_val else ""
+        seg1 = " ".join(
+            t
+            for t in (
+                deduped_slots["brand"],
+                deduped_slots["capacity"],
+                front_identity,
+                deduped_slots["inverter"],
+                deduped_slots["subtype"],
+                deduped_slots["product_type"],
+                color_paren,
+            )
+            if t
+        ).strip()
+
+        if title_formula == "vip_pipe":
+            raw_usps = extract_usps(
+                source_title=source_title,
+                source_description=source_description,
+                product_type=product_type,
+                said_already=f"{seg1} {front_identity} {back_model}",
+                max_usps=3,
+            )
+        else:
+            raw_usps = ()
+
+        tail_parts = [p for p in (back_model, part3) if p]
+        tail_len = sum(len(p) for p in tail_parts) + (3 * len(tail_parts))
+        budget_left = TITLE_MAX - len(seg1) - tail_len
+
+        valid_usps: list[str] = []
+        for u in raw_usps:
+            if budget_left - (len(u) + 3) >= 0:
+                valid_usps.append(u)
+                budget_left -= (len(u) + 3)
+            else:
+                break
+        usp_tokens_tuple = tuple(valid_usps)
+
         slots = {
             **deduped_slots,
+            "color": color_val,
             "model": model_slot,
             "feature": feature_slot,
+            "front_identity": front_identity,
+            "back_model": back_model,
+            "usps": " | ".join(valid_usps),
             "warranty": part3,
             "part1": part1,
             "part2": part2,
             "part3": part3,
         }
-        combined = _apply_formula(slots, title_formula)
+        if title_formula == "vip_pipe" and tail_parts:
+            tail_str = " | ".join(tail_parts)
+            needed_space = len(tail_str) + 3
+            if len(seg1) + needed_space > TITLE_MAX:
+                allowed_seg1 = max(0, TITLE_MAX - needed_space)
+                seg1 = _trim_to_limit(seg1, allowed_seg1)
+            pipe_parts = [p for p in (seg1, *valid_usps, *tail_parts) if p]
+            combined = " | ".join(pipe_parts)
+        else:
+            combined = _apply_formula(slots, title_formula)
 
         title = clean_inline(_trim_to_limit(combined, TITLE_MAX))
         strategy = "rebuilt"
+        seo_base = " - ".join(s for s in (part1, part2, part3) if s)
     else:
+        usp_tokens_tuple = ()
         base_title = clean_inline(source_title)
         if product_type in OMIT_TITLE_COLOR_CATEGORIES and color:
             base_title = re.sub(rf"\b{re.escape(color)}\b", "", base_title, flags=re.IGNORECASE)
@@ -2016,6 +2409,8 @@ def build_title(
         subtype_undecided_columns=undecided_attribute_columns(answers, tuple(conflicts)),
         taps_token=taps,
         volume_capacity_token=volume_capacity if taps else "",
+        usp_tokens=usp_tokens_tuple,
+        seo_base_title=seo_base if strategy == "rebuilt" else title,
     )
 
 
