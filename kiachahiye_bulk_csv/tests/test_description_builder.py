@@ -129,18 +129,47 @@ def test_tags_include_model_price_and_colour_combinations() -> None:
 
 
 def test_seo_title_lands_in_the_required_range() -> None:
-    long_title = (
-        "Dawlance Advanco Top load Washing Machine 8 Kg Arcelik White Twin Inverter "
-        "Automatic Series"
-    )
+    """Every base is the shape the Title builder hands over: brand, code, sub-type, type - size."""
+    over_budget = "Dawlance DWT 9057 EZ Top Load Fully Automatic Steam Washing Machine - 9.5 KG"
     for title in (
-        "Dawlance WD-1051 HC White 2 Taps Water Dispenser",
-        long_title,
-        "TCL 32 Inch LED TV",
+        "Dawlance WD-1051 HC 2 Taps Water Dispenser",
+        over_budget,
+        "TCL 32S6820 Smart LED TV",
     ):
-        seo = build_seo_title(title, "Washing Machine", "Dawlance", ["White", "8 Kg"])
+        seo = build_seo_title(title, "Washing Machine", "Dawlance", ["Top Load Fully Automatic", "9.5 KG"])
         assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX, (title, seo)
         assert seo.endswith("Price in Pakistan") or "Pakistan" in seo
+
+
+def test_an_over_budget_search_title_gives_up_its_subtype_before_its_size() -> None:
+    """A base too long for ` Price in Pakistan` sheds the sub-type phrase, never the size.
+
+    The shed takes its tokens in the order the pipeline hands them, and the ruled shape carries only
+    two sheddable facts -- the sub-type and the size.  The size is what a buyer types
+    ("9.5 kg washing machine price in pakistan"), so the longer phrase goes first.
+    """
+    seo = build_seo_title(
+        "Dawlance DWT 9057 EZ Top Load Fully Automatic Steam Washing Machine - 9.5 KG",
+        "Washing Machine",
+        "Dawlance",
+        ["Top Load Fully Automatic", "9.5 KG"],
+    )
+    assert "Top Load Fully Automatic" not in seo
+    assert "9.5 KG" in seo, f"the shed ate the size the buyer searches on: {seo!r}"
+    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
+
+
+def test_the_padding_never_names_the_rows_own_brand_or_type_twice() -> None:
+    """A short base used to be padded with its own brand and type a second time.
+
+    Measured on the 752-row sheet: 13 rows shipped a search title that named the same brand twice,
+    because the ladder added words the base already printed.  The base now carries brand, code,
+    sub-type and type by rule, so the only lever left for a short row is the phrase itself.
+    """
+    seo = build_seo_title("TCL 32S6820 Smart LED TV", "LED TV", "TCL", [])
+    assert seo.lower().count("tcl") == 1
+    assert seo.lower().count("led tv") == 1
+    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
 
 
 def test_seo_title_never_mutates_the_stored_title() -> None:

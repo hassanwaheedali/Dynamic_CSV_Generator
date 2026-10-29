@@ -455,22 +455,14 @@ def resolve_row(
         title=title_result.seo_base_title or title_result.title,
         has_real_model=used.confidence != "none",
         feature_tokens=[
-            # A name-and-number is ONE fact and is handed over whole: `build_seo_title` sheds its
-            # glued-on digits before the name, and refuses any cut that would leave the number
-            # standing alone.  Passing `10` as its own token deleted the WASHING MACHINE's capacity
-            # digit instead (`Kenwood KG Semi Automatic`) -- the shed cannot tell two `10`s apart.
-            title_result.identity_token,
-            # A voted name the row also wrote inside its own name-and-number is ONE fact, offered
-            # twice: the shed cut `Chrome` out of `Chrome Plus 45` and left `- Plus -` in the shop's
-            # result -- a fragment that names nothing.
-            _drop_contained(title_result.identity_token, title_result.series_token),
-            title_result.color_token,
-            title_result.inverter_token,
-            title_result.capacity_token,
-            # Last, not first: an over-budget search title must shed the sub-type word before it cut
-            # its own TAIL -- measured, 116 rows had lost `Warranty`, `Compressor` or their tonnage.
-            # Ahead of this list it became the first casualty on 219 rows whose Title never changed.
+            # The search base carries four facts -- brand, code, sub-type, type -- plus the size it is
+            # sold by, and the first four are what a buyer types.  So the sub-type words go first when
+            # the base is over budget, and the size goes after them: the same order the shop Title's
+            # tail rule already proved on 116 rows, where a cut that ate the tail cost `Warranty`.
+            # The colour, the inverter and the name-and-number are no longer in this string at all, so
+            # handing them here would only invite a cut through a word that is not there.
             title_result.subtype_token,
+            title_result.capacity_token,
         ],
     )
     if description.thin:

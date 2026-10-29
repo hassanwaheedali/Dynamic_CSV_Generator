@@ -607,10 +607,12 @@ def build_seo_title(
     brand: str,
     feature_tokens: list[str],
 ) -> str:
-    """``Title + " Price in Pakistan"`` trimmed/padded into 65-90 characters.
+    """Fit the search-title base into 65-90 characters behind ` Price in Pakistan`.
 
-    The suffix is anchored: only the Title's own copy is ever trimmed, so the
-    result always ends on a complete phrase and never mid-word.
+    The base arrives already naming this row's brand, code, sub-type and type -- the shape ruled in
+    ``title_builder.build_title`` -- so all that is left here is the fit: shed a whole fact when the
+    base runs over budget, then cut on a word boundary.  The suffix is anchored: only the base's own
+    copy is ever trimmed, so the result always ends on a complete phrase and never mid-word.
     """
     suffix = " Price in Pakistan"
     budget = SEO_TITLE_MAX - len(suffix)
@@ -624,28 +626,24 @@ def build_seo_title(
         if len(trimmed) > budget:
             trimmed = trimmed[:budget].rsplit(" ", 1)[0].rstrip(" -,")
 
-    # Search a small, closed set of combinations: the Title (optionally padded
-    # with its own brand/type words) against three honest suffixes.  The first
-    # combination inside 65-90 characters wins.
+    # Search a small, closed set of combinations for one that lands inside 65-90 characters.  The
+    # base already states this row's brand, code, sub-type and type, so the only honest lever left
+    # when it reads short is the phrase itself.  The ladder used to bolt the brand and the type on a
+    # second time -- 13 rows of the 752-row sheet shipped a search title that named the same brand
+    # twice, because those words were already in the base before the padding added them.
     suffixes = (
         suffix,
-        f" Price in Pakistan - Buy {brand} {product_type} Online",
         " Price in Pakistan - Buy Online at Best Price",
     )
     best = ""
-    for title_variant in (
-        trimmed,
-        f"{trimmed} {brand}".strip(),
-        f"{trimmed} {brand} {product_type}".strip(),
-    ):
-        for candidate_suffix in suffixes:
-            candidate = f"{title_variant}{candidate_suffix}".strip()
-            if len(candidate) > SEO_TITLE_MAX:
-                continue
-            if len(candidate) >= SEO_TITLE_MIN:
-                return candidate
-            if len(candidate) > len(best):
-                best = candidate
+    for candidate_suffix in suffixes:
+        candidate = f"{trimmed}{candidate_suffix}".strip()
+        if len(candidate) > SEO_TITLE_MAX:
+            continue
+        if len(candidate) >= SEO_TITLE_MIN:
+            return candidate
+        if len(candidate) > len(best):
+            best = candidate
     if best:
         return best
     return f"{trimmed}{suffix}".strip()[:SEO_TITLE_MAX].rsplit(" ", 1)[0] or trimmed

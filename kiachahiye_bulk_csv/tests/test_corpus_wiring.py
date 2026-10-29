@@ -706,15 +706,50 @@ def test_a_row_claiming_two_machines_ships_neither_and_is_sent_to_the_owner(
     assert record.attributes.get("Attribute_Air Conditioner Type", "") == ""
 
 
-def test_a_row_that_gains_a_subtype_word_sheds_it_from_the_seo_title_not_its_warranty(
+def test_the_seo_title_is_the_code_first_size_last_shape(pipeline: Pipeline) -> None:
+    """Row 1 of the 30-row sheet ships `Dawlance DWT 9057 EZ ... Washing Machine - 9.5 KG` (owner ruling).
+
+    The search title used to be the shop Title with ` Price in Pakistan` bolted on, so this row read
+    `Dawlance Washing Machine - DWT 9057 EZ - 12 Year Motor Warranty` -- the fit ate the size and the
+    sub-type to pay for a warranty no buyer types.  The ruled shape stands the code beside the brand,
+    keeps the sub-type words the row itself wrote (`• SubType: Top Load Fully Automatic`), and closes
+    on the size before the phrase.  Every field below is the sheet's own row, verbatim.
+    """
+    run = pipeline(
+        [
+            {
+                "Title": "Dawlance DWT 9057 EZ 9.5 KG Top Load Fully Automatic Washing Machine",
+                "Description": (
+                    "The Dawlance DWT 9057 EZ is a 9.5 KG Top Load Fully Automatic Washing Machine"
+                    " in Platinum Grey.\n\nKey Specifications:\n• Brand: Dawlance\n"
+                    "• Model: DWT 9057 EZ\n• SubType: Top Load Fully Automatic\n• Capacity: 9.5 KG\n"
+                    "• Color: Platinum Grey\n• Motor Warranty: 12 Years\n• Parts Warranty: 4 Years PCB"
+                ),
+                "Warranty": "12 Years Motor, 4 Years PCB",
+                "Sell Price": "61999",
+                "Original Price": "80000",
+                "Categories": "Home Appliance > Washing machine",
+                "Brand": "Dawlance",
+                "Image": "https://example.test/9057-ez.jpg",
+            }
+        ]
+    )
+    assert run["digi"][0]["SEO Title"] == (
+        "Dawlance DWT 9057 EZ Top Load Fully Automatic Washing Machine - 9.5 KG Price in Pakistan"
+    )
+
+
+def test_a_row_that_gains_a_subtype_word_keeps_the_shop_title_and_its_size_in_the_search_title(
     pipeline: Pipeline,
 ) -> None:
-    """A longer Title must not buy its sub-type with the search title's tail.
+    """The sub-type the row gained stays in the shop Title, and the size stays in the search title.
 
-    The SEO Title is `Title + " Price in Pakistan"` cut to 90 characters, and it already knows to
-    shed its own optional tokens first.  The new `[Subtype]` word was not on that list, so an
-    over-budget row cut the last word instead -- `Warranty` on 116 real rows.  The shop Title keeps
-    the sub-type; the search title gives up a token instead of eating its own tail.
+    This row used to guard a different hole: the SEO Title was the shop Title plus
+    `" Price in Pakistan"`, so an over-budget row paid for its new `[Subtype]` word by cutting its own
+    tail -- `Warranty` on 116 real rows.  The owner's shape removed that bargain: the warranty is a
+    shelf fact and never enters the search title now, while the sub-type and the size are both in it.
+    So the two halves of the ruling are pinned here -- the shop Title keeps what it always printed, and
+    the search title keeps the size a buyer searches on.
     """
     run = pipeline(
         [
@@ -734,8 +769,10 @@ def test_a_row_that_gains_a_subtype_word_sheds_it_from_the_seo_title_not_its_war
     record, seo = run["records"][0], run["digi"][0]["SEO Title"]
     assert record.subtype_from == "list"
     assert " Vertical " in record.title
+    assert "12 Year Compressor Warranty" in record.title
     assert len(seo) <= 90
-    assert "Warranty" in seo, f"the search title cut its tail instead of an added word: {seo!r}"
+    assert "Vertical" in seo and "14 Cu Ft" in seo, f"the search title lost a fact: {seo!r}"
+    assert "Warranty" not in seo, f"the search title is not the ruled shape: {seo!r}"
 
 
 def test_a_name_the_vote_proves_is_not_stranded_by_the_neighbour_rule(pipeline: Pipeline) -> None:
