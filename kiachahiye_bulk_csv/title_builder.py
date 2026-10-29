@@ -1705,16 +1705,32 @@ def _is_feature_header(text: str) -> bool:
     return any(w in FEATURE_HEADER_STEMS for w in words)
 
 
-def _is_valid_usp(cand: str) -> bool:
-    """Check if candidate string is a concise, non-measurement, valid USP phrase."""
+def _usp_text(cand: str) -> str:
+    """The candidate exactly as a Title would print it: markup gone, no dangling sentence mark."""
     cleaned = clean_inline(cand).strip(" :-•·*–—\t\"'“”‘’✔✓★▶►")
     cleaned = re.sub(r"[\uFFFD\u200B\uFEFF\u00A0]", " ", cleaned).strip()
     cleaned = re.sub(r"[®™©]", "", cleaned).strip()
-    if len(cleaned) < 2 or len(cleaned) > 35 or len(cleaned.split()) > 4:
+    return cleaned.rstrip(".!?…").strip()
+
+
+def _is_valid_usp(cand: str) -> bool:
+    """Check if candidate string is a real, non-measurement feature phrase fit to seat in a Title.
+
+    Brevity is not judged here: the Title's own 255-character budget in `build_title` decides how
+    many features fit.  A fixed 35-character / 4-word ceiling rejected 120 of the 142 Key Features
+    bullets the owner writes, because a real feature is a phrase (`High-Efficiency Copper Winding
+    Motor`), and every slot it left empty was filled by a table label instead.
+    """
+    cleaned = _usp_text(cand)
+    if len(cleaned) < 2:
+        return False
+    # A feature is a phrase, not a paragraph.  Two sentences in one cell is the shop writing terms
+    # beside its specs (`... a 50% advance payment is required. Our team will contact you ...`), and
+    # it measured 141 characters into one Title once the brevity ceiling went.
+    if re.search(r"[.!?…]\s", cleaned):
         return False
     low = cleaned.lower()
     if low in USP_DISCARD_WORDS or low in EXACT_PARAMETER_QUESTIONS:
-        return False
         return False
     words = re.findall(r"[a-zA-Z0-9+]+", cleaned)
     if not words:
@@ -1771,9 +1787,7 @@ def extract_usps(
 
     # 1. Key features (bullets/em-dashes)
     for feat in parsed.key_features:
-        cleaned = clean_inline(feat).strip(" :-•·*–—\t\"'“”‘’✔✓★▶►")
-        cleaned = re.sub(r"[\uFFFD\u200B\uFEFF\u00A0]", " ", cleaned).strip()
-        cleaned = re.sub(r"[®™©]", "", cleaned).strip()
+        cleaned = _usp_text(feat)
         if not cleaned:
             continue
         if ":" in cleaned:
@@ -1791,7 +1805,7 @@ def extract_usps(
             # If the key is a category header (e.g. "Special Features: Dolby Audio, Multi Air Flow")
             if _is_feature_header(k_clean):
                 for sub in re.split(r"[,;]+", v):
-                    sub_clean = clean_inline(sub)
+                    sub_clean = _usp_text(sub)
                     if _is_valid_usp(sub_clean):
                         candidates.append(sub_clean)
                 continue
@@ -1825,7 +1839,7 @@ def extract_usps(
         # commas printed `Gentle` and `and Heavy Wash Modes` as two separate features.
         parts = re.split(r"[,;]+", val) if _is_feature_header(lbl_clean) else [val]
         for sub in parts:
-            sub_clean = clean_inline(sub)
+            sub_clean = _usp_text(sub)
             if _is_valid_usp(sub_clean):
                 candidates.append(sub_clean)
         continue
@@ -1848,9 +1862,7 @@ def extract_usps(
     seen_phrases: set[str] = set()
 
     for cand in candidates:
-        cand_clean = clean_inline(cand).strip(" :-•·*–—\t\"'“”‘’✔✓★▶►")
-        cand_clean = re.sub(r"[\uFFFD\u200B\uFEFF\u00A0]", " ", cand_clean).strip()
-        cand_clean = re.sub(r"[®™©]", "", cand_clean).strip()
+        cand_clean = _usp_text(cand)
         if not _is_valid_usp(cand_clean):
             continue
         phrase_key = cand_clean.lower()

@@ -1988,3 +1988,92 @@ def test_vip_pipe_one_spec_row_stays_one_feature_whole_its_value() -> None:
     slots = [part.strip() for part in result.title.split(" | ")[1:]]
     assert "Gentle" not in slots, result.title
     assert not any(slot.lower().startswith("and ") for slot in slots), result.title
+    assert any(slot == "Gentle, Standard, and Heavy Wash Modes" for slot in slots), result.title
+
+
+def test_vip_pipe_a_real_key_feature_keeps_its_words_whole() -> None:
+    """A marketing bullet is not disqualified for being a phrase; the 255-char Title is the only limit.
+
+    The old brevity gate (35 characters or 4 words) killed 120 of the 142 Key Features bullets on
+    the owner's 30-row sheet, which is what left the feature slots empty for a table label to fill.
+    """
+    extraction = ModelExtraction(code="HTW-130-178", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="Washing Machine",
+        source_title="Haier HTW-130-178 13 KG Wash & Spin Semi Automatic Twin Tub Washing Machine",
+        source_description=(
+            "Model: HTW-130-178\nCapacity: 13 KG\nColor: White\n"
+            "Key Features:\n"
+            "• High-Efficiency Copper Winding Motor\n"
+            "• Rust-Resistant Durable Plastic Body\n"
+            "• Dedicated Wash and Rinse Timer Controls\n"
+            "Warranty: 10 Year Motor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "High-Efficiency Copper Winding Motor" in result.title, result.title
+    assert "Rust-Resistant Durable Plastic Body" in result.title, result.title
+    assert len(result.title) <= TITLE_MAX, result.title
+    assert result.title.endswith(" | 10 Year Motor Warranty"), result.title
+
+
+def test_vip_pipe_a_feature_is_printed_without_its_sentence_mark() -> None:
+    """A feature is a phrase, not a sentence, so its full stop does not travel into the Title.
+
+    Measured on the owner's catalogue after the brevity ceiling went: the surviving long bullets did
+    reach the Title, with their sentence mark attached -- `... 40% faster cooling performance.` --
+    because candidates were printed as the Description wrote them while validation read them cleaned.
+    """
+    extraction = ModelExtraction(code="ECM-4600", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Super Asia",
+        extraction=extraction,
+        product_type="Air Cooler",
+        source_title="Super Asia AC/DC Plus Inverter Easy Cool Air Cooler (ECM-4600)",
+        source_description=(
+            "Model: ECM-4600\n"
+            "Key Features:\n"
+            "• 18-minute instant freeze and 40% faster cooling performance.\n"
+            "• Energy-saving operation with low voltage startup support.\n"
+            "Warranty: 1 Year Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert result.usp_tokens, result.title
+    assert all(not tok.endswith((".", "!", "?", "…")) for tok in result.usp_tokens), result.usp_tokens
+    assert "18-minute instant freeze and 40% faster cooling performance" in result.title, result.title
+
+
+def test_vip_pipe_seller_prose_is_never_a_feature() -> None:
+    """A bullet that runs two sentences is the shop talking, not a feature to seat in a Title.
+
+    Measured on the owner's catalogue: `Note: For orders of more than 1 air cooler, a 50% advance
+    payment is required. Our team will contact you for payment details after order placement.` --
+    141 characters -- reached an Air Cooler Title whole the moment the 35-character ceiling was
+    removed.  A real marketing phrase of comparable length still has to pass.
+    """
+    extraction = ModelExtraction(code="ECM-4600", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Super Asia",
+        extraction=extraction,
+        product_type="Air Cooler",
+        source_title="Super Asia AC/DC Plus Inverter Easy Cool Air Cooler (ECM-4600)",
+        source_description=(
+            "The Super Asia ECM-4600 is an air cooler.\n"
+            "Key Specifications:\n"
+            "• Water Tank Capacity: 50 Liters\n"
+            "• Special BLDC Motor: Yes\n"
+            "• 6 Re-Freezable Ice Packs for Extra Cooling: Yes\n"
+            "• Note: For orders of more than 1 air cooler, a 50% advance payment is required. "
+            "Our team will contact you for payment details after order placement.\n"
+            "Warranty: 1 Year Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    assert "advance payment" not in result.title, result.title
+    assert "order placement" not in result.title, result.title
+    # The row's own `Yes`-valued feature survives, and the Title stays inside its budget.
+    assert "6 Re-Freezable Ice Packs for Extra Cooling" in result.title, result.title
+    assert len(result.title) <= TITLE_MAX, result.title
