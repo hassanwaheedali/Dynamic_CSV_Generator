@@ -2046,6 +2046,36 @@ def test_vip_pipe_a_feature_is_printed_without_its_sentence_mark() -> None:
     assert "18-minute instant freeze and 40% faster cooling performance" in result.title, result.title
 
 
+def test_vip_pipe_a_feature_bullet_with_a_colon_prints_its_value_too() -> None:
+    """The value-first rule is one rule for the whole Description, not one per section heading.
+
+    Real row `Homage Air Purifier (HAP-403DWB)` writes `• 3 Settings: Turbo, Silent Mode`.  The
+    parser files that bullet with the Key Features, where the Title printed the key -- the question
+    `3 Settings` -- because only the spec-table loop had been taught to take the answer.  24 rows of
+    the owner's catalogue state a written value inside a feature bullet this way.
+    """
+    extraction = ModelExtraction(code="HAP-403DWB", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Homage",
+        extraction=extraction,
+        product_type="Air Purifier",
+        source_title="Homage Air Purifier (HAP-403DWB)",
+        source_description=(
+            "The Homage HAP-403DWB is an air purifier.\n"
+            "Key Specifications:\n"
+            "• CADR380 m³/h , ideal for 30-45m² area: Yes\n"
+            "• H13 True HEPA Filter: Yes\n"
+            "• 3 Settings: Turbo, Silent Mode\n"
+            "• Plasma Ion Function Indicator: Yes\n"
+            "Warranty: 1 Year Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    slots = result.title.split(" | ")
+    assert "3 Settings" not in slots, result.title
+    assert "Turbo, Silent Mode" in slots, result.title
+
+
 def test_vip_pipe_seller_prose_is_never_a_feature() -> None:
     """A bullet that runs two sentences is the shop talking, not a feature to seat in a Title.
 

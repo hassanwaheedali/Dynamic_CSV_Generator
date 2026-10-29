@@ -1748,6 +1748,21 @@ def _is_valid_usp(cand: str) -> bool:
     return not any(w.lower() in USP_WARRANTY_WORDS for w in words)
 
 
+def _value_parts(label: str, val: str) -> list[str]:
+    """The facts a `Label: Value` cell states -- its written answer, split only when it is a LIST.
+
+    One rule for both places a sheet can write it: a Key Specifications row and a Key Features
+    bullet are the same shape.  A written value IS the fact the row sells; the label is only the
+    question the table asks, so `SubType: Semi Automatic Twin Tub` contributes its answer and never
+    the word `SubType`, and `3 Settings: Turbo, Silent Mode` never the word `3 Settings`.  A
+    grouping header (`Special Feature: Dolby Audio, Multi Air Flow`) states a LIST, so each part
+    counts; every other cell states one fact, and splitting its sentence on commas printed `Gentle`
+    and `and Heavy Wash Modes` as two separate features.
+    """
+    parts = re.split(r"[,;]+", val) if _is_feature_header(label) else [val]
+    return [_usp_text(p) for p in parts]
+
+
 def extract_usps(
     source_title: str,
     source_description: str,
@@ -1802,16 +1817,10 @@ def extract_usps(
                 continue
             if _is_spec_measurement(k_clean):
                 continue
-            # If the key is a category header (e.g. "Special Features: Dolby Audio, Multi Air Flow")
-            if _is_feature_header(k_clean):
-                for sub in re.split(r"[,;]+", v):
-                    sub_clean = _usp_text(sub)
-                    if _is_valid_usp(sub_clean):
-                        candidates.append(sub_clean)
-                continue
-            # Specific feature before colon (e.g. "Golden Fin: Anti-corrosion")
-            if _is_valid_usp(k_clean):
-                candidates.append(k_clean)
+            # A value is the fact the bullet sells; the key is only the question it answers.
+            for sub in _value_parts(k_clean, v):
+                if _is_valid_usp(sub):
+                    candidates.append(sub)
         elif _is_valid_usp(cleaned):
             candidates.append(cleaned)
 
@@ -1832,16 +1841,9 @@ def extract_usps(
         if _is_spec_measurement(lbl_clean):
             continue
 
-        # A written value IS the fact the row sells; the label is only the question the table
-        # asks.  `SubType: Semi Automatic Twin Tub` contributes its answer, never the word
-        # `SubType`.  A grouping header (`Special Feature: Dolby Audio, Multi Air Flow`) states a
-        # LIST, so each part counts; every other row states one fact, and splitting its sentence on
-        # commas printed `Gentle` and `and Heavy Wash Modes` as two separate features.
-        parts = re.split(r"[,;]+", val) if _is_feature_header(lbl_clean) else [val]
-        for sub in parts:
-            sub_clean = _usp_text(sub)
-            if _is_valid_usp(sub_clean):
-                candidates.append(sub_clean)
+        for sub in _value_parts(lbl_clean, val):
+            if _is_valid_usp(sub):
+                candidates.append(sub)
         continue
 
     if not candidates:
