@@ -136,7 +136,7 @@ def test_seo_title_lands_in_the_required_range() -> None:
         over_budget,
         "TCL 32S6820 Smart LED TV",
     ):
-        seo = build_seo_title(title, "Washing Machine", "Dawlance", ["Top Load Fully Automatic", "9.5 KG"])
+        seo = build_seo_title(title, ["Top Load Fully Automatic", "9.5 KG"])
         assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX, (title, seo)
         assert seo.endswith("Price in Pakistan") or "Pakistan" in seo
 
@@ -150,8 +150,6 @@ def test_an_over_budget_search_title_gives_up_its_subtype_before_its_size() -> N
     """
     seo = build_seo_title(
         "Dawlance DWT 9057 EZ Top Load Fully Automatic Steam Washing Machine - 9.5 KG",
-        "Washing Machine",
-        "Dawlance",
         ["Top Load Fully Automatic", "9.5 KG"],
     )
     assert "Top Load Fully Automatic" not in seo
@@ -166,9 +164,7 @@ def test_a_base_one_character_short_of_the_plain_phrase_still_reaches_the_window
     had one short phrase and one very long one, and nothing in between.  A clause between them keeps
     the row inside 65-90 without inventing a product word it never stated.
     """
-    seo = build_seo_title(
-        "Haier HDF-405INV Chest Deep Freezer - 14 Cu Ft", "Deep Freezer", "Haier", ["Chest", "14 Cu Ft"]
-    )
+    seo = build_seo_title("Haier HDF-405INV Chest Deep Freezer - 14 Cu Ft", ["Chest", "14 Cu Ft"])
     assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX, seo
     assert seo.startswith("Haier HDF-405INV")
 
@@ -180,7 +176,7 @@ def test_the_padding_never_names_the_rows_own_brand_or_type_twice() -> None:
     because the ladder added words the base already printed.  The base now carries brand, code,
     sub-type and type by rule, so the only lever left for a short row is the phrase itself.
     """
-    seo = build_seo_title("TCL 32S6820 Smart LED TV", "LED TV", "TCL", [])
+    seo = build_seo_title("TCL 32S6820 Smart LED TV", [])
     assert seo.lower().count("tcl") == 1
     assert seo.lower().count("led tv") == 1
     assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
@@ -188,7 +184,7 @@ def test_the_padding_never_names_the_rows_own_brand_or_type_twice() -> None:
 
 def test_seo_title_never_mutates_the_stored_title() -> None:
     title = "Dawlance WD-1051 HC White 2 Taps Water Dispenser"
-    build_seo_title(title, "Water Dispenser", "Dawlance", ["White"])
+    build_seo_title(title, ["White"])
     assert title == "Dawlance WD-1051 HC White 2 Taps Water Dispenser"
 
 
@@ -282,8 +278,6 @@ def test_trimming_a_long_seo_title_never_leaves_an_empty_segment() -> None:
     """
     seo = build_seo_title(
         "Orient 3 Taps Purple Water Dispenser Glass Door with Heating - Velvet - 3 Year Compressor Warranty",
-        "Water Dispenser",
-        "Orient",
         ["Velvet", "Heating", "Glass Door"],
     )
     assert " - - " not in seo
@@ -299,8 +293,6 @@ def test_trimming_never_mutilates_a_part_number_to_buy_room() -> None:
     """
     seo = build_seo_title(
         "Orient 1 Ton White Inverter Heat & Cool Air Conditioner - Etech-12 - 10 Year Compressor Warranty",
-        "Air Conditioner",
-        "Orient",
         ["Etech", "Heat and Cool", "Imprint", "1.0 Ton"],
     )
     assert "Etech-12" in seo
@@ -316,8 +308,6 @@ def test_an_over_budget_seo_title_sheds_a_name_and_number_as_one_unit() -> None:
     """
     seo = build_seo_title(
         "Orient 10 KG Metallic Silver Fully Automatic Top Load Washing Machine - Twister 1150 - 1 Year Warranty",
-        "Washing Machine",
-        "Orient",
         ["Twister 1150", "Twister", "Metallic Silver", "10 KG", "Top Load"],
     )
     assert "1150" not in seo or "Twister 1150" in seo

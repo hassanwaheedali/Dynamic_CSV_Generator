@@ -601,12 +601,7 @@ def _shed_token(text: str, token: str) -> str:
     return candidate
 
 
-def build_seo_title(
-    title: str,
-    product_type: str,
-    brand: str,
-    feature_tokens: list[str],
-) -> str:
+def build_seo_title(base: str, feature_tokens: list[str]) -> str:
     """Fit the search-title base into 65-90 characters behind ` Price in Pakistan`.
 
     The base arrives already naming this row's brand, code, sub-type and type -- the shape ruled in
@@ -617,7 +612,7 @@ def build_seo_title(
     suffix = " Price in Pakistan"
     budget = SEO_TITLE_MAX - len(suffix)
 
-    trimmed = title.strip()
+    trimmed = base.strip()
     if len(trimmed) > budget:
         for token in feature_tokens:
             if len(trimmed) <= budget:
@@ -892,7 +887,7 @@ def build_description_bundle(
     tags = build_tags(
         brand, model, product_type, capacity, color, parsed.key_features, breadcrumb_leaf
     )
-    seo_title = build_seo_title(title, product_type, brand, feature_tokens)
+    seo_title = build_seo_title(title, feature_tokens)
     seo_description = clean_inline(
         build_seo_description(
             brand, model, product_type, product_type, warranty_duration, deduped, tags,

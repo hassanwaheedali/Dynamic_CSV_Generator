@@ -256,18 +256,6 @@ def read_rows(
     return analyses, build_corpus(analyses)
 
 
-def _drop_contained(outer: str, inner: str) -> str:
-    """Empty `inner` when every word of it already stands inside `outer` -- one fact, one token.
-
-    The row wrote `Chrome Plus 45` and the vote called the same line `Chrome`.  Handed to the SEO
-    shed as two removable tokens, the second cut the head off the first and left `- Plus -` in the
-    shop's search result: a fragment that names nothing.
-    """
-    if outer and inner and set(inner.lower().split()) <= set(outer.lower().split()):
-        return ""
-    return inner
-
-
 def resolve_row(
     row: InputRow,
     flags: QCFlagCollector,
