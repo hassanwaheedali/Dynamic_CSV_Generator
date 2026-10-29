@@ -63,6 +63,13 @@ TITLE_SAMPLE = OUTPUT_DIR / "title_review_sample.csv"
 # The sheet has no stock column, so every row gets this quantity and is flagged.
 DEFAULT_VARIANT_QUANTITY = 20
 
+# A row that states its Regular (Original) Price publishes exactly that number -- the shop's own
+# figure is never adjusted.  A row that does not state one gets a Variant Compare At Price this
+# percent above its Sell Price, then rounded UP to a round figure, so the listing shows a real
+# strike-through instead of Compare At equal to Price (confirmed by the owner 2026-10-29).
+# 61,499 -> 68,000 | 59,499 -> 66,000 | 163,999 -> 190,000.
+COMPARE_AT_MARKUP_PERCENT = 10
+
 # Search-engine copy length windows (characters).
 SEO_TITLE_MIN = 65
 SEO_TITLE_MAX = 90

@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import csv
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from models import InputRow
 from pricing import DEFAULT_VARIANT_QUANTITY, parse_price, resolve_prices, resolve_quantity
-from qc_report import CAT_PRICE_INVERSION, CAT_QTY_DEFAULTED, QCFlagCollector
+from qc_report import (
+    CAT_COMPARE_AT_DERIVED,
+    CAT_PRICE_INVERSION,
+    CAT_QTY_DEFAULTED,
+    QCFlagCollector,
+)
 from sku_handle import (
     UniqueRegistry,
     build_handle_token,
@@ -167,12 +174,64 @@ def test_prices_strip_commas() -> None:
     assert parse_price("") is None
 
 
-def test_price_inversion_is_flagged_and_never_silently_reordered() -> None:
+def test_a_written_regular_price_above_the_sell_price_is_published_verbatim() -> None:
+    """The shop's own Regular Price is a fact it stated -- the pipeline copies it, exactly."""
     flags = QCFlagCollector()
-    row = _row(sell_price="36,475", original_price="36,375")
-    price, compare_at = resolve_prices(row, flags)
-    assert (price, compare_at) == (36475, 36375)
+    price, compare_at = resolve_prices(_row(sell_price="36,375", original_price="36,475"), flags)
+    assert (price, compare_at) == (36375, 36475)
+    assert flags.count(CAT_PRICE_INVERSION) == 0
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 0
+
+
+def test_price_inversion_is_a_mistake_so_we_publish_a_real_compare_at() -> None:
+    """A Regular Price below the Sell Price cannot be a strike-through, so it is replaced.
+
+    Ruled by the owner 2026-10-29: a wrong value (galti sey diya hua) follows the same rule as a
+    missing one -- Sell Price + 10%, rounded up -- and the row is reported rather than quietly kept.
+    """
+    flags = QCFlagCollector()
+    price, compare_at = resolve_prices(_row(sell_price="36,475", original_price="36,375"), flags)
+    assert (price, compare_at) == (36475, 41000)
     assert flags.count(CAT_PRICE_INVERSION) == 1
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 1
+
+
+def test_an_equal_regular_price_shows_no_discount_so_we_publish_a_real_compare_at() -> None:
+    flags = QCFlagCollector()
+    price, compare_at = resolve_prices(_row(sell_price="36,475", original_price="36,475"), flags)
+    assert compare_at > price == 36475
+    assert flags.count(CAT_PRICE_INVERSION) == 1
+
+
+@pytest.mark.parametrize(
+    ("sell", "expected"),
+    [
+        ("61,499", 68000),    # Step 1.csv row 28 -- no Regular Price written
+        ("59,499", 66000),    # Step 1.csv row 29
+        ("163,999", 190000),  # Step 1.csv row 30
+        ("9,999", 11000),
+        ("999", 1100),
+        ("1", 2),
+    ],
+)
+def test_a_missing_regular_price_rounds_up_above_the_sell_price(
+    sell: str,
+    expected: int,
+) -> None:
+    """The round-off step follows the price's own size, so no hand-set threshold is needed."""
+    flags = QCFlagCollector()
+    price, compare_at = resolve_prices(_row(sell_price=sell, original_price=""), flags)
+    assert (price, compare_at) == (parse_price(sell), expected)
+    assert compare_at > price
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 1
+    assert flags.count(CAT_PRICE_INVERSION) == 0
+
+
+def test_an_unreadable_regular_price_derives_one_from_the_sell_price() -> None:
+    flags = QCFlagCollector()
+    price, compare_at = resolve_prices(_row(sell_price="61,499", original_price="ask"), flags)
+    assert (price, compare_at) == (61499, 68000)
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 1
 
 
 def test_quantity_defaults_to_20_and_is_always_flagged() -> None:
@@ -182,10 +241,36 @@ def test_quantity_defaults_to_20_and_is_always_flagged() -> None:
 
 
 def test_unparseable_price_is_flagged_and_never_invented() -> None:
+    """With no sell price there is nothing to build a compare-at on, so both cells stay empty-ish."""
     flags = QCFlagCollector()
     price, compare_at = resolve_prices(_row(sell_price="ask", original_price="ask"), flags)
     assert price == 0 and compare_at == 0
     assert flags.count("input_error") == 1
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 0
+
+
+def test_the_owners_30_washing_machine_rows_all_publish_a_discount() -> None:
+    """Every row of the real sheet: a strike-through above the price, or the shop's own number.
+
+    Three of these rows state no Regular Price at all, and before this rule they published
+    Variant Compare At Price equal to Variant Price -- no discount on the shop.
+    """
+    sheet = Path(__file__).resolve().parents[1] / "data/input/Step 1.csv"
+    with sheet.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 30, len(rows)
+    for index, row in enumerate(rows, start=1):
+        flags = QCFlagCollector()
+        input_row = _row(
+            row_number=index,
+            sell_price=row["Sell Price"],
+            original_price=row["Original Price"],
+        )
+        price, compare_at = resolve_prices(input_row, flags)
+        assert compare_at > price, (row["Title"], price, compare_at)
+        if not parse_price(row["Original Price"]):
+            assert flags.count(CAT_COMPARE_AT_DERIVED) == 1, row["Title"]
+
 
 
 # --------------------------------------------------------------------------

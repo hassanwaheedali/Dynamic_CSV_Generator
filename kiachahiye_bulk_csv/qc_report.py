@@ -26,6 +26,7 @@ CAT_AC_INVERTER_UNKNOWN = "ac_inverter_status_unknown"
 CAT_FALLBACK_SKU = "fallback_sku"
 CAT_SKU_DEDUPED = "sku_disambiguated"
 CAT_PRICE_INVERSION = "price_inversion"
+CAT_COMPARE_AT_DERIVED = "compare_at_derived"
 CAT_QTY_DEFAULTED = "quantity_defaulted"
 CAT_HANDLE_DEDUPED = "handle_deduplicated"
 CAT_ATTRIBUTE_EMPTY = "attribute_empty"
@@ -51,6 +52,7 @@ _ATTRIBUTE_GAP_RE = re.compile(r"^(Attribute_\w+): raw signal '([^']*)'")
 INFO_CATEGORIES: frozenset[str] = frozenset(
     {
         CAT_QTY_DEFAULTED,
+        CAT_COMPARE_AT_DERIVED,
         CAT_WEIGHT_MISSING,
         CAT_HANDLE_DEDUPED,
         CAT_SKU_DEDUPED,
