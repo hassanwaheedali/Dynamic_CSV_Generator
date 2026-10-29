@@ -172,6 +172,23 @@ def test_prices_strip_commas() -> None:
     assert parse_price("36,375") == 36375
     assert parse_price(" 1,234,567 ") == 1234567
     assert parse_price("") is None
+    assert parse_price("inf") is None  # float() reads it, int() would crash the run
+
+
+def test_a_row_with_no_positive_sell_price_says_so_instead_of_failing_the_gate() -> None:
+    """Sell Price 0 parses as a number, so it needs its own flag: nothing derives from zero."""
+    flags = QCFlagCollector()
+    price, compare_at = resolve_prices(_row(sell_price="0", original_price=""), flags)
+    assert (price, compare_at) == (0, 0)
+    assert flags.count("input_error") == 1
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 0
+
+
+def test_a_row_whose_sell_price_is_zero_still_publishes_the_written_regular_price() -> None:
+    flags = QCFlagCollector()
+    price, compare_at = resolve_prices(_row(sell_price="0", original_price="500"), flags)
+    assert (price, compare_at) == (0, 500)
+    assert flags.count("input_error") == 1
 
 
 def test_a_written_regular_price_above_the_sell_price_is_published_verbatim() -> None:
@@ -188,19 +205,22 @@ def test_price_inversion_is_a_mistake_so_we_publish_a_real_compare_at() -> None:
 
     Ruled by the owner 2026-10-29: a wrong value (galti sey diya hua) follows the same rule as a
     missing one -- Sell Price + 10%, rounded up -- and the row is reported rather than quietly kept.
+    One line in the QC report, not two: the inversion flag itself names the number published.
     """
     flags = QCFlagCollector()
     price, compare_at = resolve_prices(_row(sell_price="36,475", original_price="36,375"), flags)
     assert (price, compare_at) == (36475, 41000)
     assert flags.count(CAT_PRICE_INVERSION) == 1
-    assert flags.count(CAT_COMPARE_AT_DERIVED) == 1
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 0
+    assert "41000" in flags.flags_for_row(1)[0].message
 
 
 def test_an_equal_regular_price_shows_no_discount_so_we_publish_a_real_compare_at() -> None:
     flags = QCFlagCollector()
     price, compare_at = resolve_prices(_row(sell_price="36,475", original_price="36,475"), flags)
-    assert compare_at > price == 36475
+    assert (price, compare_at) == (36475, 41000)
     assert flags.count(CAT_PRICE_INVERSION) == 1
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 0
 
 
 @pytest.mark.parametrize(
@@ -227,11 +247,15 @@ def test_a_missing_regular_price_rounds_up_above_the_sell_price(
     assert flags.count(CAT_PRICE_INVERSION) == 0
 
 
-def test_an_unreadable_regular_price_derives_one_from_the_sell_price() -> None:
+def test_an_unreadable_regular_price_is_reported_and_one_is_derived() -> None:
+    """Text in a price cell is the shop's mistake, not a gap, so it is a review line -- and it
+    names the number that went into the file instead."""
     flags = QCFlagCollector()
     price, compare_at = resolve_prices(_row(sell_price="61,499", original_price="ask"), flags)
     assert (price, compare_at) == (61499, 68000)
-    assert flags.count(CAT_COMPARE_AT_DERIVED) == 1
+    assert flags.count(CAT_COMPARE_AT_DERIVED) == 0
+    assert flags.count(CAT_PRICE_INVERSION) == 1
+    assert "68000" in flags.flags_for_row(1)[0].message
 
 
 def test_quantity_defaults_to_20_and_is_always_flagged() -> None:

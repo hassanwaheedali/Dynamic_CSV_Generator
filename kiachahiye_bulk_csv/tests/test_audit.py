@@ -427,6 +427,39 @@ def test_the_config_default_colour_is_not_called_invented(
     assert _failure(failures, "every colour the file ships is a colour the row stated") == ""
 
 
+def test_a_published_row_with_no_strike_through_fails_the_gate(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """The price rule the upload must obey: Variant Compare At Price sits strictly above the price.
+
+    The pipeline cannot build such a row any more -- a blank or wrong Regular Price is replaced --
+    so a pair like this in the finished file means the pipeline broke its own rule, and the gate is
+    what says so.
+    """
+    result = pipeline([SUPER_ASIA_TWO_NUMBERS])
+    _rewrite_cell(result["digi_path"], "Variant Compare At Price", "32000")
+
+    failures = _gate(result, tmp_path / "input.csv", platform="digi")
+    assert "Super Asia" in _failure(failures, "DigiMall description/SEO: Compare-At price")
+
+
+def test_an_equal_pair_is_excused_only_when_the_report_names_the_row(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """A product with no readable Sell Price has nothing to derive from, and that is already flagged."""
+    row = {**SUPER_ASIA_TWO_NUMBERS, "Sell Price": "0", "Original Price": ""}
+    result = pipeline([row])
+    assert result["digi"][0]["Variant Price"] == "0"
+    assert result["digi"][0]["Variant Compare At Price"] == "0"
+
+    failures = _gate(result, tmp_path / "input.csv", platform="digi")
+    assert not [name for name in _rejected(failures) if "Compare-At" in name], _rejected(failures)
+
+    _drop_flags(result["qc_path"], "Sell Price")
+    failures = _gate(result, tmp_path / "input.csv", platform="digi")
+    assert "0" in _failure(failures, "DigiMall description/SEO: Compare-At price")
+
+
 def test_a_freezer_placement_the_row_never_stated_is_rejected(
     pipeline: Pipeline, tmp_path: Path
 ) -> None:

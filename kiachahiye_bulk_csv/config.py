@@ -67,7 +67,9 @@ DEFAULT_VARIANT_QUANTITY = 20
 # figure is never adjusted.  A row that does not state one gets a Variant Compare At Price this
 # percent above its Sell Price, then rounded UP to a round figure, so the listing shows a real
 # strike-through instead of Compare At equal to Price (confirmed by the owner 2026-10-29).
-# 61,499 -> 68,000 | 59,499 -> 66,000 | 163,999 -> 190,000.
+# 61,499 -> 68,000 | 59,499 -> 66,000 | 163,999 -> 190,000.  Rounding UP is what makes the figure
+# look like a price the shop wrote, and it means the gap can land wider than the markup
+# (100,001 -> 120,000 is +20%): the strike-through is never below the price, only ever roomier.
 COMPARE_AT_MARKUP_PERCENT = 10
 
 # Search-engine copy length windows (characters).

@@ -24,7 +24,7 @@ def parse_price(raw: str) -> int | None:
         return None
     try:
         return int(float(cleaned))
-    except ValueError:
+    except (ValueError, OverflowError):  # "ask", "nan", and "inf" (float reads it, int() refuses)
         return None
 
 
@@ -48,7 +48,8 @@ def derive_compare_at(sell: int) -> int:
     """
     if sell <= 0:
         return 0
-    marked_up = -(-sell * (100 + COMPARE_AT_MARKUP_PERCENT) // 100)
+    markup = max(1, COMPARE_AT_MARKUP_PERCENT)  # a knob set to 0 would publish an equal pair
+    marked_up = -(-sell * (100 + markup) // 100)
     return round_up_to_round_figure(marked_up, sell)
 
 
@@ -63,44 +64,48 @@ def resolve_prices(row: InputRow, flags: QCFlagCollector) -> tuple[int, int]:
     sell = parse_price(row.sell_price)
     original = parse_price(row.original_price)
 
-    if sell is None:
+    if sell is None or sell <= 0:
+        # A zero reads as a number but is no more usable than "ask": nothing can be derived above
+        # it, and the gate must not call the resulting 0/0 pair a pipeline bug.
         sell = 0
         flags.flag(
             row.row_number,
             row.title,
             "input_error",
-            f"Unparseable Sell Price {row.sell_price!r} -- written as 0, fix the source sheet.",
+            f"Sell Price {row.sell_price!r} is not a usable price -- written as 0 with no "
+            "strike-through, fix the source sheet.",
         )
 
     if original is not None and original > sell:
         return sell, original
 
-    if original is None:
-        if row.original_price.strip():
+    compare_at = derive_compare_at(sell)
+    if compare_at > sell:
+        # One line per row in the QC report: what was wrong with the sheet's Regular Price, and the
+        # number published in its place.  A blank cell is a gap (info); unreadable text or a number
+        # that is not above the price is a mistake the shop has to repair (review).
+        if not row.original_price.strip():
             flags.flag(
                 row.row_number,
                 row.title,
-                "input_error",
-                f"Unparseable Original Price {row.original_price!r} -- derived from the sell price.",
+                CAT_COMPARE_AT_DERIVED,
+                f"Variant Compare At Price {compare_at} derived from Sell Price {sell} "
+                f"(+{COMPARE_AT_MARKUP_PERCENT}%, rounded up) -- the sheet states no Regular Price.",
             )
-    else:
-        flags.flag(
-            row.row_number,
-            row.title,
-            CAT_PRICE_INVERSION,
-            f"Regular Price {original} is not above the Sell Price {sell} -- ignored, and "
-            "a Variant Compare At Price derived from the Sell Price instead. Fix the source sheet.",
-        )
-
-    compare_at = derive_compare_at(sell)
-    if compare_at > sell:
-        flags.flag(
-            row.row_number,
-            row.title,
-            CAT_COMPARE_AT_DERIVED,
-            f"Variant Compare At Price {compare_at} derived from Sell Price {sell} "
-            f"(+{COMPARE_AT_MARKUP_PERCENT}%, rounded up) -- no usable Regular Price in the sheet.",
-        )
+        else:
+            reason = (
+                f"Regular Price {original} is not above the Sell Price {sell}"
+                if original is not None
+                else f"Regular Price {row.original_price!r} is not a number"
+            )
+            flags.flag(
+                row.row_number,
+                row.title,
+                CAT_PRICE_INVERSION,
+                f"{reason} -- a strike-through cannot be that, so Variant Compare At Price is "
+                f"published as {compare_at} instead (+{COMPARE_AT_MARKUP_PERCENT}%, rounded up). "
+                "Fix the source sheet.",
+            )
     return sell, compare_at
 
 
