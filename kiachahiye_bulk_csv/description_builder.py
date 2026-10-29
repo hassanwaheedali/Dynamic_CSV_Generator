@@ -631,9 +631,15 @@ def build_seo_title(
     # when it reads short is the phrase itself.  The ladder used to bolt the brand and the type on a
     # second time -- 13 rows of the 752-row sheet shipped a search title that named the same brand
     # twice, because those words were already in the base before the padding added them.
+    #
+    # The four phrases step up by length on purpose.  With only the plain phrase and the long one, a
+    # 46-character base fell between them -- 64 with the first, 91 with the second -- and 21 rows of
+    # the 752-row sheet shipped one character short of the window.
     suffixes = (
         suffix,
+        " Price in Pakistan - Buy Online",
         " Price in Pakistan - Buy Online at Best Price",
+        " Price in Pakistan - Buy Online at Best Price Today",
     )
     best = ""
     for candidate_suffix in suffixes:

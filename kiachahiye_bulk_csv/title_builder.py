@@ -2368,11 +2368,25 @@ def build_title(
         # The colour, the inverter and the warranty are facts a buyer reads off the shelf, not words he
         # types into a search box, so they never enter this string -- ` Price in Pakistan` is appended
         # by `build_seo_title`, which only ever fits this base into 65-90 characters.
+        seo_brand = deduped_slots["brand"]
+        seo_code = model_slot
+        if seo_brand and seo_code:
+            # `• Model Name: TCL 24T5-VOX-13` puts the brand INSIDE the code, and the brand already
+            # leads this string -- 3 rows shipped `TCL TCL 24T5-VOX-13`.  The prefix comes off for the
+            # search title only: the shop Title, the Tags and the Description table keep the code the
+            # row wrote, because there his own wording is the product.
+            seo_code = re.sub(
+                rf"^{re.escape(seo_brand)}(?:\s+|\s*-\s*)",
+                "",
+                seo_code,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
         seo_head = " ".join(
             piece
             for piece in (
-                deduped_slots["brand"],
-                model_slot,
+                seo_brand,
+                seo_code,
                 deduped_slots["subtype"],
                 deduped_slots["product_type"],
             )

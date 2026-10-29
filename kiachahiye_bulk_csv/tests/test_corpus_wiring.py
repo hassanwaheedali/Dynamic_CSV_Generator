@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 import main
+from config import SEO_TITLE_MAX, SEO_TITLE_MIN
 from qc_report import QCFlagCollector
 from series_corpus import (
     Corpus,
@@ -737,6 +738,40 @@ def test_the_seo_title_is_the_code_first_size_last_shape(pipeline: Pipeline) -> 
     assert run["digi"][0]["SEO Title"] == (
         "Dawlance DWT 9057 EZ Top Load Fully Automatic Washing Machine - 9.5 KG Price in Pakistan"
     )
+
+
+def test_a_code_that_repeats_its_own_brand_is_printed_once_in_the_search_title(
+    pipeline: Pipeline,
+) -> None:
+    """`• Model Name: TCL 24T5-VOX-13` states the brand inside the code, and the brand leads the base.
+
+    Standing the code beside the brand shipped `TCL TCL 24T5-VOX-13 ...` on 3 rows of the 752-row
+    sheet -- a search title that reads like a mistake.  The brand prefix comes off the code for this
+    string only; the shop Title, the Tags and the Description table keep the code exactly as the row
+    wrote it, because that is where the shop's own wording is the product.
+    """
+    run = pipeline(
+        [
+            {
+                "Title": "TCL VoxIN 13 Inverter Split Air Conditioner 2 Ton White",
+                "Description": (
+                    "The TCL 24T5 VoxIN 13 2Ton Inverter Air Conditioner is a 2 Ton inverter split "
+                    "air conditioner. Warranty: Official Warranty.\n\nKey Specifications:\n"
+                    "• Model Name: TCL 24T5-VOX-13\n• Series: VoxIN Series\n• Capacity: 2 Ton\n"
+                    "• Type: Split\n• Color: White\nWarranty: 10 Years Compressor"
+                ),
+                "Sell Price": "191,740",
+                "Original Price": "191,840",
+                "Categories": "Electronics / Home appliances / AC / AC's 2026 / TCL AC 2026",
+                "Brand": "TCL",
+                "Image": "https://example.test/24t5.jpg",
+            }
+        ]
+    )
+    seo = run["digi"][0]["SEO Title"]
+    assert "TCL TCL" not in seo, f"the brand is printed twice: {seo!r}"
+    assert "24T5-VOX-13" in seo
+    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
 
 
 def test_a_row_that_gains_a_subtype_word_keeps_the_shop_title_and_its_size_in_the_search_title(

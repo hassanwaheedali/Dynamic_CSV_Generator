@@ -159,6 +159,20 @@ def test_an_over_budget_search_title_gives_up_its_subtype_before_its_size() -> N
     assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
 
 
+def test_a_base_one_character_short_of_the_plain_phrase_still_reaches_the_window() -> None:
+    """A 46-character base is the dead zone: ` Price in Pakistan` leaves 64, the long clause 91.
+
+    Measured on the 752-row sheet -- 21 rows shipped a 64-character search title because the ladder
+    had one short phrase and one very long one, and nothing in between.  A clause between them keeps
+    the row inside 65-90 without inventing a product word it never stated.
+    """
+    seo = build_seo_title(
+        "Haier HDF-405INV Chest Deep Freezer - 14 Cu Ft", "Deep Freezer", "Haier", ["Chest", "14 Cu Ft"]
+    )
+    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX, seo
+    assert seo.startswith("Haier HDF-405INV")
+
+
 def test_the_padding_never_names_the_rows_own_brand_or_type_twice() -> None:
     """A short base used to be padded with its own brand and type a second time.
 
