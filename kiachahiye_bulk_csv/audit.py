@@ -432,15 +432,15 @@ def main(argv: list[str] | None = None) -> int:
                     if allowed is not None and value not in allowed:
                         note(f"{column} value not in ALLOWED")
 
-        # price sanity -- an inversion is a source-data problem, so it counts
-        # as a failure only when the pipeline has NOT flagged that row
-        if (
-            r["Variant Price"]
-            and r["Variant Compare At Price"]
-            and float(r["Variant Compare At Price"]) < float(r["Variant Price"])
-            and "price_inversion" not in flagged.get(source_row, set())
-        ):
-            note("Compare-At price below the sell price (unflagged)")
+        # price sanity -- the pipeline now derives a strike-through whenever the sheet's own
+        # Regular Price could not be one, so a published row whose Compare At does not sit above
+        # its Price is a pipeline bug, not a source-data problem.  The single exception is a row
+        # with no readable Sell Price at all (flagged input_error): nothing can be derived from 0.
+        if r["Variant Price"] and r["Variant Compare At Price"]:
+            price = float(r["Variant Price"])
+            compare_at = float(r["Variant Compare At Price"])
+            if compare_at <= price and "input_error" not in flagged.get(source_row, set()):
+                note("Compare-At price is not above the sell price")
 
     template_rule_name = (
         "every Description, Short Description, SEO field, Tag set and Attribute value "

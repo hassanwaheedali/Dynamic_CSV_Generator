@@ -163,7 +163,7 @@ collector, so a finding is never listed twice.
 | `ac_inverter_status_unknown` | an air conditioner whose text never says inverter / non-inverter, and DigiMall has separate leaves for those → left empty rather than guessed |
 | `fallback_sku` | no model code found; SKU built from title words — **verify before upload** |
 | `attribute_empty` | DigiMall `Attribute_*` had a raw signal that matched no allowed value; the raw text is in the report so you can extend the alias table (1,022 cells on this sheet -- every string is listed under *Known gaps*) |
-| `price_inversion` | Original < Sell |
+| `price_inversion` | the sheet's Regular Price is **not above** its Sell Price (smaller or equal — a data-entry mistake); that number is ignored, a Compare At is derived instead, and the row is listed so the sheet gets fixed |
 | `product_type_inferred` | the breadcrumb matched nothing, so Product Type was derived from it |
 | `short_description_thin` | the source states fewer than 3 standout facts, so the field is left short rather than padded (216 rows on this sheet; see *Short Description* below) |
 | `title_description_conflict` | the Title and the Description state a different tap count; the SKU follows the Title (2 rows) |
@@ -172,7 +172,9 @@ collector, so a finding is never listed twice.
 **Severity `info`** — a deterministic default, nothing to fix:
 
 `quantity_defaulted` (input has no stock column → 20), `weight_missing` (no
-weight in the source → blank), `handle_deduplicated` / `sku_disambiguated`
+weight in the source → blank), `compare_at_derived` (sheet stated no Regular
+Price at all → Variant Compare At Price = Sell Price + `COMPARE_AT_MARKUP_PERCENT`
+rounded up to a round figure), `handle_deduplicated` / `sku_disambiguated`
 (uniqueness suffixes, see below), `title_kept_from_source`,
 `thin_description` (no filler rows were invented).
 

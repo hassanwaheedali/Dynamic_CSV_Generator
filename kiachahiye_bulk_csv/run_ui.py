@@ -302,7 +302,8 @@ FLAG_LABELS = {
     "ac_inverter_status_unknown": "AC inverter status unknown",
     "title_description_conflict": "Title and description disagree",
     "product_type_inferred": "Product type inferred",
-    "price_inversion": "Original price below sell price",
+    "price_inversion": "Regular price not above sell price (replaced)",
+    "compare_at_derived": "Compare-at derived from sell price",
     "weight_missing": "Weight missing in source",
     "weight_unreadable": "Weight unreadable",
 }
