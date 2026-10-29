@@ -90,6 +90,28 @@ def test_rebuilt_title_washing_machine_with_capacity_and_color() -> None:
     )
 
 
+def test_the_search_title_base_leads_on_the_code_and_closes_on_the_size() -> None:
+    """The owner's shape: `Dawlance DWT 9057 EZ Fully Automatic Washing Machine - 9.5 KG Price in Pakistan`.
+
+    The SEO base used to be the shop Title's own three segments, so a search title read
+    `Dawlance Washing Machine - DW-6100 Advanco - 12 Year Motor Warranty` -- the code sat in the
+    middle, the size a buyer searches on never reached the phrase at all, and the warranty took the
+    room.  This rule puts brand + code + sub-type + type first and the size last, with the colour,
+    the inverter and the warranty left out; ` Price in Pakistan` is appended by `build_seo_title`.
+    """
+    extraction = ModelExtraction(code="DW-6100", source="title-parenthetical", confidence="high")
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Washing Machine",
+        source_title="Dawlance Advanco Top load Washing Machine 8 Kg Arcelik White (DW-6100)",
+        source_description="Automatic Washing Machine 8 Kg White",
+    )
+    assert result.seo_base_title == (
+        "Dawlance DW-6100 Fully Automatic Top Load Washing Machine - 8 KG"
+    )
+
+
 def test_rebuilt_title_microwave_oven_with_capacity() -> None:
     extraction = ModelExtraction(code="DW-525-AF", source="title-parenthetical", confidence="high")
     result = build_title(

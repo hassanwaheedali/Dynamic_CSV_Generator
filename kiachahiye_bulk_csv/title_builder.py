@@ -2363,7 +2363,26 @@ def build_title(
 
         title = clean_inline(_trim_to_limit(combined, TITLE_MAX))
         strategy = "rebuilt"
-        seo_base = " - ".join(s for s in (part1, part2, part3) if s)
+        # The search title is the owner's shape, not the shop Title's wording: brand, the code (or
+        # the name-and-number) the row states, the kind of machine it is, then the size it is sold by.
+        # The colour, the inverter and the warranty are facts a buyer reads off the shelf, not words he
+        # types into a search box, so they never enter this string -- ` Price in Pakistan` is appended
+        # by `build_seo_title`, which only ever fits this base into 65-90 characters.
+        seo_head = " ".join(
+            piece
+            for piece in (
+                deduped_slots["brand"],
+                model_slot,
+                deduped_slots["subtype"],
+                deduped_slots["product_type"],
+            )
+            if piece
+        )
+        seo_base = (
+            f"{seo_head} - {deduped_slots['capacity']}"
+            if deduped_slots["capacity"]
+            else seo_head
+        )
     else:
         usp_tokens_tuple = ()
         base_title = clean_inline(source_title)
