@@ -4,8 +4,13 @@
 
 from __future__ import annotations
 
+import csv
+from pathlib import Path
+
+import description_builder
 from sku_handle import ModelExtraction, extract_model
 from title_builder import (
+    _USP_POSITIVE_VALS,
     TITLE_MAX,
     TitleResult,
     beside_model_code,
@@ -13,6 +18,7 @@ from title_builder import (
     colourway_words,
     extract_inverter,
     extract_series,
+    extract_usps,
     stated_class_phrase,
     without_leading_type_words,
     word_identity,
@@ -2107,3 +2113,41 @@ def test_vip_pipe_seller_prose_is_never_a_feature() -> None:
     # The row's own `Yes`-valued feature survives, and the Title stays inside its budget.
     assert "6 Re-Freezable Ice Packs for Extra Cooling" in result.title, result.title
     assert len(result.title) <= TITLE_MAX, result.title
+
+
+def test_the_owners_30_washing_machine_rows_never_sell_a_table_label() -> None:
+    """The guard for the defect the owner reported: a feature slot is never a spec table's question.
+
+    Every one of these 30 rows failed it before the value-first rule -- `Haier HTW-130-178` printed
+    `SubType | Type | Wash Programs`, the questions its own Description asked, while the answers
+    (`Semi Automatic Twin Tub`, `Turbidity Sensor`) sat unread -- and no title came out right.  The
+    sheet is what the shop still uploads from, so it is the input this test reads.
+
+    A `Yes`-valued row is the one case where the label IS the feature (`AI Mode: Yes`), and the
+    Title is allowed to print it; every other row states its fact in the value.
+    """
+    sheet = Path(__file__).resolve().parents[1] / "data/input/Step 1.csv"
+    with sheet.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 30, len(rows)
+
+    for row in rows:
+        description = row["Description"]
+        parsed = description_builder.parse_description(
+            description_builder.strip_markup_keep_lines(description)
+        )
+        # `said_already` here is the raw source Title, looser than the built segment one the
+        # pipeline passes, so this sees MORE candidates than a real run -- a stricter guard.
+        features = extract_usps(
+            source_title=row["Title"],
+            source_description=description,
+            product_type=row["Categories"].split(">")[-1].strip(),
+            said_already=row["Title"],
+        )
+        questions = {
+            label.strip().lower()
+            for label, value in parsed.labelled
+            if value.strip().lower() not in _USP_POSITIVE_VALS
+        }
+        leaked = [feature for feature in features if feature.lower() in questions]
+        assert not leaked, f"{row['Title']}: {leaked}"
