@@ -1818,19 +1818,17 @@ def extract_usps(
         if _is_spec_measurement(lbl_clean):
             continue
 
-        # Generic grouping header (e.g. "Special Feature", "Smart Features", "Audio", "Display")
-        # -> extract candidate features from the value
-        if _is_feature_header(lbl_clean):
-            for sub in re.split(r"[,;]+", val):
-                sub_clean = clean_inline(sub)
-                if _is_valid_usp(sub_clean):
-                    candidates.append(sub_clean)
-            continue
-
-        # Concise feature name (e.g. "Golden Fin", "Dual Filter", "Child Lock", "Crispo Tray")
-        if _is_valid_usp(lbl_clean):
-            candidates.append(lbl_clean)
-            continue
+        # A written value IS the fact the row sells; the label is only the question the table
+        # asks.  `SubType: Semi Automatic Twin Tub` contributes its answer, never the word
+        # `SubType`.  A grouping header (`Special Feature: Dolby Audio, Multi Air Flow`) states a
+        # LIST, so each part counts; every other row states one fact, and splitting its sentence on
+        # commas printed `Gentle` and `and Heavy Wash Modes` as two separate features.
+        parts = re.split(r"[,;]+", val) if _is_feature_header(lbl_clean) else [val]
+        for sub in parts:
+            sub_clean = clean_inline(sub)
+            if _is_valid_usp(sub_clean):
+                candidates.append(sub_clean)
+        continue
 
     if not candidates:
         return ()
@@ -1908,8 +1906,8 @@ def _apply_formula(
         usp_list = [u.strip() for u in slots.get("usps", "").split("|") if u.strip()]
         pipe_parts = [
             seg1,
-            *usp_list,
             slots.get("back_model", "").strip(),
+            *usp_list,
             slots["warranty"].strip(),
         ]
         return " | ".join(p for p in pipe_parts if p)
@@ -2310,9 +2308,11 @@ def build_title(
         else:
             raw_usps = ()
 
-        tail_parts = [p for p in (back_model, part3) if p]
-        tail_len = sum(len(p) for p in tail_parts) + (3 * len(tail_parts))
-        budget_left = TITLE_MAX - len(seg1) - tail_len
+        # The Model Code and the Warranty are the two parts the shop must get whole, wherever
+        # they sit, so their space is reserved before any USP is allowed in.
+        protected_parts = [p for p in (back_model, part3) if p]
+        protected_len = sum(len(p) for p in protected_parts) + (3 * len(protected_parts))
+        budget_left = TITLE_MAX - len(seg1) - protected_len
 
         valid_usps: list[str] = []
         for u in raw_usps:
@@ -2336,13 +2336,13 @@ def build_title(
             "part2": part2,
             "part3": part3,
         }
-        if title_formula == "vip_pipe" and tail_parts:
-            tail_str = " | ".join(tail_parts)
-            needed_space = len(tail_str) + 3
+        if title_formula == "vip_pipe" and protected_parts:
+            protected_str = " | ".join(protected_parts)
+            needed_space = len(protected_str) + 3
             if len(seg1) + needed_space > TITLE_MAX:
                 allowed_seg1 = max(0, TITLE_MAX - needed_space)
                 seg1 = _trim_to_limit(seg1, allowed_seg1)
-            pipe_parts = [p for p in (seg1, *valid_usps, *tail_parts) if p]
+            pipe_parts = [p for p in (seg1, back_model, *valid_usps, part3) if p]
             combined = " | ".join(pipe_parts)
         else:
             combined = _apply_formula(slots, title_formula)

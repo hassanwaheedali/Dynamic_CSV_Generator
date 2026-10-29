@@ -1543,7 +1543,7 @@ def test_a_word_the_title_already_prints_is_not_sold_again_behind_the_code() -> 
 
 
 def test_vip_pipe_scenario_a_series_and_model_code() -> None:
-    """Scenario A: Series sits in Position 3, Technical Model sits in rear pipe segment."""
+    """Scenario A: Series sits in Position 3, Technical Model comes before the key features."""
     extraction = ModelExtraction(code="MSAG2B-12HRDN1-QC0", source="description-model-line", confidence="high")
     result = build_title(
         brand="Midea",
@@ -1562,16 +1562,20 @@ def test_vip_pipe_scenario_a_series_and_model_code() -> None:
     )
     # Series 'Eco' in Position 3, (White) bracketed
     assert "Midea 1.5 Ton Eco Inverter Air Conditioner (White)" in result.title
-    # Technical model code in rear pipe segment before warranty
-    assert " | MSAG2B-12HRDN1-QC0 | 12 Year Compressor Warranty" in result.title
-    # USPs dynamically extracted
-    assert "Golden Fin" in result.title
-    assert "Dual Filter" in result.title
-    assert result.usp_tokens == ("Golden Fin", "Dual Filter", "Fireproof Electric Control Box")
+    # Technical model code comes right after segment one, before the key features
+    assert " | MSAG2B-12HRDN1-QC0 | Anti-corrosion coating | High density filter |" in result.title
+    # Warranty still closes the Title
+    assert result.title.endswith(" | 12 Year Compressor Warranty")
+    # A spec row sells its ANSWER: `Golden Fin: Anti-corrosion coating` prints the coating, because
+    # the words before the colon are the table's question, not the feature (measured on the owner's
+    # sheets, where that column holds `Screen Size`, `Voltage`, `SubType`).
+    assert "Anti-corrosion coating" in result.title
+    assert "High density filter" in result.title
+    assert result.usp_tokens == ("Anti-corrosion coating", "High density filter", "Safe housing")
 
 
 def test_vip_pipe_scenario_b_codeless_popular_identity() -> None:
-    """Scenario B: Popular identity sits in Position 3, rear slot is empty (no duplicate)."""
+    """Scenario B: Popular identity sits in Position 3, the model part is empty (no duplicate)."""
     extraction = ModelExtraction(code="", source="", confidence="none")
     result = build_title(
         brand="Dawlance",
@@ -1595,7 +1599,7 @@ def test_vip_pipe_scenario_b_codeless_popular_identity() -> None:
 
 
 def test_vip_pipe_scenario_c_model_code_only() -> None:
-    """Scenario C: When no series exists, Position 3 is skipped and Model is in rear slot."""
+    """Scenario C: When no series exists, Position 3 is skipped and Model leads the feature pipe parts."""
     extraction = ModelExtraction(code="DW-6100", source="description-model-line", confidence="high")
     result = build_title(
         brand="Dawlance",
@@ -1613,7 +1617,10 @@ def test_vip_pipe_scenario_c_model_code_only() -> None:
     )
     # Position 3 skipped: Brand -> Type directly
     assert result.title.startswith("Dawlance Semi Automatic Top Load Washing Machine (White)")
-    assert " | DW-6100 | 10 Year Motor Warranty" in result.title
+    assert result.title == (
+        "Dawlance Semi Automatic Top Load Washing Machine (White) | DW-6100 | "
+        "Deep Clean Pulsator | Rust Proof Body | 10 Year Motor Warranty"
+    )
 
 
 def test_vip_pipe_color_parentheses_and_led_tv_omission() -> None:
@@ -1659,10 +1666,13 @@ def test_vip_pipe_budget_protection_does_not_truncate_model_or_warranty() -> Non
         title_formula="vip_pipe",
     )
     assert len(result.title) <= 255
-    # Model code and warranty MUST be preserved intact in rear pipe slots
-    expected_tail = " | EXTREMELY-LONG-MODEL-CODE-NUMBER-1234567890-SERIES-EDITION | 12 Year Compressor Warranty"
-    assert result.title.endswith(expected_tail)
-    assert "(" not in result.title.rsplit(" | ", 2)[0] or ")" in result.title.rsplit(" | ", 2)[0]
+    # Model code and warranty MUST be preserved intact: model leads the feature parts,
+    # warranty still closes the Title.
+    assert "EXTREMELY-LONG-MODEL-CODE-NUMBER-1234567890-SERIES-EDITION" in result.title
+    assert result.title.endswith(" | 12 Year Compressor Warranty")
+    model_pos = result.title.index("EXTREMELY-LONG-MODEL-CODE")
+    assert model_pos < result.title.index("Golden Fin Protection")
+    assert result.title.count("(") == result.title.count(")")
 
 
 def test_usfd_haier_h32k85fx_spec_leak_eliminated() -> None:
@@ -1726,8 +1736,8 @@ def test_usfd_dawlance_wd1051hc_water_dispenser() -> None:
     assert "Dimensions" not in result.title
     assert "Refrigerator Compartment" in result.title
     expected_title = (
-        "Dawlance 2 Taps Water Dispenser (White) | Refrigerator Compartment | "
-        "WD-1051 HC | 3 Year Compressor Warranty"
+        "Dawlance 2 Taps Water Dispenser (White) | WD-1051 HC | "
+        "Refrigerator Compartment | 3 Year Compressor Warranty"
     )
     assert result.title == expected_title
 
@@ -1922,3 +1932,59 @@ def test_usfd_type_b_spec_rows_promoted() -> None:
     assert "No Frost" in result.title
     assert "Dolby Atmos" in result.title
     assert "Bluetooth 5.0" in result.title
+
+
+def test_vip_pipe_a_spec_row_contributes_its_value_never_its_table_label() -> None:
+    """`SubType: Semi Automatic Twin Tub` is the sheet asking a question and answering it.
+
+    The Title may print the answer; the question is the table's own field name and is never a
+    feature a shop sells.  Measured on the owner's 30-row washing-machine sheet, where 65 of the
+    86 feature slots printed a bare label (`SubType`, `Sensor`, `Wash Programs`, `Control Type`).
+    """
+    extraction = ModelExtraction(code="HTW-130-178", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Haier",
+        extraction=extraction,
+        product_type="Washing Machine",
+        source_title="Haier HTW-130-178 13 KG Wash & Spin Semi Automatic Twin Tub Washing Machine",
+        source_description=(
+            "Model: HTW-130-178\nCapacity: 13 KG\nColor: White\nSubType: Semi Automatic Twin Tub\n"
+            "Key Specifications:\n"
+            "• Sensor: Turbidity Sensor\n"
+            "• Wash Programs: 8 Programs Including Quick\n"
+            "• Control Type: Mechanical Rotary Knobs\n"
+            "Warranty: 10 Year Motor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    feature_slots = {part.strip() for part in result.title.split(" | ")[1:]}
+    for label in ("SubType", "Sensor", "Wash Programs", "Control Type"):
+        assert label not in feature_slots, result.title
+    assert "Turbidity Sensor" in result.title, result.title
+    assert "Mechanical Rotary Knobs" in result.title, result.title
+
+
+def test_vip_pipe_one_spec_row_stays_one_feature_whole_its_value() -> None:
+    """`Wash Programs: Gentle, Standard, and Heavy Wash Modes` states ONE fact.
+
+    Reading the value as a comma list stranded `Gentle` as a feature beside `and Heavy Wash Modes`
+    -- observed on the owner's 30-row sheet.  Only a grouping header (`Smart Features: ...`) owns a
+    list; every other row's value travels whole.
+    """
+    extraction = ModelExtraction(code="DW 11100 C", source="description-model-line", confidence="high")
+    result = build_title(
+        brand="Dawlance",
+        extraction=extraction,
+        product_type="Washing Machine",
+        source_title="Dawlance DW 11100 C 11 KG Clear Lid Semi Automatic Twin Tub Washing Machine",
+        source_description=(
+            "Model: DW 11100 C\nCapacity: 11 KG\nColor: Grey\nSubType: Semi Automatic Twin Tub\n"
+            "Wash Programs: Gentle, Standard, and Heavy Wash Modes\n"
+            "Lint Filter: Reusable Cassette-Type Lint Filter\n"
+            "Warranty: 10 Year Motor Warranty"
+        ),
+        title_formula="vip_pipe",
+    )
+    slots = [part.strip() for part in result.title.split(" | ")[1:]]
+    assert "Gentle" not in slots, result.title
+    assert not any(slot.lower().startswith("and ") for slot in slots), result.title
