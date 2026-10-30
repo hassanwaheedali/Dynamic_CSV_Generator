@@ -288,16 +288,26 @@ def resolve_row(
 
     brand = resolve_brand(row.brand, row.title, vendor_cfg=vendor_cfg)
     effective_brand = brand.raw
+    # Name the table that actually served this run, so a hole gets filled where it is read from
+    # rather than in brands.py's legacy list.
+    brand_tables = (
+        {
+            "digi": f"vendor_config.py -> {vendor_cfg.display_name}.digi.brands",
+            "alfa": f"vendor_config.py -> {vendor_cfg.display_name}.alfa.brands",
+        }
+        if vendor_cfg is not None
+        else {"digi": "BRANDS_DIGI (brands.py)", "alfa": "BRANDS_ALFA (brands.py)"}
+    )
     if brand.digi_id is None:
         flags.flag(
             row.row_number, row.title, CAT_BRAND_DIGI,
-            f"brand {effective_brand!r} is not in BRANDS_DIGI (brands.py) -- DigiMall Brands left empty",
+            f"brand {effective_brand!r} is not in {brand_tables['digi']} -- DigiMall Brands left empty",
             platform="digi",
         )
     if brand.alfa_id is None:
         flags.flag(
             row.row_number, row.title, CAT_BRAND_ALFA,
-            f"brand {effective_brand!r} is not in BRANDS_ALFA (brands.py) -- Alfa Brands left empty",
+            f"brand {effective_brand!r} is not in {brand_tables['alfa']} -- Alfa Brands left empty",
             platform="alfa",
         )
 
@@ -770,6 +780,7 @@ def print_summary(
     alfa_path: Path,
     corpus: Corpus | None = None,
     upload: str = "both",
+    vendor_cfg: VendorConfig | None = None,
 ) -> None:
     # Only the uploads this run actually produced are reported on; a DigiMall finding is not news
     # in an Alfa run.
@@ -866,12 +877,22 @@ def print_summary(
         for line in corpus_report_lines(corpus):
             print(line)
 
+    # Which table actually served this run.  A vendor run reads vendor_config.py's block, so telling
+    # the reader to edit categories.py there would fill a table nobody consulted and leave the hole.
+    if vendor_cfg is not None:
+        where = f"vendor_config.py -> {vendor_cfg.display_name}"
+        brand_tables = (("digi", "digi.brands", where), ("alfa", "alfa.brands", where))
+        cat_tables = (("digi", "digi.categories", where), ("alfa", "alfa.categories", where))
+    else:
+        brand_tables = (("digi", "BRANDS_DIGI", "brands.py"), ("alfa", "BRANDS_ALFA", "brands.py"))
+        cat_tables = (
+            ("digi", "CATEGORY_DIGI_PATHS", "categories.py"),
+            ("alfa", "CATEGORY_ALFA_IDS", "categories.py"),
+        )
+
     print()
     print("BRAND NOT FOUND IN LOOKUP TABLE")
-    for platform, table, filename in (
-        ("digi", "BRANDS_DIGI", "brands.py"),
-        ("alfa", "BRANDS_ALFA", "brands.py"),
-    ):
+    for platform, table, filename in brand_tables:
         if platform not in scope:
             continue
         misses = brand_misses[platform]
@@ -884,10 +905,7 @@ def print_summary(
 
     print()
     print("CATEGORY NOT FOUND IN LOOKUP TABLE")
-    for platform, table, filename in (
-        ("digi", "CATEGORY_DIGI_PATHS", "categories.py"),
-        ("alfa", "CATEGORY_ALFA_IDS", "categories.py"),
-    ):
+    for platform, table, filename in cat_tables:
         if platform not in scope:
             continue
         misses = category_misses[platform]
@@ -993,7 +1011,9 @@ def main(argv: list[str] | None = None) -> int:
     flags.write_csv(args.qc, args.platform)
     write_title_sample(args.sample_titles, records)
 
-    print_summary(records, flags, args.digi, args.alfa, prepared[1], args.platform)
+    print_summary(
+        records, flags, args.digi, args.alfa, prepared[1], args.platform, vendor_cfg=vendor_cfg
+    )
     print()
     print(f"  QC report        : {args.qc}")
     print(f"  Title sample     : {args.sample_titles}")
