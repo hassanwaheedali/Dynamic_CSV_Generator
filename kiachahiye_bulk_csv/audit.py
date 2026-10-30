@@ -408,9 +408,12 @@ def main(argv: list[str] | None = None) -> int:
             if "  " in re.sub(r"<[^>]+>", "", short):
                 note("short description has a double space")
 
-        # SEO
-        if not 65 <= len(r["SEO Title"]) <= 90:
-            note("SEO Title outside 65-90 characters")
+        # SEO -- the Title formula may add nothing but ` Price in Pakistan`, so a row whose own facts
+        # stop under 65 characters ships short and that is the sheet's gap, not the file's defect:
+        # main.py counts it (`seo_title_length`) and row_check.csv names the row.  Running past the
+        # ceiling is the opposite case -- the fitter cut too little -- and it still stops an upload.
+        if len(r["SEO Title"]) > CONFIG.SEO_TITLE_MAX:
+            note("SEO Title longer than the platform ceiling")
         if not 151 <= len(r["SEO Description"]) <= 155:
             note("SEO Description outside 151-155 characters")
 
@@ -452,6 +455,12 @@ def main(argv: list[str] | None = None) -> int:
         check(False, f"{primary_label} description/SEO: {kind}", f"{count} row(s): {offenders[kind][:3]}")
     if not problems:
         check(True, template_rule_name)
+
+    # A search title under 65 characters is the sheet stating too little, and the formula the owner
+    # ruled may add nothing but ` Price in Pakistan` to cover for it.  The count is printed so the
+    # upload is never blocked by words the shop did not write; row_check.csv names every thin row.
+    thin_titles = sum(1 for r in primary if len(r["SEO Title"]) < CONFIG.SEO_TITLE_MIN)
+    check(True, f"{primary_label} thin search titles reported", f"{thin_titles} row(s) thin")
 
     # --------------------------------------- facts must exist in the source
     invented: list[str] = []

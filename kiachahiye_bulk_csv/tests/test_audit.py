@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import audit
+from config import SEO_TITLE_MIN
 from tests.conftest import Pipeline
 
 HAIER_FREEZER = {
@@ -471,3 +472,53 @@ def test_a_freezer_placement_the_row_never_stated_is_rejected(
     assert "Freezer-On-Top" in _failure(
         failures, "no freezer placement the row does not state itself"
     )
+
+
+UPS_THIN = {
+    "Title": "Haier Module DC Inverter AC UPS Device White",
+    "Description": (
+        "The Haier Module DC Inverter AC UPS Device White is an inverter home appliance."
+    ),
+    "Sell Price": "13,880",
+    "Original Price": "13,980",
+    "Categories": "Electronics / Green Energy / UPS",
+    "Brand": "Haier",
+    "Image": "https://example.test/ups.jpg",
+}
+
+
+def test_a_thin_search_title_is_reported_and_never_blocks_the_upload(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """The owner's formula is the rule: ` Price in Pakistan` is all a search title may add.
+
+    The gate used to demand 65-90 and the fitter met it by borrowing `- Buy Online` -- words the
+    shop never wrote.  Now a row whose own facts stop short ships short (46 of 102 rows on the ajmer
+    sheet, 246 of 752 on Products), so the length is reported, not failed: row_check.csv names every
+    thin row and the audit prints the count.  Only a title running past the platform's ceiling stays
+    a defect, because that one the fitter causes itself.
+    """
+    result = pipeline([UPS_THIN])
+    seo = result["alfa"][0]["SEO Title"]
+    assert len(seo) < SEO_TITLE_MIN, f"this row was meant to ship thin: {seo!r}"
+
+    failures = _gate(result, tmp_path / "input.csv", platform="alfa")
+    assert _rejected(failures) == [], _rejected(failures)
+    ok, detail = failures["Alfa thin search titles reported"]
+    assert ok and detail == "1 row(s) thin", (ok, detail)
+
+    # Past the ceiling is the program's own mistake, and it still stops the upload.
+    over = seo + " " + "words" * 20
+    assert len(over) > 90, over
+    _rewrite_cell(result["alfa_path"], "SEO Title", over)
+    failures = _gate(result, tmp_path / "input.csv", platform="alfa")
+    assert "Alfa description/SEO: SEO Title longer than the platform ceiling" in _rejected(failures)
+
+
+def test_a_row_that_states_enough_reports_no_gap(pipeline: Pipeline, tmp_path: Path) -> None:
+    """A sheet that states brand, code, sub-type, type and size reaches the window on its own."""
+    result = pipeline([HAIER_FREEZER])
+    assert len(result["alfa"][0]["SEO Title"]) >= SEO_TITLE_MIN
+
+    failures = _gate(result, tmp_path / "input.csv", platform="alfa")
+    assert failures["Alfa thin search titles reported"] == (True, "0 row(s) thin")
