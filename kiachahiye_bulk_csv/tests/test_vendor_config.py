@@ -116,6 +116,38 @@ def test_resolve_category_vendor_isolation() -> None:
         )
 
 
+def test_alfa_cells_never_leave_the_stores_own_lists() -> None:
+    """Every Alfa Category and Brands id the generator can write is one this store's list has.
+
+    Swept over the real sheets, so it covers the breadcrumbs and brand spellings no
+    hand-written case would think to try.  A store with no entry for a product ships an
+    empty cell plus a reason -- it never borrows another store's id, which is what put
+    Ajmer's rows in KiaChahiye's categories and brands.
+    """
+    sheets = [
+        Path("data/input/Products.csv"),
+        Path("data/input/Step 1.csv"),
+    ]
+    for sheet in sheets:
+        if not sheet.exists():  # unit run on a checkout without the shop's sheets
+            continue
+        rows = list(csv.DictReader(sheet.open(encoding="utf-8-sig", newline="")))
+        for cfg in VENDOR_REGISTRY.values():
+            own_cats = set(cfg.alfa.categories.values())
+            own_brands = {str(b) for b in cfg.alfa.brands.values()}
+            for r in rows:
+                got = resolve_category(
+                    r.get("Categories", ""), r.get("Title", ""), r.get("Description", ""), cfg
+                )
+                assert got.alfa_id in own_cats | {None}, (sheet, cfg.display_name, r["Title"], got.alfa_id)
+                if got.alfa_id is None:
+                    assert got.alfa_reason, f"{r['Title']} shipped empty with no reason"
+                brand_id = resolve_brand(r.get("Brand", ""), r.get("Title", ""), cfg).alfa_id
+                assert brand_id is None or str(brand_id) in own_brands, (
+                    sheet, cfg.display_name, r["Title"], brand_id
+                )
+
+
 def test_sku_prefix_dynamic_for_all_vendors() -> None:
     """build_sku_token uses each vendor's configured sku_prefix dynamically."""
     for cfg in VENDOR_REGISTRY.values():
