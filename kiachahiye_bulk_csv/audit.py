@@ -357,6 +357,27 @@ def main(argv: list[str] | None = None) -> int:
         alfa_cat_bad = [r["Category"] for r in alfa
                         if r["Category"] and not re.fullmatch(r"\d+", r["Category"])]
         check(not alfa_cat_bad, "Alfa Category is a bare leaf id", str(alfa_cat_bad[:3]))
+    # A store ships only in its own tree.  Ajmer's Alfa list is 8 leaves; KiaChahiye's is a
+    # different set.  An id from the other store -- or from brands.py / categories.py's legacy
+    # tables -- lands products in a category or under a brand the shop does not sell in, and
+    # the importer accepts it silently.
+    if wants("alfa") and vendor_cfg is not None:
+        store_lists = {
+            "Category": set(vendor_cfg.alfa.categories.values()),
+            "Brands": {str(b) for b in vendor_cfg.alfa.brands.values()},
+        }
+        for cell_name, own_ids in store_lists.items():
+            borrowed = [
+                f"{r[cell_name]} for {r['Title'][:40]}"
+                for r in alfa
+                if r[cell_name] and r[cell_name] not in own_ids
+            ]
+            check(
+                not borrowed,
+                f"every Alfa {cell_name} id is one of {vendor_cfg.display_name}'s own "
+                f"{len(own_ids)} entries",
+                str(borrowed[:3]),
+            )
     check(all(r["Brands"].isdigit() or r["Brands"] == "" for r in primary),
           f"{primary_label} Brands is numeric or empty")
 
