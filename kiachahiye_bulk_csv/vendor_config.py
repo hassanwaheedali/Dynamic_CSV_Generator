@@ -266,7 +266,7 @@ KIACHAHIYE = VendorConfig(
 )
 
 # ---------------------------------------------------------------------------
-# AJMER  (Store 2 -- Alfa populated with 11 brands & 22-item tree; Digi left empty for now)
+# AJMER  (Store 2 -- Alfa populated with the platform's 14 brands & its 8 active leaves; Digi left empty)
 # ---------------------------------------------------------------------------
 AJMER = VendorConfig(
     display_name="Ajmer",
@@ -289,16 +289,6 @@ AJMER = VendorConfig(
         "microwave ovens": "microwaves",
     },
     alfa_segment_aliases={
-        "deep freezer": "deep freezer",
-        "freezers": "deep freezer",
-        "air purifier & humdifier": "air purifiers",
-        "food processors": "food factory",
-        "food processor": "food factory",
-        "air fryers": "air fryer",
-        "dishwashers": "dish washer",
-        "dishwasher": "dish washer",
-        "dishwashing machine": "dish washer",
-        "ovens": "oven",
         "microwave oven": "microwaves",
         "microwave ovens": "microwaves",
     },
@@ -315,39 +305,40 @@ AJMER = VendorConfig(
     alfa=PlatformConfig(
         vendor_name="Ajmer Electronics",
         brands={
-            "super asia": 4395,
+            # Ajmer's Alfa brand list, exactly as the platform returns it.  Kept as its own
+            # dict rather than shared with KiaChahiye even while the two agree: the day one
+            # store's account gets a different brand id, a shared constant would change the
+            # other store's upload without anyone editing it.
+            "super general": 4133,
             "midea": 3821,
-            "pel": 3767,
-            "xioami": 3763,
+            "philips": 3802,
+            "anex": 3789,
+            "braun": 3768,
+            "hisense": 3766,
             "westpoint": 3762,
             "gree": 3678,
             "kenwood": 3677,
+            "orient": 3676,
             "ecostar": 3675,
             "haier": 3674,
             "dawlance": 3673,
-            "tcl": 3667,
+            "samsung": 3669,
         },
         categories={
-            "air conditioner": "11505",
+            # Ajmer's Alfa tree exactly as the platform lists it.  Alfa takes the
+            # bare leaf id.  "Cooking range" (11526) and "Baking & Flavours"
+            # (11856) exist in the tree but are is_active:false, so nothing is
+            # routed to them; there is no Deep Freezer / Geyser leaf at all, so
+            # those rows ship with an empty Category and a category_missing_alfa
+            # flag until the platform opens a leaf for them.
             "washing machine": "11506",
-            "washing machines": "11506",
             "refrigerators": "11507",
-            "deep freezer": "11508",
             "water dispenser": "11509",
-            "geysers": "11510",
             "air cooler": "11511",
-            "air coolers": "11511",
-            "dish washer": "12068",
+            "iron & garment steamer": "11515",
             "microwaves": "11519",
-            "air fryer": "11522",
-            "air fryers": "11522",
-            "oven": "11527",
-            "blenders": "11528",
-            "food factory": "11529",
-            "coffee maker": "11530",
             "led tv": "11539",
-            "smart led tv": "11540",
-            "dishwashing": "11874",
+            "air conditioners alfabnpl": "12353",
         },
     ),
 )
