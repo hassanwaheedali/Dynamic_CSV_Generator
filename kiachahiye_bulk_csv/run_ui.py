@@ -299,6 +299,7 @@ FLAG_LABELS = {
     "brand_missing_alfa": "Alfa brands unmapped",
     "thin_description": "Thin descriptions",
     "short_description_thin": "Thin short descriptions",
+    "seo_title_length": "Search titles that cannot reach 65-90",
     "ac_inverter_status_unknown": "AC inverter status unknown",
     "title_description_conflict": "Title and description disagree",
     "product_type_inferred": "Product type inferred",

@@ -2392,10 +2392,8 @@ def build_title(
             )
             if piece
         )
-        seo_base = (
-            f"{seo_head} - {deduped_slots['capacity']}"
-            if deduped_slots["capacity"]
-            else seo_head
+        seo_base = " - ".join(
+            piece for piece in (seo_head, deduped_slots["capacity"]) if piece
         )
     else:
         usp_tokens_tuple = ()

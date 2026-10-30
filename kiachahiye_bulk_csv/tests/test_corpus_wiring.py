@@ -769,9 +769,40 @@ def test_a_code_that_repeats_its_own_brand_is_printed_once_in_the_search_title(
         ]
     )
     seo = run["digi"][0]["SEO Title"]
-    assert "TCL TCL" not in seo, f"the brand is printed twice: {seo!r}"
+    assert seo == (
+        "TCL 24T5-VOX-13 Split Air Conditioner - 2 Ton Price in Pakistan - Buy Online"
+    ), seo
     assert "24T5-VOX-13" in seo
     assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
+
+
+def test_a_search_title_that_cannot_reach_the_window_says_so(pipeline: Pipeline) -> None:
+    """Row 397 of the 752-row sheet: `Haier UPS` is all the row states, and 60 is the honest ceiling.
+
+    The 65-90 window is the spec, so a row that cannot reach it on its own words is a gap in the sheet
+    the owner has to see -- the SEO Description already reports its own length gap, while the Title
+    shipped short and silent.
+    """
+    run = pipeline(
+        [
+            {
+                "Title": "Haier Module DC Inverter AC UPS Device White",
+                "Description": (
+                    "The Haier Module DC Inverter AC UPS Device White is an inverter home appliance."
+                ),
+                "Sell Price": "13,880",
+                "Original Price": "13,980",
+                "Categories": "Electronics / Green Energy / UPS",
+                "Brand": "Haier",
+                "Image": "https://example.test/ups.jpg",
+            }
+        ]
+    )
+    seo = run["digi"][0]["SEO Title"]
+    assert len(seo) < SEO_TITLE_MIN, f"this row was meant to miss the window: {seo!r}"
+    flagged = [f for f in run["flags"].flags if f.category == "seo_title_length"]
+    assert len(flagged) == 1
+    assert str(len(seo)) in flagged[0].message
 
 
 def test_a_row_that_gains_a_subtype_word_keeps_the_shop_title_and_its_size_in_the_search_title(

@@ -40,6 +40,7 @@ from qc_report import (
     CAT_PRODUCT_TYPE_INFERRED,
     CAT_QTY_DEFAULTED,
     CAT_SEO_DESCRIPTION_LENGTH,
+    CAT_SEO_TITLE_LENGTH,
     CAT_SERIES_SINGLE_ROW,
     CAT_SHORT_DESCRIPTION_THIN,
     CAT_SKU_DEDUPED,
@@ -465,6 +466,16 @@ def resolve_row(
             f"SEO Description is {len(description.seo_description)} characters, outside "
             "the required 151-155 -- the source had too little product-specific "
             "material to pad with honestly.",
+        )
+    if not (65 <= len(description.seo_title) <= 90):
+        # The search title is this row's own words and the one anchored phrase, so a length the
+        # window cannot hold is a gap in the sheet, not a cut to hide: a model code or a stated size
+        # is what carries a short row into 65-90 (measured: `Haier UPS`, 9 words' worth of row).
+        flags.flag(
+            row.row_number, row.title, CAT_SEO_TITLE_LENGTH,
+            f"SEO Title is {len(description.seo_title)} characters, outside the 65-90 the search "
+            "window asks for -- the row states too little to build a longer title from its own "
+            "words; a Model code or a Capacity on this row would carry it.",
         )
     if description.short_description_bullets < 3:
         flags.flag(

@@ -10,6 +10,7 @@ from description_builder import (
     SEO_TITLE_MAX,
     SEO_TITLE_MIN,
     _bullet_sentence,
+    _shed_token,
     build_description_bundle,
     build_seo_title,
     parse_description,
@@ -138,7 +139,8 @@ def test_seo_title_lands_in_the_required_range() -> None:
     ):
         seo = build_seo_title(title, ["Top Load Fully Automatic", "9.5 KG"])
         assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX, (title, seo)
-        assert seo.endswith("Price in Pakistan") or "Pakistan" in seo
+        assert seo.count("Price in Pakistan") == 1, seo
+        assert not seo.endswith(("-", " ")) and " - - " not in seo and "  " not in seo, seo
 
 
 def test_an_over_budget_search_title_gives_up_its_subtype_before_its_size() -> None:
@@ -155,6 +157,17 @@ def test_an_over_budget_search_title_gives_up_its_subtype_before_its_size() -> N
     assert "Top Load Fully Automatic" not in seo
     assert "9.5 KG" in seo, f"the shed ate the size the buyer searches on: {seo!r}"
     assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
+
+
+def test_a_cut_never_leaves_a_decimal_size_standing_without_its_unit() -> None:
+    """`- 9.5` names nothing: the guard that refuses a bare-number cut must read decimals too.
+
+    The whole-word rule let `KG` leave `Dawlance DW-6100 Washing Machine - 9.5 KG` with the digits
+    standing where the unit was, because the bare-number test only matched a whole number like `30`.
+    A size the row wrote travels as one fact, or it does not travel at all.
+    """
+    base = "Dawlance DW-6100 Washing Machine - 9.5 KG"
+    assert _shed_token(base, "KG") == base
 
 
 def test_a_base_one_character_short_of_the_plain_phrase_still_reaches_the_window() -> None:
@@ -310,7 +323,9 @@ def test_an_over_budget_seo_title_sheds_a_name_and_number_as_one_unit() -> None:
         "Orient 10 KG Metallic Silver Fully Automatic Top Load Washing Machine - Twister 1150 - 1 Year Warranty",
         ["Twister 1150", "Twister", "Metallic Silver", "10 KG", "Top Load"],
     )
-    assert "1150" not in seo or "Twister 1150" in seo
+    if "Twister" in seo:
+        assert "Twister 1150" in seo, f"the name went and left its number: {seo!r}"
+    assert " - 1150" not in seo, f"a number stands where the name was: {seo!r}"
 
 
 def test_seo_padding_never_shreds_the_title_into_words() -> None:

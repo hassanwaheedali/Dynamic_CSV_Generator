@@ -40,6 +40,7 @@ CAT_WEIGHT_MISSING = "weight_missing"
 CAT_WEIGHT_UNREADABLE = "weight_unreadable"
 CAT_SHORT_DESCRIPTION_THIN = "short_description_thin"
 CAT_SEO_DESCRIPTION_LENGTH = "seo_description_length"
+CAT_SEO_TITLE_LENGTH = "seo_title_length"
 CAT_TITLE_DESCRIPTION_CONFLICT = "title_description_conflict"
 
 # Pulls the column and the raw string back out of an "attribute_empty" message.

@@ -563,8 +563,8 @@ from config import SEO_TITLE_MAX as SEO_TITLE_MAX  # noqa: E402
 from config import SEO_TITLE_MIN as SEO_TITLE_MIN  # noqa: E402
 from config import THIN_SHORT_BULLETS as SHORT_DESC_BULLETS  # noqa: E402  # edit in config.py
 
-#: A ` - ` segment that survived as nothing but digits (`- 30 -`): a number with no name on it.
-_BARE_NUMBER_RE = re.compile(r"\d+[A-Za-z]?")
+#: A ` - ` segment that survived as nothing but a number (`- 30 -`, `- 9.5 -`): a size with no name on it.
+_BARE_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?[A-Za-z]?")
 
 
 def _segments(text: str) -> list[str]:
