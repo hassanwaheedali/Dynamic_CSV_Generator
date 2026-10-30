@@ -823,6 +823,7 @@ def print_summary(
         (CAT_COMPARE_AT_DERIVED, "Variant Compare At derived (no Regular Price stated)"),
         (CAT_ATTRIBUTE_EMPTY, "DigiMall Attribute_* left empty despite a raw signal"),
         (CAT_THIN_DESCRIPTION, "Description thin (no filler rows added)"),
+        (CAT_SEO_TITLE_LENGTH, "Search title under 65 characters (sheet states too little)"),
         (CAT_TITLE_FALLBACK, "Title kept from source"),
         (CAT_TITLE_DROPPED_WORDS, "Rebuilt Title dropped extra source words"),
         (CAT_SERIES_SINGLE_ROW, "Series name believed from a single row"),

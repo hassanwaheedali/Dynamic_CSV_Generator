@@ -602,12 +602,16 @@ def _shed_token(text: str, token: str) -> str:
 
 
 def build_seo_title(base: str, feature_tokens: list[str]) -> str:
-    """Fit the search-title base into 65-90 characters behind ` Price in Pakistan`.
+    """Fit the search-title base behind ` Price in Pakistan` -- the only words ever added.
 
     The base arrives already naming this row's brand, code, sub-type and type -- the shape ruled in
     ``title_builder.build_title`` -- so all that is left here is the fit: shed a whole fact when the
     base runs over budget, then cut on a word boundary.  The suffix is anchored: only the base's own
     copy is ever trimmed, so the result always ends on a complete phrase and never mid-word.
+
+    Nothing is borrowed to reach the 65-90 window.  A row whose own words run short ships short, and
+    ``main.py`` names it in the summary and ``qc.csv`` as ``seo_title_length`` -- padding it with a
+    marketing clause would put words in the shop that the shop never wrote.
     """
     suffix = " Price in Pakistan"
     budget = SEO_TITLE_MAX - len(suffix)
@@ -621,33 +625,7 @@ def build_seo_title(base: str, feature_tokens: list[str]) -> str:
         if len(trimmed) > budget:
             trimmed = trimmed[:budget].rsplit(" ", 1)[0].rstrip(" -,")
 
-    # Search a small, closed set of combinations for one that lands inside 65-90 characters.  The
-    # base already states this row's brand, code, sub-type and type, so the only honest lever left
-    # when it reads short is the phrase itself.  The ladder used to bolt the brand and the type on a
-    # second time -- 13 rows of the 752-row sheet shipped a search title that named the same brand
-    # twice, because those words were already in the base before the padding added them.
-    #
-    # The four phrases step up by length on purpose.  With only the plain phrase and the long one, a
-    # 46-character base fell between them -- 64 with the first, 91 with the second -- and 21 rows of
-    # the 752-row sheet shipped one character short of the window.
-    suffixes = (
-        suffix,
-        " Price in Pakistan - Buy Online",
-        " Price in Pakistan - Buy Online at Best Price",
-        " Price in Pakistan - Buy Online at Best Price Today",
-    )
-    best = ""
-    for candidate_suffix in suffixes:
-        candidate = f"{trimmed}{candidate_suffix}".strip()
-        if len(candidate) > SEO_TITLE_MAX:
-            continue
-        if len(candidate) >= SEO_TITLE_MIN:
-            return candidate
-        if len(candidate) > len(best):
-            best = candidate
-    if best:
-        return best
-    return f"{trimmed}{suffix}".strip()[:SEO_TITLE_MAX].rsplit(" ", 1)[0] or trimmed
+    return f"{trimmed}{suffix}".strip()
 
 
 _STRUCTURAL_LABELS = {"brand", "model", "type", "overview", "key features"}

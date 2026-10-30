@@ -129,18 +129,23 @@ def test_tags_include_model_price_and_colour_combinations() -> None:
     assert "Price in Pakistan" in joined
 
 
-def test_seo_title_lands_in_the_required_range() -> None:
-    """Every base is the shape the Title builder hands over: brand, code, sub-type, type - size."""
+def test_the_search_title_is_the_row_base_behind_one_anchored_phrase() -> None:
+    """` Price in Pakistan` is the only words ever added -- no marketing clause, however short the row.
+
+    The owner's ruling: `Dawlance DW-8550-CBFL Washing Machine - 9 KG Price in Pakistan` ships as it
+    reads, 62 characters and all.  A row too thin for the 65-90 window is a gap in his sheet, and
+    main.py names it as `seo_title_length` -- borrowing words he never wrote is not a fix.
+    """
     over_budget = "Dawlance DWT 9057 EZ Top Load Fully Automatic Steam Washing Machine - 9.5 KG"
-    for title in (
-        "Dawlance WD-1051 HC 2 Taps Water Dispenser",
-        over_budget,
-        "TCL 32S6820 Smart LED TV",
-    ):
-        seo = build_seo_title(title, ["Top Load Fully Automatic", "9.5 KG"])
-        assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX, (title, seo)
-        assert seo.count("Price in Pakistan") == 1, seo
-        assert not seo.endswith(("-", " ")) and " - - " not in seo and "  " not in seo, seo
+    assert build_seo_title("Dawlance WD-1051 HC 2 Taps Water Dispenser", []) == (
+        "Dawlance WD-1051 HC 2 Taps Water Dispenser Price in Pakistan"
+    )
+    assert build_seo_title("TCL 32S6820 Smart LED TV", []) == (
+        "TCL 32S6820 Smart LED TV Price in Pakistan"
+    )
+    assert build_seo_title(over_budget, ["Top Load Fully Automatic", "9.5 KG"]) == (
+        "Dawlance DWT 9057 EZ Steam Washing Machine - 9.5 KG Price in Pakistan"
+    )
 
 
 def test_an_over_budget_search_title_gives_up_its_subtype_before_its_size() -> None:
@@ -156,7 +161,8 @@ def test_an_over_budget_search_title_gives_up_its_subtype_before_its_size() -> N
     )
     assert "Top Load Fully Automatic" not in seo
     assert "9.5 KG" in seo, f"the shed ate the size the buyer searches on: {seo!r}"
-    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
+    assert len(seo) <= SEO_TITLE_MAX
+    assert seo.endswith("Price in Pakistan")
 
 
 def test_a_cut_never_leaves_a_decimal_size_standing_without_its_unit() -> None:
@@ -170,29 +176,20 @@ def test_a_cut_never_leaves_a_decimal_size_standing_without_its_unit() -> None:
     assert _shed_token(base, "KG") == base
 
 
-def test_a_base_one_character_short_of_the_plain_phrase_still_reaches_the_window() -> None:
-    """A 46-character base is the dead zone: ` Price in Pakistan` leaves 64, the long clause 91.
+def test_a_row_too_thin_for_the_window_ships_its_own_words_and_nothing_else() -> None:
+    """A 46-character base lands one character short of the window, and 64 is what it ships.
 
-    Measured on the 752-row sheet -- 21 rows shipped a 64-character search title because the ladder
-    had one short phrase and one very long one, and nothing in between.  A clause between them keeps
-    the row inside 65-90 without inventing a product word it never stated.
+    Measured on the 752-row sheet: 21 rows hit exactly this dead zone, and the ladder answered it by
+    borrowing a marketing clause.  The owner's ruling closes the borrow -- the search title is his
+    words plus ` Price in Pakistan`, and a thin row is a gap in his sheet that `seo_title_length`
+    counts instead of papering over.
     """
-    seo = build_seo_title("Haier HDF-405INV Chest Deep Freezer - 14 Cu Ft", ["Chest", "14 Cu Ft"])
-    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX, seo
-    assert seo.startswith("Haier HDF-405INV")
-
-
-def test_the_padding_never_names_the_rows_own_brand_or_type_twice() -> None:
-    """A short base used to be padded with its own brand and type a second time.
-
-    Measured on the 752-row sheet: 13 rows shipped a search title that named the same brand twice,
-    because the ladder added words the base already printed.  The base now carries brand, code,
-    sub-type and type by rule, so the only lever left for a short row is the phrase itself.
-    """
-    seo = build_seo_title("TCL 32S6820 Smart LED TV", [])
-    assert seo.lower().count("tcl") == 1
-    assert seo.lower().count("led tv") == 1
-    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
+    base = "Haier HDF-405INV Chest Deep Freezer - 14 Cu Ft"
+    seo = build_seo_title(base, ["Chest", "14 Cu Ft"])
+    assert seo == f"{base} Price in Pakistan"
+    assert len(seo) == SEO_TITLE_MIN - 1, seo
+    for borrowed in ("Buy", "Online", "Best", "Today"):
+        assert borrowed not in seo, f"the fitter added {borrowed!r} to a row that never wrote it"
 
 
 def test_seo_title_never_mutates_the_stored_title() -> None:

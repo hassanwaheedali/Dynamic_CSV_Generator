@@ -749,6 +749,9 @@ def test_a_code_that_repeats_its_own_brand_is_printed_once_in_the_search_title(
     sheet -- a search title that reads like a mistake.  The brand prefix comes off the code for this
     string only; the shop Title, the Tags and the Description table keep the code exactly as the row
     wrote it, because that is where the shop's own wording is the product.
+
+    The row ships 63 characters: everything it states, behind the one anchored phrase, and no clause
+    borrowed to reach the window.  `seo_title_length` reports the shortfall.
     """
     run = pipeline(
         [
@@ -769,11 +772,9 @@ def test_a_code_that_repeats_its_own_brand_is_printed_once_in_the_search_title(
         ]
     )
     seo = run["digi"][0]["SEO Title"]
-    assert seo == (
-        "TCL 24T5-VOX-13 Split Air Conditioner - 2 Ton Price in Pakistan - Buy Online"
-    ), seo
+    assert seo == "TCL 24T5-VOX-13 Split Air Conditioner - 2 Ton Price in Pakistan", seo
     assert "24T5-VOX-13" in seo
-    assert SEO_TITLE_MIN <= len(seo) <= SEO_TITLE_MAX
+    assert len(seo) <= SEO_TITLE_MAX
 
 
 def test_a_search_title_that_cannot_reach_the_window_says_so(pipeline: Pipeline) -> None:
