@@ -2,16 +2,32 @@
 
 A chosen platform is the only thing this run produces: the other platform's file is not written,
 so an output folder for an Alfa upload cannot hold a DigiMall CSV someone might grab by mistake.
+
+The summary also names the Description template that served each file it wrote -- listings are
+restyled per (store x platform) cell now, so a run that said nothing about shapes would leave a
+reader guessing which cell to edit.
 """
 
 from __future__ import annotations
 
 import csv
+import dataclasses
+import html as html_module
 from pathlib import Path
 from typing import Any
 
+import pytest
+from conftest import Pipeline, build_input_csv
+
 import main
-from tests.conftest import Pipeline, build_input_csv
+from description_builder import (
+    DESCRIPTION_TEMPLATES,
+    SPEC_TABLE,
+    DescriptionTemplate,
+    extract_spec_rows,
+)
+from models import SpecRow
+from vendor_config import VENDOR_REGISTRY, ConfigError, validate_vendor_cfg
 
 ROW = {
     "Title": "Haier Twin Inverter Freezer-On-Top Refrigerator 18 Cu Ft Black (HRF-538TIFB1U1)",
@@ -189,3 +205,140 @@ def test_a_paint_the_title_states_is_never_resold_as_the_line_name(
     flagged = [f for f in run["flags"].flags if f.category == "title_description_conflict"]
     assert flagged, "a row that states two colours may not ship one of them in silence"
     assert "Burgundy" in flagged[0].message and "Black" in flagged[0].message
+
+
+# ────────────────── which Description shape served each file ──────────────────
+def _plain_shape(rows: list[SpecRow]) -> str:
+    """A second conforming shape: no header row, no inline styles."""
+    body = "".join(
+        "<tr>"
+        f"<td>{'<strong>' if r.is_warranty else ''}"
+        f"{html_module.escape(r.label, quote=False)}"
+        f"{'</strong>' if r.is_warranty else ''}</td>"
+        f"<td>{'<strong>' if r.is_warranty else ''}"
+        f"{html_module.escape(r.value, quote=False)}"
+        f"{'</strong>' if r.is_warranty else ''}</td>"
+        "</tr>"
+        for r in rows
+    )
+    return f"<table><tbody>{body}</tbody></table>"
+
+
+#: Registered only by the test that uses it, so the shop's own registry stays clean.
+PROBE = DescriptionTemplate(
+    name="probe",
+    render=_plain_shape,
+    extract=lambda text: extract_spec_rows(text, starts_with="<table", ends_with="</table>"),
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+
+def _summary_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    vendor: str | None = None,
+    platform: str = "both",
+) -> tuple[list[str], dict[str, Path]]:
+    sheet = build_input_csv(tmp_path / "Products.csv", [ROW])
+    paths = {
+        "digi": tmp_path / "digi" / "digimall_bulk_import.csv",
+        "alfa": tmp_path / "alfa" / "alfa_bulk_import.csv",
+    }
+    argv = [
+        "--input", str(sheet),
+        "--digi", str(paths["digi"]), "--alfa", str(paths["alfa"]),
+        "--qc", str(tmp_path / "qc_report.csv"),
+        "--sample-titles", str(tmp_path / "title_review_sample.csv"),
+        "--platform", platform,
+    ]
+    if vendor is not None:
+        argv += ["--vendor", vendor]
+    main.main(argv)
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert "DESCRIPTION TEMPLATE PER FILE" in lines, out
+    start = lines.index("DESCRIPTION TEMPLATE PER FILE")
+    block: list[str] = []
+    for line in lines[start + 1:]:
+        if not line.strip():
+            break  # every section in the summary opens with a blank line
+        block.append(line)
+    return block, paths
+
+
+def _csv_description(path: Path) -> str:
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        return next(iter(csv.DictReader(handle)))["Description"]
+
+
+def test_the_summary_names_the_template_that_served_each_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same rule as the lookup tables: tell the reader which cell actually served this run."""
+    block, _ = _summary_run(tmp_path, capsys, vendor="kiachahiye")
+    assert len(block) == 2, block
+    assert block[0].startswith("  DigiMall spec_table"), block[0]
+    assert "Kiachahiye.digi.description_template in vendor_config.py" in block[0], block[0]
+    assert block[1].startswith("  Alfa     spec_table"), block[1]
+    assert "Kiachahiye.alfa.description_template in vendor_config.py" in block[1], block[1]
+
+
+def test_a_single_platform_run_names_only_the_file_it_wrote(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An Alfa upload is not this run's news about DigiMall -- and never names its cell to edit."""
+    block, _ = _summary_run(tmp_path, capsys, vendor="ajmer", platform="alfa")
+    assert len(block) == 1, block
+    assert block[0].startswith("  Alfa     spec_table"), block[0]
+    assert "Ajmer.alfa.description_template in vendor_config.py" in block[0], block[0]
+    assert "digi" not in block[0].lower(), block[0]
+
+
+def test_the_cell_the_summary_names_is_the_cell_the_startup_error_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One spelling of the fix location, so a reader never hunts between the two messages."""
+    cfg = VENDOR_REGISTRY["ajmer"]
+    broken = dataclasses.replace(
+        cfg, digi=dataclasses.replace(cfg.digi, description_template="spec_tabel")
+    )
+    with pytest.raises(ConfigError) as caught:
+        validate_vendor_cfg(broken)
+    label = "Ajmer.digi.description_template"
+    assert label in str(caught.value), str(caught.value)
+    block, _ = _summary_run(tmp_path, capsys, vendor="ajmer", platform="digi")
+    assert label in block[0], block[0]
+
+
+def test_the_name_printed_for_a_cell_is_the_shape_that_reached_its_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restyled Alfa cell must be reported as restyled -- and must actually be restyled."""
+    monkeypatch.setitem(DESCRIPTION_TEMPLATES, PROBE.name, PROBE)
+    cfg = VENDOR_REGISTRY["kiachahiye"]
+    restyled = dataclasses.replace(
+        cfg, alfa=dataclasses.replace(cfg.alfa, description_template="probe")
+    )
+    monkeypatch.setitem(VENDOR_REGISTRY, "kiachahiye", restyled)
+
+    block, paths = _summary_run(tmp_path, capsys, vendor="kiachahiye")
+    assert "  DigiMall spec_table" in block[0], block[0]
+    assert "  Alfa     probe" in block[1], block[1]
+    # SPEC_TABLE's own shape carries a <th> header row; PROBE's does not.
+    assert "<th" in _csv_description(paths["digi"]), "the DigiMall file lost the shop's table"
+    assert "<th" not in _csv_description(paths["alfa"]), "the summary named a shape the file lacks"
+
+
+def test_a_run_with_no_store_names_the_shape_without_blaming_the_builder(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No --vendor means every cell took the shop's table; that is a fact about the run, not a bug."""
+    block, _ = _summary_run(tmp_path, capsys)
+    assert len(block) == 2, block
+    assert all(SPEC_TABLE.name in line for line in block), block
+    assert "spec_table" in block[0] and "spec_table" in block[1], block
+    joined = " ".join(block).lower()
+    assert "description_builder" not in joined, block
+    assert "--vendor" in joined, block

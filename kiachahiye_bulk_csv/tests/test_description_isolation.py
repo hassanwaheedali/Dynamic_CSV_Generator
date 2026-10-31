@@ -29,7 +29,7 @@ from description_builder import (
 from models import SpecRow
 from qc_report import QCFlagCollector
 from vendor_config import VENDOR_REGISTRY
-from writers import build_alfa_row, build_digi_row
+from writers import build_alfa_row, build_digi_row, template_for_cell
 
 
 def _plain_shape(rows: list[SpecRow]) -> str:
@@ -245,3 +245,18 @@ def test_the_other_columns_stay_shared_when_one_cell_renders(
         alfa = build_alfa_row(record, cfg).values
         for column in shared:
             assert digi[column] == alfa[column], column
+
+
+def test_the_resolver_that_names_a_cell_is_the_one_that_renders_it() -> None:
+    """One resolver, asked by platform -- because a wrong platform must not guess a shape.
+
+    ``template_for_cell`` answers for the projected Description bytes, the terminal summary block
+    and the run banner alike.  If it ever fell through quietly, a run would print one template and
+    ship another, which is the single drift this whole seam exists to make impossible.
+    """
+    cfg = VENDOR_REGISTRY["kiachahiye"]
+    assert template_for_cell(cfg, "digi") is SPEC_TABLE
+    assert template_for_cell(cfg, "alfa") is SPEC_TABLE
+    assert template_for_cell(None, "digi") is SPEC_TABLE, "a bare run ships the shop's own table"
+    with pytest.raises(KeyError):
+        template_for_cell(cfg, "digiity")

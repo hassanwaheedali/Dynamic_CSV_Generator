@@ -2,17 +2,23 @@
 
 The menu is the only part of the run that reads a human, so its contract is that it never guesses:
 an answer that is not one of the numbers is refused, and an absent human takes the default without
-waiting.
+waiting.  The panels it draws are also held to the screen: nothing a run reports may be wider than
+the box it is drawn in -- including which Description template serves each file.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import sys
+from pathlib import Path
 
 import pytest
 
 import run_ui
+import writers
+from description_builder import SPEC_TABLE, DescriptionTemplate
 from run_ui import UI, Theme
+from vendor_config import VendorConfig
 
 
 class Captured(UI):
@@ -154,4 +160,73 @@ def test_ask_vendor_lists_registered_vendors_dynamically(
             cfg.display_name in line and f"{cfg.sku_prefix}-" in line
             for line in panel_lines
         )
+
+
+# ─────────────────── the shape each written file will take ───────────────────
+def _shape(name: str) -> DescriptionTemplate:
+    """SPEC_TABLE wearing another name -- a cell's own shape, without the gate's objection."""
+    return dataclasses.replace(SPEC_TABLE, name=name)
+
+
+def _store_with(digi_template: str | DescriptionTemplate, alfa_template: str | DescriptionTemplate) -> VendorConfig:
+    """The registered Kiachahiye block with each cell's Description shape chosen."""
+    cfg = run_ui.VENDOR_REGISTRY["kiachahiye"]
+    return dataclasses.replace(
+        cfg,
+        digi=dataclasses.replace(cfg.digi, description_template=digi_template),
+        alfa=dataclasses.replace(cfg.alfa, description_template=alfa_template),
+    )
+
+
+def test_the_note_names_the_shape_of_every_file_this_run_writes() -> None:
+    """Before he uploads, the screen says which Description template served which file."""
+    cfg = _store_with(SPEC_TABLE, _shape("wide_table"))
+    note = run_ui.description_templates_note(cfg, ("digi", "alfa"))
+    assert "DigiMall spec_table" in note, note
+    assert "Alfa wide_table" in note, note
+
+
+def test_a_single_platform_note_says_nothing_about_the_other_file() -> None:
+    cfg = _store_with(SPEC_TABLE, _shape("wide_table"))
+    note = run_ui.description_templates_note(cfg, ("alfa",))
+    assert "Alfa wide_table" in note, note
+    assert "DigiMall" not in note and "spec_table" not in note, note
+
+
+def test_every_registered_store_says_what_shape_it_ships() -> None:
+    """Read from VENDOR_REGISTRY, so a new store is named on the banner the day it joins."""
+    for cfg in run_ui.VENDOR_REGISTRY.values():
+        for scope in (("digi",), ("alfa",), ("digi", "alfa")):
+            note = run_ui.description_templates_note(cfg, scope)
+            assert len(note) <= run_ui.WIDTH - 4, (cfg.display_name, scope, note)
+            assert note.split(" · ")[0].startswith(run_ui.UPLOAD_LABELS[scope[0]]), note
+            for name in scope:
+                assert run_ui.UPLOAD_LABELS[name] in note, note
+                assert writers.template_for_cell(cfg, name).name in note, note
+
+
+def test_a_shape_name_wider_than_the_panel_is_shortened_inside_its_own_half() -> None:
+    """A long template name loses its own middle; it never pushes the other file's fact off screen.
+
+    The banner used to clip the whole line, which kept the tail and silently deleted DigiMall's
+    shape -- so the note now fits the panel by construction, and the drawn box is checked too.
+    """
+    monster = "ajmer_" + "two_column_descriptive_wrapper_" * 3
+    assert len(monster) > run_ui.WIDTH, "the fixture is not wide enough to prove the fit"
+    note = run_ui.description_templates_note(
+        _store_with(_shape(monster), _shape("wide_table")), ("digi", "alfa")
+    )
+    assert len(note) <= run_ui.WIDTH - 4, note
+    assert "DigiMall ajmer" in note and "..." in note, note
+    assert "Alfa wide_table" in note, note
+
+    ui = Captured()
+    ui.banner(
+        Path("Products.csv"), Path("out"), "3.14", "DigiMall + Alfa",
+        "Kiachahiye (SKU: KC-)", note,
+    )
+    title, lines = ui.boxes[1]
+    assert title == "RUN CONTEXT", title
+    assert all(run_ui.visible_len(line) <= run_ui.WIDTH - 4 for line in lines), lines
+    assert any("Desc" in line for line in lines), lines
 

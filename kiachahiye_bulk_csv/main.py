@@ -79,13 +79,14 @@ from textutils import (
     strip_markup_keep_lines,
 )
 from title_builder import build_title, without_leading_type_words, word_identity
-from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor
+from vendor_config import VENDOR_REGISTRY, VendorConfig, description_cell_label, get_vendor
 from warranty import TERM_LINES, resolve_warranty
 from writers import (
     ALFA_HEADER,
     DIGI_HEADER,
     build_alfa_row,
     build_digi_row,
+    template_for_cell,
     write_csv,
 )
 
@@ -820,6 +821,20 @@ def print_summary(
         print(f"  Alfa     Category empty : {flags.count(CAT_CATEGORY_ALFA):5} rows")
         print(f"  Alfa     Brands empty   : {flags.count(CAT_BRAND_ALFA):5} rows")
     print(f"  AC rows with unknown inverter status : {flags.count(CAT_AC_INVERTER_UNKNOWN):5} rows")
+
+    # Which Description shape served each file.  Same rule as the lookup tables below: name the cell
+    # the reader has to edit, and say nothing about the file this run did not produce.
+    print()
+    print("DESCRIPTION TEMPLATE PER FILE")
+    for platform, label in (("digi", "DigiMall"), ("alfa", "Alfa")):
+        if platform not in scope:
+            continue
+        template = template_for_cell(vendor_cfg, platform)
+        if vendor_cfg is None:
+            hint = "no store in this run -- pass --vendor to choose a cell's own shape"
+        else:
+            hint = f"edit {description_cell_label(vendor_cfg, platform)} in vendor_config.py"
+        print(f"  {label:8} {template.name}  ({hint})")
 
     print()
     print("SHARED FLAGS (both files)")

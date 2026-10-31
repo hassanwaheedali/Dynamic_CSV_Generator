@@ -35,7 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import config as CONFIG
-from vendor_config import VENDOR_REGISTRY, get_vendor
+from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor
+from writers import template_for_cell
 
 try:
     import msvcrt  # Windows only: single-key prompt at the end
@@ -145,6 +146,7 @@ class UI:
         py: str,
         upload: str = "",
         vendor_label: str = "",
+        description_label: str = "",
     ) -> None:
         t = self.t
         if t.fancy:
@@ -161,6 +163,7 @@ class UI:
             f"{t.paint('Vendor  ', t.grey)} {vendor_label}" if vendor_label else "",
             f"{t.paint('Sheet   ', t.grey)} {clip(sheet.name)}",
             f"{t.paint('Upload  ', t.grey)} {upload}" if upload else "",
+            f"{t.paint(DESCRIPTION_LABEL, t.grey)} {description_label}" if description_label else "",
             f"{t.paint('Output  ', t.grey)} {clip(str(out_dir))}",
             f"{t.paint('Python  ', t.grey)} {py}",
             f"{t.paint('Started ', t.grey)} {time.strftime('%A %d %B %Y, %H:%M:%S')}",
@@ -398,6 +401,30 @@ def scope_note(platform: str) -> str:
     return f"Written and proved: {UPLOAD_LABELS[platform]} only. No {other} file exists."
 
 
+#: What the RUN CONTEXT banner calls the Description shapes.  The note that fills it is fitted to
+#: exactly what this label leaves of the panel, so label and budget can never drift apart.
+DESCRIPTION_LABEL = "Desc    "
+
+
+def description_templates_note(vendor_cfg: VendorConfig, scope: tuple[str, ...]) -> str:
+    """Which Description template serves each file this run writes, fitted to its panel.
+
+    A store may restyle one platform's listings, so the screen names the shape going onto his
+    upload, in the same words the terminal summary and the startup config error use.  Only the
+    files this run produces are named, and each keeps its own place on the line: a template with a
+    100-character name is shortened inside its own half, never by pushing another file's fact off
+    the screen.
+    """
+    sep = " · "
+    room = (WIDTH - 4 - len(DESCRIPTION_LABEL) - 1 - len(sep) * (len(scope) - 1)) // len(scope)
+    parts = []
+    for name in scope:
+        label = UPLOAD_LABELS[name]
+        template = template_for_cell(vendor_cfg, name)
+        parts.append(f"{label} {elide(template.name, max(12, room - len(label) - 1))}")
+    return sep.join(parts)
+
+
 def ask_vendor(ui: UI) -> str:
     """Which vendor (store) to generate for. Listed from VENDOR_REGISTRY, no hardcoding."""
     entries = [
@@ -482,8 +509,12 @@ def main() -> int:
     py = sys.executable
 
     vendor_label = f"{vendor_cfg.display_name} (SKU: {vendor_cfg.sku_prefix}-)"
+    # One chosen platform is the only thing this run touches: its file is the only one written,
+    # the gate reads only it, and the worklists are built from it.
+    scope = PLATFORM_FILES[platform]
     ui.banner(
-        sheet, out_dir, sys.version.split()[0], PLATFORM_LABELS[platform], vendor_label
+        sheet, out_dir, sys.version.split()[0], PLATFORM_LABELS[platform], vendor_label,
+        description_templates_note(vendor_cfg, scope),
     )
 
     # ── preflight ──
@@ -507,9 +538,6 @@ def main() -> int:
     ).returncode == 0
     run_tests = (not args.no_tests) and have_pytest and (PKG / "tests").exists()
 
-    # One chosen platform is the only thing this run touches: its file is the only one written,
-    # the gate reads only it, and the worklists are built from it.
-    scope = PLATFORM_FILES[platform]
     paths = {"digi": digi, "alfa": alfa}
     uploads: list[str] = []
     for name in scope:

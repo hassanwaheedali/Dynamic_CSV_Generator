@@ -363,6 +363,15 @@ VENDOR_REGISTRY: dict[str, VendorConfig] = {
 }
 
 
+def description_cell_label(cfg: VendorConfig, platform: str) -> str:
+    """The one spelling of the cell that chooses a file's Description shape.
+
+    The startup error, the terminal summary and the run banner all quote it, so a reader
+    chasing a Description problem is sent to the same characters every time.
+    """
+    return f"{cfg.display_name}.{platform}.description_template"
+
+
 def _description_template_errors(cfg: VendorConfig, platform: str) -> list[str]:
     """Why one cell's `description_template` cannot ship, one string per reason.
 
@@ -372,7 +381,7 @@ def _description_template_errors(cfg: VendorConfig, platform: str) -> list[str]:
     in a live listing.
     """
     cell = getattr(cfg, platform)
-    label = f"{cfg.display_name}.{platform}.description_template"
+    label = description_cell_label(cfg, platform)
     value = cell.description_template
     try:
         template = template_for(value)
