@@ -54,6 +54,8 @@ Har row ka **saboot**: DigiMall aur Alfa dono ke liye ek ek line, columns mein T
 
 Ye audit.py likhta hai (`--evidence` ke sath) — matlab ye "humne kaha theek hai" nahi, balke **checker ki likhi hui gawahi** hai. 3600/3600 PASS.
 
+`Spec Rows` aur `Desc Chars` har file ke **apne** numbers hain: wo usi file ke likhe hue Description se gine jate hain. Pehle dono files ek jaisa table upload karti thin, is liye ye columns hamesha barabar rehte the. Ab har (store × platform) cell apni Description ki shape khud chunta hai — `vendor_config.py` mein `<store>.<platform>.description_template` — to Alfa ki file ka `Desc Chars` DigiMall se alag ho sakta hai. **Ye galti nahi, tareeqa hai:** rows ka content same rehta hai, sirf presentation badalti hai. Terminal summary ka `DESCRIPTION TEMPLATE PER FILE` block aur run screen ka `Desc` har run batata hai ke kaunsi file kaunsi shape le kar ja rahi hai.
+
 ## 6 — `thin_descriptions.csv` (536 rows)
 
 Woh rows jinki **source Description bahut kamzor** hai — aap ki sheet ka masla, code ka nahi.
@@ -61,6 +63,7 @@ Woh rows jinki **source Description bahut kamzor** hai — aap ki sheet ka masla
 - `One_Line = yes` → Description sirf **ek line** ka hai (186 rows).
 - `Severity = high` → listing ka table bilkul khali (206 rows).
 - `Severity = medium` → chal jayega magar source mein bohat kam maloomat (330 rows).
+- `Spec_Rows_In_Listing` DigiMall ki **bani hui file** se gina jata hai — yaani jitni rows us file ki Description shape waqai dikha rahi hai. Ye poori list DigiMall listing ke baray mein hai.
 
 **Kaam:** ye rows likhne wale ko wapas bhejein. Behtar copy aayi → pipeline dobara chalayein → listing khud behtar ho jayegi.
 

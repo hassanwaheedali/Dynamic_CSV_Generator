@@ -139,11 +139,19 @@ plus, optionally: `Vendor` (ignored) and any weight column (`Weight`,
 | Vendor constant | `KiaChahiye PVT LTD` | `Kia Chahiye Pvt Ltd` |
 | `Category` shape | full path, `11639_11643_11661_11669` | bare leaf id, `11509` |
 | `Brands` | DigiMall's own numeric id | Alfa's own numeric id (often a different number) |
+| `Description` shape | that cell's `description_template` | that cell's `description_template` |
 | `Short Description`, `Commission Percentage`, 36 × `Attribute_*` | yes | **none of these columns exist** |
 
 Both files are projected from **one** internal `ProductRecord` per row, so a
-shared fact (Title, Description, SKU, price, images, Handle…) can never drift
-between the two files.
+shared fact (Title, SKU, price, images, Handle…) can never drift between the two
+files.
+
+`Description` is the single column allowed to differ, and only in **shape**, never in
+content: the record carries the spec rows once, and each of the four cells
+(store × platform) renders them in the template its own `description_template` names
+(`vendor_config.py`). The rows are the same facts either way — restyling Alfa cannot
+move a fact in DigiMall's file. See
+[Restyling one file's Description](#restyling-one-files-description-the-template).
 
 ---
 
@@ -267,7 +275,7 @@ python3 thin_report.py --input X.csv --built Y.csv --qc Z.csv --out W.csv
 | `Issues` | every reason that row was listed, e.g. `one-line Description; very short source (43 chars)` |
 | `One_Line` | `yes` when the source Description is a single line — filter this column for exactly that list |
 | `Description_Chars` / `Description_Lines` | what the sheet itself contains |
-| `Spec_Rows_In_Listing` / `Short_Desc_Bullets` | what the finished listing really shows |
+| `Spec_Rows_In_Listing` / `Short_Desc_Bullets` | what the finished **DigiMall** file really shows — this report counts the built file's own rows (`<tr><td`), so it follows whichever Description template served that file |
 | `Why_It_May_Matter` | the same reasons in plain English |
 | `QC_Flags` | the row's flags from the QC report, for context |
 
@@ -284,6 +292,7 @@ The terminal summary prints, at the end of every run:
 * DigiMall-vs-Alfa empty `Category` and `Brands` counts, side by side
 * **`BRAND NOT FOUND IN LOOKUP TABLE`** — each brand name, its row count, and the exact constant to edit
 * **`CATEGORY NOT FOUND IN LOOKUP TABLE`** — each breadcrumb, its row count, and the constant to edit
+* **`DESCRIPTION TEMPLATE PER FILE`** — the shape that served each file this run wrote, and the exact `vendor_config.py` cell to edit to change it
 * warranty coverage by source, and which brands still have no warranty table
 
 ---
@@ -296,6 +305,8 @@ The terminal summary prints, at the end of every run:
 | Input / output file paths | `config.py` | `INPUT_FILE`, `DIGI_OUTPUT`, `ALFA_OUTPUT`, … |
 | Default quantity, SEO length windows, Title cap | `config.py` | `DEFAULT_VARIANT_QUANTITY`, `SEO_*`, `TITLE_MAX` |
 | What counts as a thin Description in the worklist | `config.py` | `THIN_*` |
+| **One file's `Description` shape** | `vendor_config.py` | `<store>.<platform>.description_template` — the screen spells it `Kiachahiye.alfa.description_template` (see [Restyling one file's Description](#restyling-one-files-description-the-template)) |
+| **A new `Description` shape** | `description_builder.py` | `DESCRIPTION_TEMPLATES` — paste a live listing's HTML and register it |
 | **Warranty terms** | `warranty_terms.py` | `WARRANTY_TERMS` — brand → category → parts |
 | LED TV warranty on/off | `config.py` | `APPLY_TV_WARRANTY_TABLE` |
 | DigiMall brand ids | `brands.py` | `BRANDS_DIGI` |
@@ -335,6 +346,90 @@ reverted -- the outputs came back byte-identical, md5 for md5):
 
 Neither edit needed a code change anywhere else: the tables are read at run time
 and flow straight into the output columns.
+
+---
+
+## Restyling one file's Description (the template)
+
+There are four cells -- `Kiachahiye.digi`, `Kiachahiye.alfa`, `Ajmer.digi`,
+`Ajmer.alfa` -- and each one names the shape of the `Description` column in **its own
+file**. The value is a name from `DESCRIPTION_TEMPLATES` (`"spec_table"` is the table
+the shop has always uploaded and is the default when a cell says nothing), or, rarely,
+a `DescriptionTemplate` written inline.
+
+Editing one cell edits one file. Pointing `Kiachahiye.alfa` at a new shape leaves
+`Kiachahiye.digi`, `Ajmer.digi` and `Ajmer.alfa` uploading byte-identical CSVs -- not a
+hope, a test (`tests/test_description_isolation.py` proves it on the real sheet, digest
+by digest). Two stores may name the **same** template and then ship the same bytes from
+one registry entry.
+
+Every cell renders its own rows, every row: nothing is cached and nothing is shared
+between files. That costs about 41 ms across a 1,504-render run (~7 s) and it is what
+keeps "Alfa looks different now" from ever meaning "check DigiMall again".
+
+### Handing over a live listing
+
+This is how a new shape gets made -- copy the Description of a listing you like:
+
+1. Open that listing in a browser, view its page source, and select the **whole**
+   Description table, from `<table …>` to `</table>`.
+2. In `description_builder.py`, write a `DescriptionTemplate` around that markup:
+   `render(rows)` fills it with the `Label: Value` pairs it is handed, `extract(text)`
+   reads the same markup back into those pairs, and `starts_with` / `ends_with` declare
+   the boundary it ships (`"<table"` / `"</table>"`).
+3. Register it in `DESCRIPTION_TEMPLATES` under a short name.
+4. Name it on **one** cell in `vendor_config.py`, e.g.
+   `description_template="wide_table"` inside `Kiachahiye`'s `alfa=PlatformConfig(...)`.
+5. Run `python main.py`. The screen and the summary tell you which shape served which
+   file before you upload anything.
+
+Step 4 is the whole deployment; steps 2-3 only *offer* a shape that no file uses yet,
+which is why they are safe to leave half-finished.
+
+### The promises a new shape has to keep
+
+`audit.py` (the upload gate) and `thin_report.py` (the weak-Description worklist) both
+read the **built file** with markup-shaped patterns, and this change deliberately left
+them alone. So a pasted shape must keep these rules -- and it does not have to hope the
+gate notices later: `validate_vendor_cfg` runs the conformance harness
+(`template_problems`) over both cells of the store you are about to run, at startup, on
+five probe rows (a plain label, a hyphenated code, an `&`, a value with doubled spaces,
+and the bolded warranty row). One broken rule = one plain-English line naming the exact
+cell, and no file is written:
+
+| The shape must… | Because the readers… |
+|---|---|
+| ship one complete `<table …>` … `</table>`, declared via `starts_with` / `ends_with` | reject a Description that does not start with `<table`, and read rows inside that one fragment |
+| write every spec row as exactly two `<td>` cells -- label first, value second | count a row only as a label/value pair; a one- or three-cell row is unreadable |
+| write the row literally as `<tr><td…>` -- no space, no line break, no attribute on the `<tr>` | read rows with `<tr><td[^>]*>(?:<strong>)?([^<]+)`, and match a bare `<tr>` when checking a row's facts |
+| keep `<table>` / `<thead>` / `<tbody>` / `<tr>` / `<td>` / `<th …>` balanced, and head a cell with an attribute (`<th style=…>`, never bare `<th>`) | count those six tags, spelling the header `"th "` with a trailing space |
+| carry exactly **one** header row of `<th>` cells | `row_check.csv`'s `Spec Rows` is `count("<tr") − 1`; no header (or two) reports one row short |
+| leave no cell empty and never repeat a label | the gate calls an empty `<td></td>` a broken description, and a row whose label duplicates another reads back as one row, not two |
+| bold the warranty row with `<strong>` -- both its cells, as `spec_table` does -- and nothing else | read bold as *the* warranty marker and prove `Attribute_Warranty` from it |
+| read back what it wrote: `extract(render(rows)) == rows` | no report can verify a shape that cannot state its own rows |
+
+The harness cannot see that header row: a table written with no `<th>` at all passes every
+machine rule above and still reports one spec row short in `row_check.csv`. It is the one
+promise to check by eye -- and `tests/test_description_templates.py` holds every template
+in the registry to it, so a shape that trips it fails the suite before a listing ships.
+
+**A shape outside this list is not impossible -- it needs the audit upgrade agreed
+first.** That upgrade is to make the gate and the worklist count rows through the
+template's own `extract()` instead of through markup regexes. Until it happens the
+harness above is the gate, and `tests/test_description_templates.py` keeps watch on the
+one rule the harness cannot see (a header-less table that passes every startup check and
+still reports one row short in `row_check.csv`).
+
+Two `audit.py` gaps stay open, and both matter more now that files can be styled
+separately. First, the gate reads its per-row Description rules -- and the "nothing was
+invented" pass over the table -- from **one** file: the first in scope, which is DigiMall
+in a both-platform run. Alfa's own `Description` therefore goes unproven, which was
+harmless while both files shipped identical bytes and is not harmless once a cell can
+pick its own shape. Second, its provenance parse matches rows literally as `<tr>`: markup
+it cannot read gives it nothing to check, and it says nothing about that. The startup
+harness blocks the second from `vendor_config.py` (a template with an attribute on its
+`<tr>` tags is refused), but a harness is not a gate -- the real fix is the same one:
+make `audit.py` and `thin_report.py` read rows through the template's `extract()`.
 
 ---
 
@@ -417,7 +512,12 @@ story:
   prints exactly which brand + category was left blank, so a gap is never
   hidden;
 * the parts land in the Description table with the part name bolded, and the
-  most important one becomes `Attribute_Warranty` (DigiMall only).
+  most important one becomes `Attribute_Warranty` (DigiMall only).  That bold is not
+  styling: `audit.py` locates the warranty row by looking for `<strong>`, so every
+  Description shape -- today's `spec_table` and any listing that gets pasted in later
+  -- must bold exactly its warranty rows and nothing else.  Freeing bold from that
+  meaning belongs to the deferred audit work described in
+  [Restyling one file's Description](#restyling-one-files-description-the-template).
 
 ### What was applied, and from where
 
@@ -491,7 +591,7 @@ kiachahiye_bulk_csv/
 ├── categories.py           §4 + §5  category trees and Product Type
 ├── title_builder.py        §6  Title formula (rebuild-first, validate-fallback)
 ├── sku_handle.py           §7  model extraction, SKU, Handle, uniqueness
-├── description_builder.py  §8  classifier, HTML table, Tags, SEO, Short Description
+├── description_builder.py  §8  classifier, Tags, SEO, Short Description + DESCRIPTION_TEMPLATES
 ├── pricing.py              §9  prices and quantity
 ├── warranty.py             §10 + §12  warranty reading logic
 ├── warranty_terms.py       §10 + §12  WARRANTY_TERMS, the only table to edit
