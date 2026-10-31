@@ -113,3 +113,44 @@ def test_an_upload_with_no_short_description_column_is_not_judged_on_bullets(
     facts = thin_report.read_listing_facts(path)
     assert facts[2][1] is None, "no column at all is not the same as an empty one"
     assert thin_report.classify(chars=2000, lines=8, spec_rows=4, bullets=facts[2][1])[0] == ""
+
+
+#: A row with enough stated facts that the listing table has real rows to count.
+SHAPE_ROW = {
+    "Title": "Dawlance 2 Taps Water Dispenser White - (WD-1051 HC)",
+    "Description": (
+        "The Dawlance WD-1051 HC is a 2 tap water dispenser in White, with a hot and cold "
+        "system and a lockable lower compartment for the bottle.\n"
+        "• Capacity: 20 Litres\n"
+        "• Color: Black & White\n"
+        "• Body Material: ABS\n"
+        "• Power Consumption: 120 W\n"
+        "Warranty: 1 Year"
+    ),
+    "Sell Price": "36,375",
+    "Original Price": "36,475",
+    "Categories": "Electronics / Home appliances / Water dispenser",
+    "Brand": "Dawlance",
+    "Image": "https://example.test/wd.jpg",
+}
+
+
+def test_the_worklist_counts_the_rows_the_uploaded_shape_actually_has(
+    pipeline: Pipeline,
+) -> None:
+    """Watched coupling: thin_report counts `<tr><td` in the finished file, not the rows shipped.
+
+    Every cell names `spec_table` today, whose rows are spelled exactly that way, so the number in
+    `Spec_Rows_In_Listing` equals the number the record carries.  The day a cell names a template
+    whose rows do not read that way this is the test that says so -- and the fix is to make
+    thin_report.py (and audit.py's evidence column) read that cell's own template, never to bend
+    the shop's listings back to fit a counter.
+    """
+    result = pipeline([SHAPE_ROW])
+    facts = thin_report.read_listing_facts(result["digi_path"])
+    for index, record in enumerate(result["records"], start=2):
+        assert len(record.description.spec_rows) > 2, "the fixture must really have rows to count"
+        assert facts[index][0] == len(record.description.spec_rows), (
+            f"{record.title}: the worklist counts in spec_table's grammar -- make thin_report.py "
+            "and audit.py template-aware before any cell names another template"
+        )

@@ -16,6 +16,7 @@ import pytest
 from conftest import Pipeline
 
 import main
+import thin_report
 from description_builder import (
     CONFORMANCE_ROWS,
     DESCRIPTION_TEMPLATES,
@@ -34,7 +35,7 @@ from models import DescriptionBundle, SpecRow
 from qc_report import QCFlagCollector
 from textutils import clean_inline
 from vendor_config import KIACHAHIYE
-from writers import build_alfa_row, build_digi_row
+from writers import _single_line, build_alfa_row, build_digi_row
 
 #: One real-shaped row: labelled bullets, an escaped `&`, and a warranty line that
 #: becomes the bold row the gates read.
@@ -434,3 +435,77 @@ def test_no_vendor_config_falls_back_to_the_shops_own_table(
         assert row["Description"].startswith(
             '<table style="width:100%;border-collapse:collapse'
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 7 -- the two readers that count the BUILT file, not the record
+# ---------------------------------------------------------------------------
+# `audit.py`'s evidence column and `thin_report.py`'s worklist grade the finished CSV, and both
+# were written while every cell shipped spec_table, so they count that shape: audit subtracts the
+# one `<th>` header row it expects (`count("<tr") - 1`), thin_report matches the literal `<tr><td`
+# (`thin_report._SPEC_ROW_RE`).  The conformance harness above already refuses most drift, because
+# it mirrors those two spellings -- which is why this is a WATCH and not a fix: `audit.py` is
+# off-limits in this change, so a template the harness happens to tolerate while these counters
+# stumble over it has to be caught here, in words that say the real upgrade is to make those
+# readers template-aware.
+def _cell_as_uploaded(template: DescriptionTemplate, rows: list[SpecRow]) -> str:
+    """The exact string a Description cell holds in the CSV -- same composition as writers."""
+    return _single_line(clean_inline(template.render(list(rows))))
+
+
+def _counter_drift(template: DescriptionTemplate, rows: list[SpecRow]) -> list[str]:
+    """Where the two file readers stop reporting the number of rows this template actually wrote."""
+    cell = _cell_as_uploaded(template, rows)
+    drift: list[str] = []
+    counters = (
+        ("audit.py's evidence column", 'count("<tr") - 1', cell.count("<tr") - 1),
+        ("thin_report.py's worklist", "findall(_SPEC_ROW_RE)", len(thin_report._SPEC_ROW_RE.findall(cell))),
+    )
+    for name, counting, got in counters:
+        if got != len(rows):
+            drift.append(
+                f"{name} reports {got} spec rows where {template.name} wrote {len(rows)} "
+                f"({counting}) -- make that reader template-aware (or give the template the "
+                "single <th> header row and the literal <tr><td shape it assumes) before "
+                "registering it on a cell"
+            )
+    try:
+        own = len(template.extract(cell))
+    except TemplateShapeError as error:
+        own = -1
+        drift.append(f"{template.name}.extract refuses its own render: {error}")
+    if own != len(rows):
+        drift.append(f"{template.name}.extract counts {own}, not {len(rows)}")
+    return drift
+
+
+@pytest.mark.parametrize(
+    "rows", [PLAIN, WITH_NOISE, CONFORMANCE_ROWS], ids=["plain", "noise", "conformance"]
+)
+def test_every_registered_template_still_tells_both_counters_the_row_count(
+    rows: list[SpecRow],
+) -> None:
+    """The registry is the promise a cell may make; this is the part of it the gates check by hand."""
+    for template in DESCRIPTION_TEMPLATES.values():
+        drift = _counter_drift(template, rows)
+        assert drift == [], "; ".join(drift)
+
+
+def test_an_indented_shape_with_a_header_row_still_counts_right() -> None:
+    """`pretty_table` breaks no rule the counters use, so it must raise no watch here either."""
+    assert _counter_drift(PRETTY_TABLE, CONFORMANCE_ROWS) == []
+
+
+def test_the_watch_catches_the_one_drift_the_harness_cannot_see() -> None:
+    """`plain_table` passes every startup rule -- and still makes audit's evidence one row short.
+
+    This is the hole the deferred audit upgrade has to close: the harness reads labels and tags,
+    never the header-row arithmetic `audit.py` does.  So the day a header-less shape is registered,
+    this test -- not the gate -- is what tells him his evidence sheet is lying.
+    """
+    assert template_problems(PLAIN_TABLE) == [], "the harness is what this drift hides behind"
+    drift = _counter_drift(PLAIN_TABLE, CONFORMANCE_ROWS)
+    assert any("audit.py" in problem for problem in drift), drift
+    assert not any("thin_report.py" in problem for problem in drift), (
+        f"plain_table keeps the <tr><td shape thin_report counts: {drift}"
+    )
