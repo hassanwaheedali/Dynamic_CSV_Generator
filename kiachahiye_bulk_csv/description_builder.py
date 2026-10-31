@@ -1,10 +1,14 @@
 """Section 8 -- the Description classifier plus Tags, SEO and Short Description.
 
-Built once per product; both output files receive the identical Description,
-Tags, SEO Title and SEO Description.  Short Description is built here too but is
-written into the DigiMall file only (Alfa's schema has no such column).
+Built once per product.  Tags, SEO Title and SEO Description are shared facts and reach both
+files unchanged; the Description is never stored as a string here -- what section 8 hands on is
+the rows themselves (``spec_rows``), and each (store x platform) cell renders them in its own
+shape.  So one platform's listings can be restyled without a fact moving anywhere else: pick the
+shape in ``description_template`` (vendor_config.py), and add a shape to DESCRIPTION_TEMPLATES
+here.  Short Description is built for every product but is written into the DigiMall file only
+(Alfa's schema has no such column).
 
-Classifier -- four ingestion modes, one output shape (``Label: Value`` pairs):
+Classifier -- four ingestion modes, one row shape (``Label: Value`` pairs):
 
   A. ``Label: Value`` lines (colon or TAB separated)
   B. ``• Label: Value`` bullets                <- the dominant shape in the sheet

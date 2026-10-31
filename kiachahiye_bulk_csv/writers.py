@@ -5,6 +5,12 @@ that may write a CSV.  Both rows are projected from a single ``ProductRecord``,
 which is what makes "derive once, project twice" (spec section 0) structural
 rather than a matter of discipline.
 
+Deriving and projecting are still two passes, but the Description is rendered here, at
+projection, in the shape that (store x platform) cell named -- so one platform's listings
+can be restyled without a fact moving in another's.  Each cell renders its own bytes; the
+record carries the rows (``spec_rows``), never a finished string, and nothing is shared
+between cells or remembered between rows.
+
 Two genuinely different Vendor constants live here and are never derived from
 the input sheet's own Vendor column, whose value is ignored entirely.
 """
@@ -143,7 +149,12 @@ def _description_cell(record: ProductRecord, vendor_cfg: VendorConfig | None, pl
 
 
 def _record_common(record: ProductRecord, vendor: str) -> dict[str, str]:
-    """Every field that is identical in both files, plus that file's Vendor."""
+    """Every field shared by both files, plus that file's Vendor.
+
+    ``Description`` is deliberately missing: it is the one column allowed to differ, and each
+    builder adds its own through :func:`_description_cell`, rendered in that cell's shape.
+    Everything here is the same fact projected twice -- if a field is added, both files get it.
+    """
     desc = record.description
     return {
         "Product ID": "",

@@ -3,8 +3,14 @@
 Design rule enforced by construction (spec section 0): there is exactly **one**
 platform-agnostic ``ProductRecord`` per input row, and the two output rows are
 thin projections of it (``DigiOutputRow`` / ``AlfaOutputRow``).  Shared facts
-(Title, Description, SKU, price, images, ...) live on ``ProductRecord`` only, so
-the DigiMall and Alfa files can never silently drift apart on a shared value.
+(Title, SKU, price, images, ...) live on ``ProductRecord`` only, so the DigiMall and
+Alfa files can never silently drift apart on a shared value.
+
+The one column that may differ between the two files is ``Description``, and it differs by
+choice, not by accident: the record carries the rows (``spec_rows``) while each cell's
+``description_template`` (vendor_config.py) decides their shape.  Nothing else is allowed to
+split, and no cell is ever handed a pre-rendered string to share -- that is what keeps a
+restyled platform from moving a fact in another's listings.
 """
 
 from __future__ import annotations
@@ -70,6 +76,10 @@ class SpecRow:
 @dataclass(frozen=True)
 class DescriptionBundle:
     """Everything section 8 builds once per product.
+
+    There is no finished ``Description`` field here: ``spec_rows`` is the data, and each
+    (store x platform) cell renders it at projection time (writers.py) in the shape named
+    by its own ``description_template`` (vendor_config.py).
 
     ``short_description`` is built for every product but only ever written into
     the DigiMall file (Alfa's schema has no such column).

@@ -5,8 +5,13 @@
 ║  1. Copy the KIACHAHIYE block below.                                  ║
 ║  2. Change the keys (sku_prefix, vendor_digi, vendor_alfa, ...).      ║
 ║  3. Fill in brands_digi, brands_alfa, categories_digi, categories_alfa║
-║  4. Run `python run_ui.py` -- the new vendor appears in the menu.     ║
-║  No other file needs to change.                                       ║
+║  4. Choose each file's Description shape. The digi and alfa cells     ║
+║     each take a description_template named from DESCRIPTION_TEMPLATES ║
+║     (description_builder.py); the default, "spec_table", is the table ║
+║     the shop has always uploaded.                                     ║
+║  5. Run `python run_ui.py` -- the new vendor appears in the menu.     ║
+║  No other file needs to change -- unless you write a brand-new shape, ║
+║  which you register in DESCRIPTION_TEMPLATES before naming it above.  ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 

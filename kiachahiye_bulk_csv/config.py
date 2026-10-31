@@ -15,7 +15,10 @@ with the same banner:
     warranty_terms.py    the warranty reference table (edit a term here)
     sku_handle.py        model codes, SKU/Handle shaping
     title_builder.py     Title formula and series words
-    description_builder.py  description, Tags, SEO and Short Description rules
+    description_builder.py  description, Tags, SEO and Short Description rules,
+        and DESCRIPTION_TEMPLATES -- the shapes a Description cell can wear
+    vendor_config.py     one block per store: its platform ids and each cell's
+        description_template, the shape that one file's Description takes
 """
 
 from __future__ import annotations
