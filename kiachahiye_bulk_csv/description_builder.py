@@ -21,7 +21,7 @@ from __future__ import annotations
 import dataclasses
 import html
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from models import DescriptionBundle, SpecRow
@@ -256,6 +256,125 @@ def build_description_html(rows: list[SpecRow]) -> str:
     """The single-line, plain-CSS spec table."""
     body = "".join(_row_html(row.label, row.value, row.is_warranty) for row in rows)
     return TABLE_HEAD + body + TABLE_TAIL
+
+
+# ---------------------------------------------------------------------------
+# Description templates -- one render input, N output shapes, chosen per cell
+# ---------------------------------------------------------------------------
+class TemplateShapeError(ValueError):
+    """A Description that a template's ``extract`` cannot read back as spec rows.
+
+    Raised instead of returning a short list: a silently dropped row is a fact that
+    left the listing without anyone noticing, which is the failure this program is
+    built to avoid.
+    """
+
+
+@dataclass(frozen=True)
+class DescriptionTemplate:
+    """One Description output shape: it writes spec rows and reads them back.
+
+    ``render`` produces the cell a (store x platform) pair ships.  ``extract`` is what
+    makes the pair provably lossless -- a template that cannot read its own output is
+    a template the QC readers cannot follow, so it is rejected here rather than at
+    the upload.  ``starts_with`` / ``ends_with`` declare the boundary the reader
+    insists on, so no reader has to guess a pasted template's markup.
+
+    Frozen so the same template object may serve several cells (the shop's "give both
+    stores this one template" case) with no shared state to edit by accident.
+    """
+
+    name: str
+    render: Callable[[list[SpecRow]], str]
+    extract: Callable[[str], list[SpecRow]]
+    starts_with: str
+    ends_with: str
+
+
+_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_CELL_RE = re.compile(r"<t([dh])\b[^>]*>(.*?)</t\1>", re.IGNORECASE | re.DOTALL)
+_STRONG_RE = re.compile(r"^\s*<strong>(.*)</strong>\s*$", re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _cell_text(inner: str) -> tuple[str, bool]:
+    """``(text, bold)`` of one cell, un-escaping exactly what :func:`_row_html` did.
+
+    Tags are stripped BEFORE entities are unescaped: `_row_html` escapes first, so a
+    source value that really wrote `<b>` arrives here as `&lt;b&gt;` and must survive
+    as those two characters, not be mistaken for markup and removed.
+    """
+    bold = False
+    matched = _STRONG_RE.match(inner)
+    if matched:
+        bold = True
+        inner = matched.group(1)
+    return html.unescape(_TAG_RE.sub("", inner)).strip(), bold
+
+
+def extract_spec_rows(
+    text: str, *, starts_with: str, ends_with: str
+) -> list[SpecRow]:
+    """Read a spec table back into the rows that produced it.
+
+    Tolerant of the things a hand-authored template varies (tag attributes, casing,
+    whitespace), strict about the two things the gates count on: a row is a pair of
+    cells, and the whole thing is one ``starts_with``...``ends_with`` fragment.  A
+    ``<th>`` row is the table's own caption, not a specification, so it is skipped.
+    """
+    body = (text or "").strip()
+    if not (body.lower().startswith(starts_with.lower()) and body.lower().endswith(ends_with.lower())):
+        raise TemplateShapeError(
+            f"Description is not one {starts_with!r}...{ends_with!r} fragment: {body[:60]!r}"
+        )
+    rows: list[SpecRow] = []
+    for chunk in _ROW_RE.findall(body):
+        cells = _CELL_RE.findall(chunk)
+        if cells and all(tag.lower() == "h" for tag, _ in cells):
+            continue  # the header row names the columns; it is not a spec row
+        if len(cells) != 2 or any(tag.lower() != "d" for tag, _ in cells):
+            raise TemplateShapeError(
+                f"a spec row must be exactly two <td> cells, got {len(cells)}: {chunk[:60]!r}"
+            )
+        (label, bold), (value, _) = (
+            _cell_text(cells[0][1]),
+            _cell_text(cells[1][1]),
+        )
+        rows.append(SpecRow(label, value, is_warranty=bold))
+    return rows
+
+
+SPEC_TABLE = DescriptionTemplate(
+    name="spec_table",
+    render=build_description_html,
+    extract=lambda text: extract_spec_rows(
+        text, starts_with="<table", ends_with="</table>"
+    ),
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+#: Every Description shape the shop may choose, by name.  A cell's
+#: ``description_template`` is a key of this dict (or an inline template object), so
+#: two stores can point at one entry and a new listing shape is added here once.
+DESCRIPTION_TEMPLATES: dict[str, DescriptionTemplate] = {SPEC_TABLE.name: SPEC_TABLE}
+
+
+def template_for(key: str | DescriptionTemplate) -> DescriptionTemplate:
+    """Resolve a cell's ``description_template`` value to the template itself.
+
+    Same shape as ``title_formula``: an object is taken as given, a string is a
+    registry name, and a bad name is an error that names the registry.
+    """
+    if isinstance(key, DescriptionTemplate):
+        return key
+    found = DESCRIPTION_TEMPLATES.get(key) if isinstance(key, str) else None
+    if found is None:
+        raise ValueError(
+            f"unknown DescriptionTemplate {key!r} -- DESCRIPTION_TEMPLATES holds "
+            f"{', '.join(sorted(DESCRIPTION_TEMPLATES)) or 'nothing yet'}"
+        )
+    return found
 
 
 # ---------------------------------------------------------------------------
