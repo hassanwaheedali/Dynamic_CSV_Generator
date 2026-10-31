@@ -257,7 +257,14 @@ def test_both_files_written_and_readable(pipeline: Pipeline) -> None:
 
 
 def test_shared_fields_never_drift_between_files(pipeline: Pipeline) -> None:
-    """Derive once, project twice: every shared column is byte-identical."""
+    """Derive once, project twice: every shared column is byte-identical.
+
+    Description is the one shared column a store may split, and only by naming a
+    different `description_template` on one of its two cells -- which is what
+    tests/test_description_templates.py and tests/test_description_isolation.py
+    prove.  This fixture projects with no store config, so both cells take the shop's
+    own table and identical bytes are still demanded here.
+    """
     result = pipeline([TC1_ROW, TC2_ROW])
     shared = [
         "Title", "Description", "Brands", "Product Type", "Tags", "SEO Title",

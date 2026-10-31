@@ -9,6 +9,7 @@ from description_builder import (
     SEO_DESC_MIN,
     SEO_TITLE_MAX,
     SEO_TITLE_MIN,
+    SPEC_TABLE,
     _bullet_sentence,
     _shed_token,
     build_description_bundle,
@@ -17,6 +18,7 @@ from description_builder import (
     subtype_label,
 )
 from models import DescriptionBundle, SpecRow
+from textutils import clean_inline
 
 TAB_BLOCK = (
     "The Dawlance DF-500 DD Inverter White is a 15 cu ft freezer, finished in White."
@@ -93,12 +95,21 @@ def _bundle(description: str, **overrides: Any) -> DescriptionBundle:
     return build_description_bundle(**kwargs)
 
 
+def _html(bundle: DescriptionBundle) -> str:
+    """What a cell shipping the shop's own table writes for this bundle.
+
+    The bundle keeps the rows; the markup is this cell's template's business, so the
+    assertions below are about `spec_rows` seen through SPEC_TABLE.
+    """
+    return clean_inline(SPEC_TABLE.render(bundle.spec_rows))
+
+
 def test_html_table_is_single_line_and_uses_the_specified_style() -> None:
     bundle = _bundle(LABEL_BULLETS)
-    assert "\n" not in bundle.description_html
-    assert "<thead>" in bundle.description_html and "<tbody>" in bundle.description_html
-    assert 'border:1px solid #ddd;padding:10px;"' in bundle.description_html
-    assert "Specification" in bundle.description_html and "Details" in bundle.description_html
+    assert "\n" not in _html(bundle)
+    assert "<thead>" in _html(bundle) and "<tbody>" in _html(bundle)
+    assert 'border:1px solid #ddd;padding:10px;"' in _html(bundle)
+    assert "Specification" in _html(bundle) and "Details" in _html(bundle)
 
 
 def test_thin_source_gets_no_filler_rows() -> None:
@@ -221,8 +232,8 @@ def test_seo_description_contains_the_recipe_line() -> None:
 
 def test_ampersands_are_escaped_in_the_html() -> None:
     bundle = _bundle("Brand: X\nCooling & Heating: Yes\nOther: a & b")
-    assert "&amp;" in bundle.description_html
-    assert " & " not in bundle.description_html
+    assert "&amp;" in _html(bundle)
+    assert " & " not in _html(bundle)
 
 
 def test_no_tag_may_contain_a_comma() -> None:
@@ -379,7 +390,7 @@ def test_the_programs_own_subtype_label_stays_out_of_every_shopper_field() -> No
     )
     labels = [row.label for row in bundle.spec_rows]
     assert "SubType" not in labels
-    assert "SubType" not in bundle.description_html
+    assert "SubType" not in _html(bundle)
     assert "SubType" not in bundle.short_description
     assert "SubType" not in bundle.seo_description
     assert "Capacity" in labels and "Color" in labels  # its neighbours are real specs

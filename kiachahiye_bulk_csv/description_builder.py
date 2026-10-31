@@ -1103,7 +1103,6 @@ def build_description_bundle(
         seen.add(key)
         deduped.append(row)
 
-    description_html = clean_inline(build_description_html(deduped))
     short_html, bullet_count = build_short_description(
         deduped, product_type, parsed.key_features, parsed.intro, brand=brand, model=model
     )
@@ -1119,7 +1118,6 @@ def build_description_bundle(
     thin = parsed.thin and not parsed.key_features
     return DescriptionBundle(
         branch=parsed.branch,
-        description_html=description_html,
         short_description=clean_inline(short_html),
         short_description_bullets=bullet_count,
         tags=tags,

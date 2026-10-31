@@ -17,10 +17,12 @@ from typing import TYPE_CHECKING
 
 from config import VENDOR_ALFA as VENDOR_ALFA  # edit in config.py
 from config import VENDOR_DIGI as VENDOR_DIGI
+from description_builder import SPEC_TABLE, template_for
 from models import AlfaOutputRow, DigiOutputRow, ProductRecord
+from textutils import clean_inline
 
 if TYPE_CHECKING:
-    from vendor_config import VendorConfig
+    from vendor_config import PlatformConfig, VendorConfig
 
 # Both Vendor constants come from config.py -- the one file to edit when a
 # vendor spelling ever changes.  They are re-exported here so every existing
@@ -115,13 +117,24 @@ def _single_line(value: str) -> str:
     return value.replace("\r", " ").replace("\n", " ")
 
 
+def _description_cell(record: ProductRecord, cell: PlatformConfig | None) -> str:
+    """One file's Description: this record's rows, in the shape that cell chose.
+
+    The rows are derived once in section 8; only the shape is per cell, so a store can
+    restyle one platform's listings without a fact moving in another's.  A cell with no
+    store config behind it -- a test, or a bare run before a store is picked -- ships
+    SPEC_TABLE, the table every cell has always uploaded.
+    """
+    template = SPEC_TABLE if cell is None else template_for(cell.description_template)
+    return _single_line(clean_inline(template.render(record.description.spec_rows)))
+
+
 def _record_common(record: ProductRecord, vendor: str) -> dict[str, str]:
     """Every field that is identical in both files, plus that file's Vendor."""
     desc = record.description
     return {
         "Product ID": "",
         "Title": record.title,
-        "Description": _single_line(desc.description_html),
         "Vendor": vendor,
         "Brands": "",
         "Product Type": record.product_type,
@@ -157,6 +170,9 @@ def build_digi_row(
     """Project one ProductRecord into DigiMall's 66-column schema (section 2A)."""
     vendor = vendor_cfg.digi.vendor_name if vendor_cfg is not None else VENDOR_DIGI
     values = _record_common(record, vendor)
+    values["Description"] = _description_cell(
+        record, vendor_cfg.digi if vendor_cfg is not None else None
+    )
     values["Brands"] = "" if record.brand.digi_id is None else str(record.brand.digi_id)
     values["Category"] = record.category.digi_path or ""
     values["Short Description"] = _single_line(record.description.short_description)
@@ -177,6 +193,9 @@ def build_alfa_row(
     """
     vendor = vendor_cfg.alfa.vendor_name if vendor_cfg is not None else VENDOR_ALFA
     values = _record_common(record, vendor)
+    values["Description"] = _description_cell(
+        record, vendor_cfg.alfa if vendor_cfg is not None else None
+    )
     values["Brands"] = "" if record.brand.alfa_id is None else str(record.brand.alfa_id)
     # Alfa's Category is the BARE LEAF ID only -- never a joined path.
     values["Category"] = record.category.alfa_id or ""

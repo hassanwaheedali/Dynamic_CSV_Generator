@@ -8,15 +8,20 @@ lossless), and the registry is the only place a cell's template is looked up.
 from __future__ import annotations
 
 import dataclasses
+import html
+import re
 from pathlib import Path
 
 import pytest
+from conftest import Pipeline
 
 import main
 from description_builder import (
     CONFORMANCE_ROWS,
     DESCRIPTION_TEMPLATES,
     SPEC_TABLE,
+    TABLE_HEAD,
+    TABLE_TAIL,
     DescriptionTemplate,
     TemplateShapeError,
     assert_template_conforms,
@@ -25,8 +30,29 @@ from description_builder import (
     template_for,
     template_problems,
 )
-from models import SpecRow
+from models import DescriptionBundle, SpecRow
 from qc_report import QCFlagCollector
+from textutils import clean_inline
+from vendor_config import KIACHAHIYE
+from writers import build_alfa_row, build_digi_row
+
+#: One real-shaped row: labelled bullets, an escaped `&`, and a warranty line that
+#: becomes the bold row the gates read.
+PROVEN_ROW = {
+    "Title": "Dawlance 2 Taps Water Dispenser White - (WD-1051 HC)",
+    "Description": (
+        "The Dawlance WD-1051 HC is a 2 tap water dispenser.\n"
+        "\u2022 Capacity: 20 Litres\n"
+        "\u2022 Color: Black & White\n"
+        "\u2022 Body Material: ABS\n"
+        "Warranty: 1 Year"
+    ),
+    "Sell Price": "36,375",
+    "Original Price": "36,475",
+    "Categories": "Electronics / Home appliances / Water dispenser",
+    "Brand": "Dawlance",
+    "Image": "https://example.invalid/wd-1051.jpg",
+}
 
 PLAIN = [
     SpecRow("Brand", "Haier"),
@@ -259,3 +285,152 @@ def test_assert_template_conforms_names_the_template() -> None:
     with pytest.raises(ValueError) as caught:
         assert_template_conforms(_probe("<tr><td>{label}</td><td>{value}</td><td>x</td></tr>"))
     assert "probe" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# Task 4 -- the Description is rendered at projection, from this cell's template
+# ---------------------------------------------------------------------------
+def _plain_two_column_table(rows: list[SpecRow]) -> str:
+    """A second conforming shape: no header, no inline styles."""
+    body = "".join(
+        "<tr>"
+        f"<td>{'<strong>' if row.is_warranty else ''}{html.escape(row.label, quote=False)}"
+        f"{'</strong>' if row.is_warranty else ''}</td>"
+        f"<td>{'<strong>' if row.is_warranty else ''}{html.escape(row.value, quote=False)}"
+        f"{'</strong>' if row.is_warranty else ''}</td>"
+        "</tr>"
+        for row in rows
+    )
+    return f"<table><tbody>{body}</tbody></table>"
+
+
+PLAIN_TABLE = DescriptionTemplate(
+    name="plain_table",
+    render=_plain_two_column_table,
+    extract=lambda text: extract_spec_rows(
+        text, starts_with="<table", ends_with="</table>"
+    ),
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+#: Indented the way a hand-pasted listing usually is, one line per row.
+SPACED_ROW = '<tr><td style="c">{label}</td><td style="c">{value}</td></tr>'
+
+
+def _pretty(rows: list[SpecRow]) -> str:
+    """One row per line -- legal, because each break leaves exactly one space."""
+    body = "".join(
+        "\n  " + SPACED_ROW.format(
+            label=f"<strong>{r.label}</strong>" if r.is_warranty else r.label,
+            value=f"<strong>{r.value}</strong>" if r.is_warranty else r.value,
+        )
+        for r in rows
+    )
+    return f"{TABLE_HEAD}{body}\n{TABLE_TAIL}"
+
+
+PRETTY_TABLE = DescriptionTemplate(
+    name="pretty_table",
+    render=_pretty,
+    extract=SPEC_TABLE.extract,
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+
+def test_a_second_shape_passes_the_same_harness() -> None:
+    """Two real alternatives prove the harness is not spec_table in disguise."""
+    assert template_problems(PLAIN_TABLE) == []
+    assert template_problems(PRETTY_TABLE) == []
+
+
+def test_a_skeleton_indented_between_its_block_tags_is_refused() -> None:
+    """Stripped of tags, `<thead>\\n <tr>\\n <th` leaves runs of spaces the gate bans.
+
+    This is not pedantry: it is `audit.py`'s own rule, so a pasted listing whose table
+    tag, header and body each sit on their own line cannot ship until that gate is
+    made template-aware.
+    """
+    indented = _probe(
+        VALID_ROW,
+        head='<thead>\n  <tr><th style="c">Specification</th>'
+        '<th style="c">Details</th></tr>\n</thead>\n',
+    )
+    assert any("double space" in p for p in template_problems(indented))
+
+
+def test_the_bundle_stores_rows_not_a_rendered_string() -> None:
+    """One derivation, many projections: nothing may cache the chosen shape."""
+    names = {f.name for f in dataclasses.fields(DescriptionBundle)}
+    assert "description_html" not in names
+    assert "spec_rows" in names
+
+
+def test_the_file_cell_is_this_cells_template_over_the_records_rows(
+    pipeline: Pipeline,
+) -> None:
+    result = pipeline([PROVEN_ROW])
+    for row, record in zip(result["digi"], result["records"], strict=True):
+        assert row["Description"] == clean_inline(
+            SPEC_TABLE.render(record.description.spec_rows)
+        )
+    for row, record in zip(result["alfa"], result["records"], strict=True):
+        assert row["Description"] == clean_inline(
+            SPEC_TABLE.render(record.description.spec_rows)
+        )
+
+
+def test_a_cell_can_ship_a_different_shape_than_its_sibling(
+    pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner's rule, smallest version: alfa's cell changes, digi's does not."""
+    result = pipeline([PROVEN_ROW])
+    cfg = dataclasses.replace(
+        KIACHAHIYE,
+        alfa=dataclasses.replace(KIACHAHIYE.alfa, description_template="plain_table"),
+    )
+    monkeypatch.setitem(DESCRIPTION_TEMPLATES, PLAIN_TABLE.name, PLAIN_TABLE)
+
+    digi = [build_digi_row(r, cfg).values["Description"] for r in result["records"]]
+    alfa = [build_alfa_row(r, cfg).values["Description"] for r in result["records"]]
+
+    assert digi == [
+        clean_inline(SPEC_TABLE.render(r.description.spec_rows))
+        for r in result["records"]
+    ]
+    assert alfa == [
+        clean_inline(PLAIN_TABLE.render(r.description.spec_rows))
+        for r in result["records"]
+    ]
+    assert alfa != digi
+
+
+def test_a_pretty_printed_template_still_ships_one_flat_line(
+    pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trap audit.py sets: a template may be indented, its cell may not be."""
+    result = pipeline([PROVEN_ROW])
+    cfg = dataclasses.replace(
+        KIACHAHIYE,
+        alfa=dataclasses.replace(KIACHAHIYE.alfa, description_template="pretty_table"),
+    )
+    monkeypatch.setitem(DESCRIPTION_TEMPLATES, PRETTY_TABLE.name, PRETTY_TABLE)
+
+    for record in result["records"]:
+        cell = build_alfa_row(record, cfg).values["Description"]
+        assert len(cell.splitlines()) == 1
+        assert "  " not in re.sub(r"<[^>]+>", "", cell)
+        assert cell.startswith("<table") and cell.endswith("</table>")
+        assert SPEC_TABLE.extract(cell) == record.description.spec_rows
+
+
+def test_no_vendor_config_falls_back_to_the_shops_own_table(
+    pipeline: Pipeline,
+) -> None:
+    """The fixture path (and any caller without a store) keeps today's bytes."""
+    result = pipeline([PROVEN_ROW])
+    for row in result["digi"] + result["alfa"]:
+        assert row["Description"].startswith(
+            '<table style="width:100%;border-collapse:collapse'
+        )

@@ -76,7 +76,6 @@ class DescriptionBundle:
     """
 
     branch: str
-    description_html: str
     short_description: str
     short_description_bullets: int
     tags: list[str]
