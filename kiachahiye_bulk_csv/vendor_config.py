@@ -15,6 +15,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from description_builder import (
+    DescriptionTemplate,
+    template_for,
+    template_problems,
+)
+
 TitleFormula = Callable[[dict[str, str]], str]
 
 
@@ -29,6 +35,11 @@ class PlatformConfig:
     vendor_name: str  # written verbatim into the "Vendor" column
     brands: dict[str, int]  # normalized_brand_key -> platform brand id
     categories: dict[str, str]  # category_key -> platform category path/id
+    # This (store x platform) cell's Description shape: a name in
+    # description_builder.DESCRIPTION_TEMPLATES, or a DescriptionTemplate written here.
+    # One cell's value moves one file: two stores naming the same template share it,
+    # and a store that says nothing ships the spec table the shop has always uploaded.
+    description_template: str | DescriptionTemplate = "spec_table"
 
 
 @dataclass(frozen=True)
@@ -352,6 +363,25 @@ VENDOR_REGISTRY: dict[str, VendorConfig] = {
 }
 
 
+def _description_template_errors(cfg: VendorConfig, platform: str) -> list[str]:
+    """Why one cell's `description_template` cannot ship, one string per reason.
+
+    Checked here rather than at upload time because the shop's gate reads the built
+    Description with markup-shaped rules: a template those rules cannot follow has to
+    stop the run at the terminal, naming the exact cell to edit -- not sit unaudited
+    in a live listing.
+    """
+    cell = getattr(cfg, platform)
+    label = f"{cfg.display_name}.{platform}.description_template"
+    value = cell.description_template
+    try:
+        template = template_for(value)
+    except ValueError as error:
+        return [f"{label} -- {error}"]
+    return [f"{label} ({template.name}) -- {problem}"
+            for problem in template_problems(template)]
+
+
 def validate_vendor_cfg(cfg: VendorConfig) -> None:
     """Fail loudly if required fields are absent or obviously wrong."""
     errors: list[str] = []
@@ -366,6 +396,8 @@ def validate_vendor_cfg(cfg: VendorConfig) -> None:
             f"digi.vendor_name and alfa.vendor_name must differ "
             f"(both are {cfg.digi.vendor_name!r})"
         )
+    for platform in ("digi", "alfa"):
+        errors.extend(_description_template_errors(cfg, platform))
     if errors:
         raise ConfigError(
             f"VendorConfig '{cfg.display_name}' is invalid:\n"

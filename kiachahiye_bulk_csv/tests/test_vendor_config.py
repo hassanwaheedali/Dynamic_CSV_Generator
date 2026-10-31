@@ -9,6 +9,7 @@ editing ``sku_prefix``, ``vendor_name``, ``title_formula``, ``brands``, or
 from __future__ import annotations
 
 import csv
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,12 @@ import audit
 import main as pipeline_main
 from brands import resolve_brand
 from categories import resolve_category, resolve_product_type
+from description_builder import (
+    DESCRIPTION_TEMPLATES,
+    SPEC_TABLE,
+    DescriptionTemplate,
+    template_for,
+)
 from sku_handle import SKU_PREFIX, ModelExtraction, build_sku_token
 from title_builder import build_title
 from vendor_config import (
@@ -364,3 +371,97 @@ def test_adversarial_brand_display_and_no_title_brand_stutter() -> None:
     )
     assert res.title.startswith("Haier HSU-12HFM - ")
     assert not res.title.startswith("Haier Haier ")
+
+
+# ---------------------------------------------------------------------------
+# Per-(store x platform) Description template
+# ---------------------------------------------------------------------------
+def _cell(platform: str, **overrides: object) -> PlatformConfig:
+    """One store's platform block, with only the override changed."""
+    base = getattr(KIACHAHIYE, platform)
+    return dataclasses.replace(base, **overrides)
+
+
+def _store(**overrides: object) -> VendorConfig:
+    return dataclasses.replace(KIACHAHIYE, **overrides)
+
+
+def test_every_cell_defaults_to_todays_template() -> None:
+    """A store that says nothing ships the table the shop uses today."""
+    for key, cfg in VENDOR_REGISTRY.items():
+        for platform in ("digi", "alfa"):
+            cell = getattr(cfg, platform)
+            assert cell.description_template == "spec_table", (key, platform)
+            assert template_for(cell.description_template) is SPEC_TABLE
+
+
+def test_a_template_may_be_shared_by_name_across_stores() -> None:
+    """Requirement: the same named template on two stores is one object, not a copy."""
+    ajmer_alfa = dataclasses.replace(AJMER.alfa, description_template="spec_table")
+    assert template_for(ajmer_alfa.description_template) is template_for(
+        KIACHAHIYE.alfa.description_template
+    )
+    validate_vendor_cfg(dataclasses.replace(AJMER, alfa=ajmer_alfa))
+
+
+def test_a_bad_template_name_names_the_cell_that_has_it() -> None:
+    broken = _store(alfa=_cell("alfa", description_template="spec_tabl"))
+    with pytest.raises(ConfigError) as caught:
+        validate_vendor_cfg(broken)
+    message = str(caught.value)
+    assert "alfa.description_template" in message
+    assert "spec_tabl" in message
+    assert "spec_table" in message  # names what is actually available
+
+
+def test_a_digi_template_problem_is_named_as_digi() -> None:
+    broken = _store(digi=_cell("digi", description_template="pretty_table"))
+    with pytest.raises(ConfigError) as caught:
+        validate_vendor_cfg(broken)
+    assert "digi.description_template" in str(caught.value)
+
+
+def test_both_platforms_are_reported_in_one_raise() -> None:
+    """One run must show every config hole, not the first one and then silence."""
+    broken = _store(
+        digi=_cell("digi", description_template="nope_digi"),
+        alfa=_cell("alfa", description_template="nope_alfa"),
+    )
+    with pytest.raises(ConfigError) as caught:
+        validate_vendor_cfg(broken)
+    message = str(caught.value)
+    assert "digi.description_template" in message
+    assert "alfa.description_template" in message
+
+
+def test_a_template_the_gates_cannot_read_fails_at_startup() -> None:
+    """A pasted shape is judged before a single row is written."""
+    lossy = DescriptionTemplate(
+        name="lossy",
+        render=SPEC_TABLE.render,
+        extract=lambda _text: [],
+        starts_with="<table",
+        ends_with="</table>",
+    )
+    broken = _store(alfa=_cell("alfa", description_template=lossy))
+    with pytest.raises(ConfigError) as caught:
+        validate_vendor_cfg(broken)
+    message = str(caught.value)
+    assert "lossy" in message
+    assert "alfa.description_template" in message
+
+
+def test_an_inline_template_object_is_valid_on_its_own() -> None:
+    """A cell may hold the template itself, not only a registry name."""
+    inline = dataclasses.replace(
+        _cell("alfa"), description_template=DESCRIPTION_TEMPLATES["spec_table"]
+    )
+    validate_vendor_cfg(_store(alfa=inline))
+
+
+def test_a_description_template_is_not_enough_without_a_vendor_name() -> None:
+    """The new knob must not silence the checks that were here before it."""
+    broken = _store(alfa=dataclasses.replace(_cell("alfa"), vendor_name=""))
+    with pytest.raises(ConfigError) as caught:
+        validate_vendor_cfg(broken)
+    assert "alfa.vendor_name is empty" in str(caught.value)
