@@ -378,6 +378,132 @@ def template_for(key: str | DescriptionTemplate) -> DescriptionTemplate:
 
 
 # ---------------------------------------------------------------------------
+# Template conformance -- run once at startup, in place of a gate that reads markup
+# ---------------------------------------------------------------------------
+#: The five rows every template is tried on: a Brand row, a hyphenated code, an
+#: escaped ``&``, a value whose doubled space ``clean_inline`` must collapse, and
+#: the warranty row whose boldness the gates read as the warranty marker.
+CONFORMANCE_ROWS: list[SpecRow] = [
+    SpecRow("Brand", "Haier"),
+    SpecRow("Model", "WD-1051 HC"),
+    SpecRow("Color", "Black & White"),
+    SpecRow("In the Box", "Remote  with  2 x AA"),
+    SpecRow("Warranty", "1 Year", is_warranty=True),
+]
+
+#: The tag pairs ``audit.py`` counts, spelled as that gate spells them.  The
+#: trailing space in ``"th "`` is the gate's own blind spot -- a header written
+#: bare as ``<th>`` counts as unbalanced -- and a template has to live with it,
+#: because the gate is not being changed to accommodate a new shape.
+CONFORMANCE_TAGS = ("table", "thead", "tbody", "tr", "td", "th ")
+
+_EMPTY_CELL_RE = re.compile(r"<td[^>]*></td>", re.IGNORECASE)
+_GATE_ROW_RE = re.compile(r"<tr>", re.IGNORECASE)
+_GATE_LABEL_RE = re.compile(r"<tr><td[^>]*>(?:<strong>)?([^<]+)", re.IGNORECASE)
+
+
+def _composed_cell(template: DescriptionTemplate) -> str:
+    """Exactly the string a cell ships: the render, inline-flattened."""
+    return clean_inline(template.render(list(CONFORMANCE_ROWS)))
+
+
+def _value_of_row_chunk(chunk: str) -> str:
+    """Inner HTML of a row's second cell, or "" when the row is not two cells."""
+    cells = _CELL_RE.findall(chunk)
+    return cells[1][1] if len(cells) == 2 else ""
+
+
+def template_problems(template: DescriptionTemplate) -> list[str]:
+    """Every way one Description shape would fail the gates that already exist.
+
+    The shop's upload gate (``audit.py``) and the thin-listing report read the
+    *built* file with markup-shaped regexes.  A template is free to look however
+    the store wants -- provided those readers still see every row it writes.  This
+    checks a template's own ``render`` and ``extract`` against exactly the rules
+    those readers apply, so a pasted listing shape that they could not follow is
+    refused at startup instead of shipping listings nobody can verify.
+
+    Returns one human-readable string per failed rule; empty means conforming.
+    """
+    problems: list[str] = []
+    cell = _composed_cell(template)
+
+    # --- the boundary, both as declared and as the gate hard-codes it
+    if (template.starts_with, template.ends_with) != ("<table", "</table>"):
+        problems.append(
+            "the gates demand one complete <table>...</table>, so a template must "
+            f"declare starts_with='<table' and ends_with='</table>', not "
+            f"{template.starts_with!r}/{template.ends_with!r}"
+        )
+    if not (cell.startswith("<table") and cell.endswith("</table>")):
+        problems.append(
+            f"description is not one complete <table>...</table> fragment: {cell[:60]!r}"
+        )
+    if len(cell.splitlines()) != 1:
+        problems.append("description has a raw line break")
+    for tag in CONFORMANCE_TAGS:
+        opened, closed = cell.count(f"<{tag}"), cell.count(f"</{tag.strip()}>")
+        if opened != closed:
+            problems.append(
+                f"unbalanced <{tag.strip()}> tags: {opened} open, {closed} close"
+            )
+    if _EMPTY_CELL_RE.search(cell):
+        problems.append("description has an empty cell")
+    if "  " in _TAG_RE.sub("", cell):
+        problems.append("description has a double space after the tags are stripped")
+
+    # --- the row and label readers the gate and the thin report both use
+    found = [html.unescape(_TAG_RE.sub("", m)) for m in _GATE_LABEL_RE.findall(cell)]
+    wanted = [row.label for row in CONFORMANCE_ROWS]
+    if found != wanted:
+        problems.append(
+            f"the gate's row reader found {len(found)} spec rows where the template "
+            f"wrote {len(wanted)}: {found} -- it reads rows only as `<tr><td...>`"
+        )
+    if len(found) != len(set(found)):
+        problems.append("description repeats a label")
+    if cell.count("<tr") != len(_GATE_ROW_RE.findall(cell)):
+        problems.append(
+            "the gate's fact checker reads only a literal <tr>; an attribute on the "
+            "row tag makes the row invisible to it"
+        )
+
+    # --- bold is the warranty marker, not decoration
+    body_rows = [chunk for chunk in _ROW_RE.findall(cell) if "<td" in chunk.lower()]
+    if len(body_rows) == len(CONFORMANCE_ROWS):
+        bolded = [i for i, chunk in enumerate(body_rows) if "<strong>" in _value_of_row_chunk(chunk)]
+        expected = [i for i, row in enumerate(CONFORMANCE_ROWS) if row.is_warranty]
+        if bolded != expected:
+            problems.append(
+                "a value cell is bolded as a warranty row while the gate uses bold to "
+                f"spot one: bold rows {bolded}, warranty rows {expected}"
+            )
+
+    # --- and the template must read back what it wrote
+    try:
+        back = template.extract(template.render(list(CONFORMANCE_ROWS)))
+    except TemplateShapeError as error:
+        problems.append(f"extract() refused its own output: {error}")
+    else:
+        if back != CONFORMANCE_ROWS:
+            problems.append(
+                f"extract() read back {[r.label for r in back]} where the harness "
+                f"wrote {[r.label for r in CONFORMANCE_ROWS]}"
+            )
+    return problems
+
+
+def assert_template_conforms(template: DescriptionTemplate) -> None:
+    """Raise with every reason ``template`` cannot ship, if there is any."""
+    problems = template_problems(template)
+    if problems:
+        raise ValueError(
+            f"DescriptionTemplate {template.name!r} cannot ship a Description the "
+            "existing gates can read:\n  " + "\n  ".join(problems)
+        )
+
+
+# ---------------------------------------------------------------------------
 # Short Description (DigiMall file only)
 # ---------------------------------------------------------------------------
 def _headline_rows(rows: list[SpecRow], limit: int = 3) -> list[SpecRow]:
