@@ -142,10 +142,12 @@ def _description_cell(record: ProductRecord, vendor_cfg: VendorConfig | None, pl
     """One file's Description: this record's rows, in the shape that cell chose.
 
     The rows are derived once in section 8; only the shape is per cell, so a store can restyle one
-    platform's listings without a fact moving in another's.
+    platform's listings without a fact moving in another's.  The copy is what makes that true for a
+    hand-pasted template too: a render that trims the list it is handed cannot touch the record, and
+    through it the other cell's file.
     """
     template = template_for_cell(vendor_cfg, platform)
-    return _single_line(clean_inline(template.render(record.description.spec_rows)))
+    return _single_line(clean_inline(template.render(list(record.description.spec_rows))))
 
 
 def _record_common(record: ProductRecord, vendor: str) -> dict[str, str]:

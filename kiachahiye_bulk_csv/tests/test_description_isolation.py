@@ -260,3 +260,41 @@ def test_the_resolver_that_names_a_cell_is_the_one_that_renders_it() -> None:
     assert template_for_cell(None, "digi") is SPEC_TABLE, "a bare run ships the shop's own table"
     with pytest.raises(KeyError):
         template_for_cell(cfg, "digiity")
+
+
+def test_a_cell_may_not_edit_the_rows_it_is_handed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirement 1 from the other side: a shape owns its bytes, not the record.
+
+    ``spec_rows`` is one list on one record and both cells read it.  A pasted template that trims
+    the list it is handed -- dropping rows it cannot draw -- would restyle the sibling file too, so
+    the projection gives every render its own copy of the rows.
+    """
+
+    def trimming(rows: list[SpecRow]) -> str:
+        rows[:] = [row for row in rows if row.label != "Color"]
+        return SPEC_TABLE.render(rows)
+
+    monkeypatch.setitem(
+        DESCRIPTION_TEMPLATES,
+        "trimming",
+        DescriptionTemplate(
+            name="trimming",
+            render=trimming,
+            extract=SPEC_TABLE.extract,
+            starts_with="<table",
+            ends_with="</table>",
+        ),
+    )
+    record = run_pipeline(tmp_path, ROWS)["records"][0]
+    cfg = _cell(VENDOR_REGISTRY["kiachahiye"], "digi", "trimming")
+
+    digi = build_digi_row(record, cfg).values["Description"]
+    alfa = build_alfa_row(record, cfg).values["Description"]
+
+    assert "Color" not in digi, "the fixture stopped dropping the row it claims to drop"
+    assert "Color" in alfa, (
+        "digi's template edited the rows the record shares, so one cell's shape reached "
+        "the other file -- hand every render its own copy of spec_rows"
+    )
