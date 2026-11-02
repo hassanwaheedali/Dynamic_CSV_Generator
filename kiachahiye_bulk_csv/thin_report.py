@@ -7,8 +7,9 @@ line?**  Those are the rows worth sending back to whoever writes the copy.
 It reads three things and writes one CSV:
 
     the source sheet        the Description itself (characters, lines)
-    the DigiMall output     the spec rows the listing really shows, the Product
-                            Type and the Short Description's bullet count
+    the built upload        the spec rows the listing really shows, the Product
+                            Type and the Short Description's bullet count -- on a
+                            one-platform run that file is that platform's own CSV
     the QC report           the flags already raised against that row
 
 Nothing here feeds the pipeline, and the pipeline never reads this report: the
@@ -17,7 +18,7 @@ calls out.  Row numbers are the source sheet's own line numbers, the same ones
 the QC report uses, so a row can be found in the sheet by its number.
 
     python3 thin_report.py                      # the paths in config.py
-    python3 thin_report.py --input X.csv --digi Y.csv --qc Z.csv --out W.csv
+    python3 thin_report.py --input X.csv --built Y.csv --qc Z.csv --out W.csv
 """
 
 from __future__ import annotations

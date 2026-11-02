@@ -10,6 +10,8 @@ from __future__ import annotations
 import dataclasses
 import html
 import re
+from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -18,13 +20,17 @@ from conftest import Pipeline
 import main
 import thin_report
 from description_builder import (
+    _PROBE_STANDIN,
+    _TAG_RE,
     CONFORMANCE_ROWS,
     DESCRIPTION_TEMPLATES,
+    ESCAPE_PROBE,
     SPEC_TABLE,
     TABLE_HEAD,
     TABLE_TAIL,
     DescriptionTemplate,
     TemplateShapeError,
+    _nesting_problems,
     assert_template_conforms,
     build_description_html,
     extract_spec_rows,
@@ -183,6 +189,21 @@ VALID_HEAD = (
 )
 
 
+def _plain_escape(text: str) -> str:
+    """Exactly what :func:`_row_html` does to a cell: ``html.escape(text, quote=False)``."""
+    return html.escape(text, quote=False)
+
+
+def _cell_of(text: str, bold: bool, escape=_plain_escape) -> str:
+    """One cell of a shape: the text escaped, then bolded if the row says so.
+
+    Every conforming alternative in this file does these two things; they are the
+    parts of ``_row_html`` a hand-pasted listing has to keep.
+    """
+    written = escape(text)
+    return f"<strong>{written}</strong>" if bold else written
+
+
 def _probe(
     row: str = VALID_ROW,
     *,
@@ -191,14 +212,21 @@ def _probe(
     bold_all: bool = False,
     name: str = "probe",
 ) -> DescriptionTemplate:
-    """A template that writes the harness's own sample rows in a given spelling."""
-    sample = CONFORMANCE_ROWS if rows is None else rows
+    """A template that writes the harness's own sample rows in a given spelling.
 
-    def render(_rows: list[SpecRow]) -> str:
+    Like every shape it stands for, it escapes each cell and bolds what the row says
+    to bold.  ``rows`` pins the data instead, for a shape that can only be shown by
+    rows the harness does not probe with (a repeated label) -- and a pinned probe is a
+    render that ignores what it is handed, so it picks up the escaping and round-trip
+    problems on top of the one its test asks about.
+    """
+
+    def render(given: list[SpecRow]) -> str:
+        sample = given if rows is None else rows
         body = "".join(
             row.format(
-                label=f"<strong>{r.label}</strong>" if (bold_all or r.is_warranty) else r.label,
-                value=f"<strong>{r.value}</strong>" if (bold_all or r.is_warranty) else r.value,
+                label=_cell_of(r.label, bold_all or r.is_warranty),
+                value=_cell_of(r.value, bold_all or r.is_warranty),
             )
             for r in sample
         )
@@ -289,6 +317,568 @@ def test_assert_template_conforms_names_the_template() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 10 review -- the rules a pasted table breaks that the harness could not see
+# ---------------------------------------------------------------------------
+def _shape(render: Callable[[list[SpecRow]], str], name: str) -> DescriptionTemplate:
+    """A template around one ``render``, reading back the way ``spec_table`` does."""
+    return DescriptionTemplate(
+        name=name,
+        render=render,
+        extract=SPEC_TABLE.extract,
+        starts_with="<table",
+        ends_with="</table>",
+    )
+
+
+def _is_warranty(row: SpecRow) -> bool:
+    """The boldness a conforming shape owes its rows: whatever the row says."""
+    return row.is_warranty
+
+
+def _table_of(
+    rows: list[SpecRow],
+    bold: Callable[[SpecRow], bool],
+    escape=_plain_escape,
+    join: str = "",
+) -> str:
+    """``spec_table``'s shape with boldness, escaping and row padding left to the caller.
+
+    The three knobs a hand-pasted listing varies on its own: which cells it bolds,
+    whether it escapes the text it interpolates, and what it puts between the rows.
+    """
+    body = join.join(
+        VALID_ROW.format(
+            label=_cell_of(row.label, bold(row), escape),
+            value=_cell_of(row.value, bold(row), escape),
+        )
+        for row in rows
+    )
+    return f"<table>{VALID_HEAD}<tbody>{body}</tbody></table>"
+
+
+def test_a_shape_that_interpolates_values_raw_is_refused() -> None:
+    """Requirement: a cell ships markup the browser can parse, not the value's own.
+
+    ``spec_table`` escapes each row (``html.escape(value, quote=False)``), so a sheet
+    that says ``Steel <b>1 mm</b> & "X"`` arrives as text.  A pasted listing that
+    drops the escaping sends the same characters as tags and entities, and the gates
+    then count a table that has nothing to do with the specification.
+    """
+    raw = _shape(lambda rows: _table_of(rows, _is_warranty, escape=str), "raw")
+    problems = template_problems(raw)
+    assert any("escape" in p.lower() for p in problems), problems
+    assert any("&" in p for p in problems), problems
+    with pytest.raises(ValueError):
+        assert_template_conforms(raw)
+
+
+def test_a_shape_that_escapes_quotes_too_is_still_accepted() -> None:
+    """`&quot;` and `&#x27;` are legal entities: the ampersand rule must not bite them."""
+    quoted = _shape(
+        lambda rows: _table_of(rows, _is_warranty, escape=_escaper(quotes=True)), "quoted"
+    )
+    assert template_problems(quoted) == []
+
+
+def _escaper(entity: str | None = None, quotes: bool = False):
+    """An escaping choice for a probe shape, spelling its ampersand ``entity``.
+
+    ``entity`` replaces the ``&amp;`` that ``html.escape`` writes for every `&` in the
+    shop's data, which is how a hand-pasted table gets an entity subtly wrong -- and a
+    wrong one is the case the round-trip alone cannot see.
+    """
+
+    def escape(text: str) -> str:
+        written = html.escape(text) if quotes else html.escape(text, quote=False)
+        return written if entity is None else written.replace("&amp;", entity)
+
+    return escape
+
+
+LEGAL_ENTITIES = [
+    pytest.param(_escaper(), id="named-&amp;"),
+    pytest.param(_escaper("&#38;"), id="decimal"),
+    pytest.param(_escaper("&#x26;"), id="hexadecimal"),
+    pytest.param(_escaper(quotes=True), id="with-quotes"),
+]
+BROKEN_ENTITIES = [
+    pytest.param(_escaper("&amp"), id="named-without-semicolon"),
+    pytest.param(_escaper("&#38"), id="decimal-without-semicolon"),
+    pytest.param(_escaper("&"), id="nothing-at-all"),
+]
+
+
+@pytest.mark.parametrize("escape", LEGAL_ENTITIES)
+def test_an_entity_a_browser_reads_is_not_an_unescaped_ampersand(
+    escape: Callable[[str], str],
+) -> None:
+    """`&amp;`, `&#38;`, `&#x26;`, `&quot;`, `&#x27;` are all legal spellings of the shop's `&`."""
+    shape = _shape(lambda rows: _table_of(rows, _is_warranty, escape=escape), "entity")
+    assert template_problems(shape) == []
+
+
+@pytest.mark.parametrize("escape", BROKEN_ENTITIES)
+def test_an_entity_the_browser_cannot_read_is_refused(
+    escape: Callable[[str], str],
+) -> None:
+    """A missing semicolon (or no escaping at all) ships an ampersand the file cannot mean."""
+    shape = _shape(lambda rows: _table_of(rows, _is_warranty, escape=escape), "half-entity")
+    problems = template_problems(shape)
+    assert any("ampersand" in p for p in problems), problems
+
+
+def test_a_structural_entity_in_the_skeleton_is_accepted() -> None:
+    """The shape's own `&nbsp;` between rows is not the shop's text, and not a defect.
+
+    Two rules could mistake it for one: the ampersand scan (it is a valid entity) and
+    the leaked-markup scan (it is in every render the shape makes, padded or not).
+    """
+    padded = _shape(
+        lambda rows: _table_of(rows, _is_warranty, join="&nbsp;"), "nbsp_padded"
+    )
+    assert template_problems(padded) == []
+
+
+@pytest.mark.parametrize("entity", ["&nbsp;", "&copy;", "&deg;", "&mdash;"])
+def test_a_standard_name_the_browser_decodes_is_accepted_in_that_position(
+    entity: str,
+) -> None:
+    """Names straight from the HTML5 table stay legal, in the shape's own markup."""
+    padded = _shape(
+        lambda rows: _table_of(rows, _is_warranty, join=entity), f"padded_{entity[1:-1]}"
+    )
+    assert template_problems(padded) == []
+
+
+def test_an_entity_no_browser_has_a_name_for_is_refused() -> None:
+    """`&bogus;` is the shape of an entity and not the thing itself.
+
+    Syntactically the ampersand rule has to wave it through -- it is followed by a
+    name and a semicolon -- but the HTML5 table has no such entry, so `html.unescape`
+    leaves all eight characters alone and the listing prints `&bogus;` to the customer.
+    In a structural position (here, between the rows) no cell reads it back either, so
+    the round-trip cannot see it: this rule is the only one that can.
+    """
+    padded = _shape(
+        lambda rows: _table_of(rows, _is_warranty, join="&bogus;"), "bogus_padded"
+    )
+    problems = template_problems(padded)
+    assert any("&bogus;" in p and "entity" in p.lower() for p in problems), problems
+    with pytest.raises(ValueError):
+        assert_template_conforms(padded)
+
+
+def test_a_data_ampersand_spelled_as_an_unknown_name_is_refused_too() -> None:
+    """The same mistake in the shop's own text, where the round-trip also objects."""
+    unknown = _shape(
+        lambda rows: _table_of(rows, _is_warranty, escape=_escaper("&bogus;")), "bogus_data"
+    )
+    assert any("&bogus;" in p for p in template_problems(unknown))
+
+
+def _keep_strong(text: str) -> str:
+    """Escape as `spec_table` does, then let the shop's own `<strong>` back through.
+
+    This is the mistake a copied listing makes most: the writer keeps the emphasis it
+    can see in the page source.  The name is in the shape's own vocabulary, so only a
+    count of it can object -- which is what the differential is.
+    """
+    written = html.escape(text, quote=False)
+    return written.replace("&lt;strong&gt;", "<strong>").replace("&lt;/strong&gt;", "</strong>")
+
+
+def test_a_duplicate_of_a_tag_the_shape_itself_writes_is_refused() -> None:
+    """A duplicated tag is refused by its count, not by whether the name is new.
+
+    `Matte <td>brushed</td> steel` gives a row three cells where the plain-value row has
+    two, and the harness says so in counts (3 written, not 2).  The sharper case is
+    :func:`test_a_value_that_bolds_itself_inside_a_bold_row_is_refused`, where the
+    injected spelling is one the shape writes itself and no name comparison can see it.
+    """
+    raw = _shape(lambda rows: _table_of(rows, _is_warranty, escape=str), "raw_cell")
+    problems = template_problems(raw)
+    assert any("<td>" in p for p in problems), problems
+
+
+def test_a_value_that_bolds_itself_inside_a_bold_row_is_refused() -> None:
+    """A shape that lets the shop's `<strong>` through, in a row that is already bold.
+
+    The name is in the shape's own vocabulary and the row keeps its two cells, so a
+    comparison of *which* tags appear sees nothing; the count is what objects.  This is
+    the mistake a listing copied out of a page source makes -- the writer keeps the
+    emphasis it can see and escapes the rest.
+    """
+    kept = _shape(lambda rows: _table_of(rows, _is_warranty, escape=_keep_strong), "strong_kept")
+    problems = template_problems(kept)
+    assert any("<strong>" in p for p in problems), problems
+
+
+def test_a_shape_that_escapes_values_but_not_labels_is_refused() -> None:
+    """Half an escaping rule is no escaping rule: the label is interpolated too.
+
+    A pasted skeleton often runs the value through a helper and drops the label
+    straight into the row -- or into an attribute, where it sits outside every cell and
+    so is invisible to ``extract``.  The probe therefore carries markup in a label as
+    well as in a value.
+    """
+
+    def cell(text: str, bold: bool, escape_text: bool) -> str:
+        written = _plain_escape(text) if escape_text else text
+        return f"<strong>{written}</strong>" if bold else written
+
+    def render(rows: list[SpecRow]) -> str:
+        body = "".join(
+            VALID_ROW.format(
+                label=cell(row.label, row.is_warranty, escape_text=False),
+                value=cell(row.value, row.is_warranty, escape_text=True),
+            )
+            for row in rows
+        )
+        return f"<table>{VALID_HEAD}<tbody>{body}</tbody></table>"
+
+    problems = template_problems(_shape(render, "label_raw"))
+    assert any("<b>" in p for p in problems), problems
+
+
+def test_an_unterminated_tag_is_reported_as_the_cell_it_ate() -> None:
+    """The other direction of the same mistake: the shop's text swallows the shape's tag.
+
+    A value ending in a bare `<b` has no closing `>`, so the table's own `</td>` is read
+    as part of it -- one fewer of the shape's tags ships than the plain-value row
+    writes, and the row loses the cell that closed it.
+    """
+    open_tag = _shape(
+        lambda rows: _table_of([row for row in rows if row.label == "Notes"], _is_warranty,
+                               escape=str),
+        "open_tag_only",
+    )
+    problems = template_problems(open_tag)
+    assert any("</td>" in p and "loses the shape" in p for p in problems), problems
+
+
+def test_the_markup_probe_ships_the_tags_a_shape_already_uses() -> None:
+    """The probe rows have to try the injections that a set of names cannot see.
+
+    A value holding only a `<b>` is caught by any comparison; a value holding `<td>`
+    or `<strong>` -- tags a conforming table writes itself -- is the one that proves
+    the harness compares structure and not vocabulary.  The bold case has to sit in a
+    bold row, or an injected `<strong>` would be a new name and prove nothing.
+    """
+    vocabulary = set(_TAG_RE.findall(_table_of(list(_PROBE_STANDIN), _is_warranty)))
+    injected = {
+        tag for row in ESCAPE_PROBE for tag in _TAG_RE.findall(f"{row.label} {row.value}".lower())
+    }
+    assert injected & vocabulary, (sorted(injected), sorted(vocabulary))
+    assert any(row.is_warranty and "<strong>" in row.value.lower() for row in ESCAPE_PROBE), (
+        "no bold probe row carries markup, so injected `<strong>` is a new name here"
+    )
+    assert any("<" in row.label for row in ESCAPE_PROBE), (
+        "every probe label is plain, so a shape that escapes values and not labels passes"
+    )
+
+
+def test_the_sample_harness_bold_matches_what_the_shop_ships() -> None:
+    """The rows the bold rule is tried on have to look like real listings.
+
+    A warranty statement is most often a component (`Compressor`, `Parts`, `PCB`), so
+    the sample holds two bold rows, one of them named for a part and one of them
+    followed by a plain row.  Without both, a shape that bolds by the word `Warranty`
+    or by position passes the harness and ships a Description the gate reads as plain.
+    """
+    bold = [index for index, row in enumerate(CONFORMANCE_ROWS) if row.is_warranty]
+    assert len(bold) >= 2, "one bold row proves nothing about where bold comes from"
+    assert any("warranty" not in CONFORMANCE_ROWS[i].label.lower() for i in bold), (
+        "every bold row is named Warranty, so a template that keys on that word passes"
+    )
+    assert any(not row.is_warranty for row in CONFORMANCE_ROWS[bold[0] + 1 :]), (
+        "no plain row follows the first bold one, so a template that bolds a trailing "
+        "run of the table passes"
+    )
+
+
+def test_a_shape_that_bolds_by_the_word_warranty_is_refused() -> None:
+    """The concrete failure the single-warranty sample hid."""
+    by_word = _shape(
+        lambda rows: _table_of(rows, lambda row: row.label == "Warranty"),
+        "warranty_word_only",
+    )
+    problems = template_problems(by_word)
+    assert any("warrant" in p.lower() for p in problems), problems
+
+
+def test_a_round_trip_failure_names_the_field_that_differs() -> None:
+    """Say which row and which field went missing -- not the same label list twice.
+
+    The first version of this message printed `wrote [...]` and `read back [...]`,
+    which are identical when the damage is inside a value or in its boldness, so the
+    operator was handed a diff of the same thing twice.
+    """
+    loses_bold = DescriptionTemplate(
+        name="flattened",
+        render=SPEC_TABLE.render,
+        extract=lambda text: [
+            dataclasses.replace(row, is_warranty=False) for row in SPEC_TABLE.extract(text)
+        ],
+        starts_with="<table",
+        ends_with="</table>",
+    )
+    bold_line = next(p for p in template_problems(loses_bold) if "extract" in p.lower())
+    assert "row" in bold_line and "bold" in bold_line.lower(), bold_line
+    assert "[]" not in bold_line, bold_line
+
+    loses_value = DescriptionTemplate(
+        name="valueless",
+        render=SPEC_TABLE.render,
+        extract=lambda text: [
+            dataclasses.replace(row, value="") for row in SPEC_TABLE.extract(text)
+        ],
+        starts_with="<table",
+        ends_with="</table>",
+    )
+    value_line = next(p for p in template_problems(loses_value) if "extract" in p.lower())
+    assert "value" in value_line and "row" in value_line, value_line
+
+
+# ---------------------------------------------------------------------------
+# Task 10 review, part 2 -- the structure a tag count cannot see
+# ---------------------------------------------------------------------------
+def _reader_of_what_it_wrote(text: str) -> list[SpecRow]:
+    """The reader a crossed writer would ship: rows on ``<tr``, cells on ``<td``.
+
+    It reads a malformed table back whole, which is precisely why the round-trip rule is
+    not the check that has to object.  The rows are still two cells and the words are all
+    there -- only the tree is wrong, and the tree is what the browser builds.
+    """
+    rows: list[SpecRow] = []
+    for chunk in re.findall(r"<tr\b.*?(?=<tr\b|</tbody>)", text, re.DOTALL):
+        cells = [
+            html.unescape(_TAG_RE.sub("", cell)).strip()
+            for cell in re.split(r"<td\b[^>]*>", chunk)[1:]
+        ]
+        cells = [cell for cell in cells if cell]
+        header = [
+            html.unescape(_TAG_RE.sub("", cell)).strip()
+            for cell in re.split(r"<th\b[^>]*>", chunk)[1:]
+        ]
+        if len(header) == 2 and not cells:
+            continue
+        if len(cells) == 2:
+            rows.append(SpecRow(cells[0], cells[1], "<strong" in chunk))
+    return rows
+
+
+def _moved(rows: list[SpecRow], old: str, new: str) -> str:
+    """``spec_table``'s own fragment with ONE closing tag relocated -- tags untouched."""
+    return _table_of(rows, _is_warranty).replace(old, new, 1)
+
+
+def test_a_row_closed_before_its_cell_is_refused() -> None:
+    """Same tags, same counts, same rows -- and a browser that cannot build the table.
+
+    This is the case a ``Counter`` cannot see: ``</td></tr>`` written as ``</tr></td>``
+    moves no tag in or out, so every count agrees with the well-formed table, and the
+    shape's own reader gets all six rows back.  The browser closes the cell at the
+    ``</tr>`` and drops the tag after it, and ``audit.py`` (:494) then finds one cell in
+    that row and skips it -- a spec row that stops being checked.
+    """
+    well_formed = _table_of(list(CONFORMANCE_ROWS), _is_warranty)
+    crossed = _moved(CONFORMANCE_ROWS, "</td></tr>", "</tr></td>")
+    assert Counter(_TAG_RE.findall(crossed)) == Counter(_TAG_RE.findall(well_formed))
+    shape = DescriptionTemplate(
+        name="crossed_row",
+        render=lambda rows: _moved(rows, "</td></tr>", "</tr></td>"),
+        extract=_reader_of_what_it_wrote,
+        starts_with="<table",
+        ends_with="</table>",
+    )
+    assert _reader_of_what_it_wrote(shape.render(list(CONFORMANCE_ROWS))) == CONFORMANCE_ROWS
+    problems = template_problems(shape)
+    assert len(problems) == 1, problems
+    assert "</tr> written while <td> is still open" in problems[0], problems
+
+
+def test_a_bold_row_that_leaks_into_the_next_one_is_refused() -> None:
+    """The crossing the customer actually sees: bold that walks past the warranty row.
+
+    One ``</strong>`` moved from the warranty cell into the row after it keeps every tag
+    count identical.  The browser keeps the ``<strong>`` open across the boundary, so the
+    next specification renders bold -- and bold is how the gate spots a warranty, so that
+    plain row is read as one the shop has to prove.
+    """
+    shape = DescriptionTemplate(
+        name="crossed_bold",
+        render=lambda rows: _moved(
+            rows, "</strong></td></tr><tr><td style=\"c\">", "</td></tr><tr><td style=\"c\"></strong>"
+        ),
+        extract=_reader_of_what_it_wrote,
+        starts_with="<table",
+        ends_with="</table>",
+    )
+    well_formed = _table_of(list(CONFORMANCE_ROWS), _is_warranty)
+    assert Counter(_TAG_RE.findall(shape.render(list(CONFORMANCE_ROWS)))) == Counter(
+        _TAG_RE.findall(well_formed)
+    )
+    problems = template_problems(shape)
+    assert any("while <strong> is still open" in p for p in problems), problems
+
+
+def test_the_nesting_rule_leaves_a_well_formed_table_alone() -> None:
+    """The must-not-refuse half: the shop's own table, and its own spacing, are clean."""
+    assert _nesting_problems(_table_of(list(CONFORMANCE_ROWS), _is_warranty)) == []
+    assert template_problems(SPEC_TABLE) == []
+
+
+def test_a_void_element_is_not_read_as_an_unclosed_tag() -> None:
+    """``<br>`` between two spec lines is a shape's own business, not a crossing.
+
+    The stack has to know HTML5's void elements or every spaced-out listing would be
+    refused for a tag that never takes a closing partner.
+    """
+    braced = _table_of(list(CONFORMANCE_ROWS), _is_warranty).replace("</td></tr>", "<br></td></tr>", 1)
+    assert _nesting_problems(braced) == []
+    assert _nesting_problems("<table><tr><td/></tr></table>") == [
+        "a self-closed <td/> writes no cell the gate can fill"
+    ]
+    assert any("never closed" in p for p in _nesting_problems("<table><tr><td>a</td>"))
+
+
+def test_a_table_crossed_in_every_row_is_reported_once_not_tag_by_tag() -> None:
+    """The terminal gets the shape of the mistake, not a line per tag after it.
+
+    Five rows written ``</tr></td>`` break the walk ten-odd times over.  Two named lines
+    plus a count is what an operator can act on -- the same reason the diagnostics name a
+    row instead of dumping the table.
+    """
+    problems = _nesting_problems("<table>" + "<tr><td>a</tr></td>" * 5 + "</table>")
+    assert len(problems) == 3, problems
+    assert "more tags closed out of order" in problems[2], problems
+
+
+def test_an_attribute_on_the_bold_tag_is_refused() -> None:
+    """``<strong class="w">`` is bold to a browser and plain to the gate.
+
+    The gate reads bold as the literal text (``audit.py`` :408 and :496), exactly like it
+    reads a row as a literal ``<tr>`` -- so a shape that styles its own bold tag stops
+    telling the platform which line is the warranty, and no count of the tags says so.
+    """
+
+    def bold_attr(text: str, bold: bool) -> str:
+        return f'<strong class="w">{text}</strong>' if bold else text
+
+    def render(rows: list[SpecRow]) -> str:
+        body = "".join(
+            VALID_ROW.format(
+                label=bold_attr(_plain_escape(row.label), row.is_warranty),
+                value=bold_attr(_plain_escape(row.value), row.is_warranty),
+            )
+            for row in rows
+        )
+        return f"<table>{VALID_HEAD}<tbody>{body}</tbody></table>"
+
+    def read(text: str) -> list[SpecRow]:
+        return SPEC_TABLE.extract(re.sub(r"<strong\b[^>]*>", "<strong>", text))
+
+    stiff = DescriptionTemplate(
+        name="bold_attr",
+        render=render,
+        extract=read,
+        starts_with="<table",
+        ends_with="</table>",
+    )
+    assert read(stiff.render(list(CONFORMANCE_ROWS))) == CONFORMANCE_ROWS
+    problems = template_problems(stiff)
+    # 4 `<strong class="w">` opened, 4 plain `</strong>` closed: 0 of the exact opening text.
+    assert any("literal text" in p and "0/4" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
+# Task 10 review, part 2 -- where the shop's text may sit, and what may name a character
+# ---------------------------------------------------------------------------
+def test_shop_text_reaching_an_attribute_is_refused() -> None:
+    """A correctly escaped value is still a defect one position to the left.
+
+    ``title="{value}"`` with ``html.escape(text, quote=False)`` -- the convention this
+    repository documents -- escapes ``&`` and ``<`` perfectly and leaves the ``"`` to end
+    the attribute, and nothing in the cell changes, so no round-trip can notice.  The
+    differential does: the probe's tag and its plain twin's tag are different strings.
+    """
+
+    def render(rows: list[SpecRow]) -> str:
+        body = "".join(
+            f'<tr><td style="c" title="{_plain_escape(row.label)}">'
+            f'{_cell_of(row.label, row.is_warranty)}</td>'
+            f'<td style="c" title="{_plain_escape(row.value)}">'
+            f'{_cell_of(row.value, row.is_warranty)}</td></tr>'
+            for row in rows
+        )
+        return f"<table>{VALID_HEAD}<tbody>{body}</tbody></table>"
+
+    problems = template_problems(_shape(render, "titled"))
+    assert any("title=" in p for p in problems), problems
+    assert any("ships the shop's own text as markup" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("name", sorted(DESCRIPTION_TEMPLATES))
+def test_every_registered_template_interpolates_only_into_text_nodes(name: str) -> None:
+    """The constraint the harness enforces, shown on the templates that actually ship.
+
+    Not one word of a specification reaches a tag: every label and value in the sample
+    appears in the cell's text and in no tag spelling.  A template that ever starts
+    putting them in an attribute will fail here, and the README says why it must not.
+    """
+    cell = clean_inline(DESCRIPTION_TEMPLATES[name].render(list(CONFORMANCE_ROWS)))
+    tags = "".join(_TAG_RE.findall(cell))
+    for row in CONFORMANCE_ROWS:
+        assert row.label not in tags, (name, row.label, tags[:120])
+        assert row.value not in tags, (name, row.value, tags[:120])
+
+
+UNPRINTABLE_REFERENCES = [
+    pytest.param("&#999999999;", id="past-the-unicode-range"),
+    pytest.param("&#0;", id="zero"),
+    pytest.param("&#x110000;", id="hex-past-the-range"),
+    pytest.param("&#xD800;", id="a-surrogate"),
+    pytest.param("&#27;", id="an-escape-code"),
+    pytest.param("&#65534;", id="a-noncharacter"),
+    pytest.param("&#9;", id="a-tab"),
+]
+PRINTABLE_REFERENCES = [
+    pytest.param("&#38;", id="decimal-ampersand"),
+    pytest.param("&#x26;", id="hex-ampersand"),
+    pytest.param("&#233;", id="latin-e-acute"),
+    pytest.param("&#x1F600;", id="an-emoji"),
+]
+
+
+@pytest.mark.parametrize("reference", UNPRINTABLE_REFERENCES)
+def test_a_numeric_reference_with_no_character_behind_it_is_refused(reference: str) -> None:
+    """``&#999999999;`` passes the ampersand rule and prints the replacement glyph.
+
+    Measured: :func:`html.unescape` answers it (and ``&#0;``, ``&#xD800;``, ``&#65534;``)
+    with U+FFFD, and ``&#27;`` and ``&#9;`` with a control code or nothing -- so the shop's
+    specification ships a box of pixels, or loses a character silently.  The number has to
+    name a printable character or the cell is refused before anything is written.
+    """
+    padded = _shape(
+        lambda rows: _table_of(rows, _is_warranty, join=reference), f"pad_{reference[2:-1]}"
+    )
+    problems = template_problems(padded)
+    assert any(reference in p and "numeric reference" in p for p in problems), problems
+    with pytest.raises(ValueError):
+        assert_template_conforms(padded)
+
+
+@pytest.mark.parametrize("reference", PRINTABLE_REFERENCES)
+def test_a_numeric_reference_that_names_a_character_is_accepted(reference: str) -> None:
+    """Not a ban on numeric spelling -- decimal and hex, accents and emoji all ship."""
+    padded = _shape(
+        lambda rows: _table_of(rows, _is_warranty, join=reference), f"pad_{reference[2:-1]}"
+    )
+    problems = template_problems(padded)
+    assert not any("numeric reference" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
 # Task 4 -- the Description is rendered at projection, from this cell's template
 # ---------------------------------------------------------------------------
 def _plain_two_column_table(rows: list[SpecRow]) -> str:
@@ -323,8 +913,8 @@ def _pretty(rows: list[SpecRow]) -> str:
     """One row per line -- legal, because each break leaves exactly one space."""
     body = "".join(
         "\n  " + SPACED_ROW.format(
-            label=f"<strong>{r.label}</strong>" if r.is_warranty else r.label,
-            value=f"<strong>{r.value}</strong>" if r.is_warranty else r.value,
+            label=_cell_of(r.label, r.is_warranty),
+            value=_cell_of(r.value, r.is_warranty),
         )
         for r in rows
     )

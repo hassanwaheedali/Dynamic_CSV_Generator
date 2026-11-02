@@ -392,8 +392,19 @@ def _description_template_errors(cfg: VendorConfig, platform: str) -> list[str]:
         template = template_for(value)
     except ValueError as error:
         return [f"{label} -- {error}"]
-    return [f"{label} ({template.name}) -- {problem}"
-            for problem in template_problems(template)]
+    try:
+        problems = template_problems(template)
+    except Exception as error:
+        # Judging a pasted shape means running its own ``render``, and hand-written
+        # markup is free to raise -- it assumes more rows than the probe holds, or
+        # indexes a label that is not there.  A traceback says nothing useful at the
+        # terminal, so a crash is reported as what it is: a defect of this cell's
+        # template, named like every other problem here, before anything is written.
+        return [
+            f"{label} ({template.name}) -- the shape raised "
+            f"{type(error).__name__} while being checked: {error}"
+        ]
+    return [f"{label} ({template.name}) -- {problem}" for problem in problems]
 
 
 def validate_vendor_cfg(cfg: VendorConfig) -> None:

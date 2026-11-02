@@ -22,6 +22,7 @@ from description_builder import (
     DESCRIPTION_TEMPLATES,
     SPEC_TABLE,
     DescriptionTemplate,
+    SpecRow,
     template_for,
 )
 from sku_handle import SKU_PREFIX, ModelExtraction, build_sku_token
@@ -414,11 +415,25 @@ def test_a_bad_template_name_names_the_cell_that_has_it() -> None:
     assert "spec_table" in message  # names what is actually available
 
 
-def test_a_digi_template_problem_is_named_as_digi() -> None:
-    broken = _store(digi=_cell("digi", description_template="pretty_table"))
+def test_a_digi_template_problem_is_named_as_digi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real conformance failure on the digi cell, reached through its registry name.
+
+    The name has to resolve, or this proves only the unknown-name branch again -- and
+    the failure has to come from the harness, because digi is the file the untouched
+    gate reads its Description rules from.
+    """
+    monkeypatch.setitem(DESCRIPTION_TEMPLATES, _LOSSY.name, _LOSSY)
+    broken = _store(digi=_cell("digi", description_template=_LOSSY.name))
     with pytest.raises(ConfigError) as caught:
         validate_vendor_cfg(broken)
-    assert "digi.description_template" in str(caught.value)
+    message = str(caught.value)
+    assert "unknown DescriptionTemplate" not in message, message
+    assert "digi.description_template" in message, message
+    assert "lossy" in message, message
+    assert "extract" in message, message
+    assert "alfa.description_template" not in message, message
 
 
 def test_both_platforms_are_reported_in_one_raise() -> None:
@@ -449,6 +464,101 @@ def test_a_template_the_gates_cannot_read_fails_at_startup() -> None:
     message = str(caught.value)
     assert "lossy" in message
     assert "alfa.description_template" in message
+
+
+def _crashing_render(rows: list[SpecRow]) -> str:
+    """A pasted skeleton that writes fixed positions of the table it is handed.
+
+    Real enough to matter: the shop's own table has more rows than one, and a shape
+    built by hand from a live listing often assumes it.
+    """
+    return SPEC_TABLE.render([rows[0], rows[3], rows[1], rows[2]])
+
+
+#: A shape whose reader cannot state its own rows.
+_LOSSY = DescriptionTemplate(
+    name="lossy",
+    render=SPEC_TABLE.render,
+    extract=lambda _text: [],
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+#: A shape whose writer dies on the rows the harness probes with.
+_CRASHING = DescriptionTemplate(
+    name="crashing",
+    render=_crashing_render,
+    extract=SPEC_TABLE.extract,
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+#: A shape whose closing tags cross: every tag count matches the well-formed table and
+#: the browser cannot build the row, so the harness refuses it by structure.
+_CROSSED = DescriptionTemplate(
+    name="crossed",
+    render=lambda rows: SPEC_TABLE.render(rows).replace("</td></tr>", "</tr></td>", 1),
+    extract=SPEC_TABLE.extract,
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+REFUSALS = [pytest.param(_LOSSY, id="reads-nothing-back"),
+            pytest.param(_CRASHING, id="raises-while-rendering"),
+            pytest.param(_CROSSED, id="crossed-nesting")]
+
+
+@pytest.mark.parametrize("template", REFUSALS)
+def test_a_refused_template_writes_no_file_and_claims_no_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, template: DescriptionTemplate
+) -> None:
+    """The startup check is the gate: a refused shape stops the run before it writes.
+
+    ``main`` resolves the vendor before it reads the sheet, so a cell whose template
+    the gates cannot follow raises with no CSV, no QC report and no title sample in
+    the output folder -- and no line saying a file was written.
+    """
+    sheet = tmp_path / "Products.csv"
+    with sheet.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            ["Title", "Description", "Sell Price", "Original Price", "Categories",
+             "Brand", "Image"]
+        )
+        writer.writerow(
+            ["Haier 12kg Top Load Washing Machine HWM 120-1708",
+             "Weight: 42 kg.\nWarranty: 1 Year", "75000", "82000",
+             "Electronics > Home appliances > Washing machine", "Haier",
+             "https://example.com/hwm120.jpg"]
+        )
+
+    broken = _store(alfa=_cell("alfa", description_template=template))
+    outputs = [tmp_path / name for name in ("digi.csv", "alfa.csv", "qc.csv", "titles.csv")]
+    monkeypatch.setitem(VENDOR_REGISTRY, "kiachahiye", broken)
+    with pytest.raises(ConfigError):
+        pipeline_main.main(
+            ["--input", str(sheet), "--vendor", "kiachahiye", "--platform", "both",
+             "--digi", str(outputs[0]), "--alfa", str(outputs[1]),
+             "--qc", str(outputs[2]), "--sample-titles", str(outputs[3])]
+        )
+    assert not any(path.exists() for path in outputs), [p for p in outputs if p.exists()]
+
+
+def test_a_template_that_crashes_is_named_instead_of_thrown() -> None:
+    """A render that dies on the probe rows is a config defect, not a stack trace.
+
+    The harness has to call the shape's own ``render`` to judge it, so a hand-pasted
+    skeleton is free to raise -- and the operator's terminal must still show the same
+    refusal as every other defect: the store, the exact cell and the template, in one
+    ``ConfigError``.
+    """
+    broken = _store(alfa=_cell("alfa", description_template=_CRASHING))
+    with pytest.raises(ConfigError) as caught:
+        validate_vendor_cfg(broken)
+    message = str(caught.value)
+    assert "Kiachahiye.alfa.description_template" in message, message
+    assert "crashing" in message, message
+    assert "IndexError" in message, message
 
 
 def test_an_inline_template_object_is_valid_on_its_own() -> None:

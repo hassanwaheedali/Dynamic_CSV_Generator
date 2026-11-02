@@ -225,7 +225,8 @@ def test_no_cell_may_reuse_another_cells_render(
     build_digi_row(record, cfg)
     assert len(calls) == 3, (
         "a Description was rendered once and handed to two cells: the shop chose "
-        "per-cell templates over speed (41 ms for 1504 renders against a 7 s run)"
+        "per-cell templates over speed (128 ms for the 1,504 renders of a 752-row "
+        "both-platform run, measured 2026-11-02, against a ~7.5 s run)"
     )
 
 

@@ -25,8 +25,12 @@ from __future__ import annotations
 import dataclasses
 import html
 import re
+import unicodedata
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from html.entities import html5 as HTML5_NAMED_REFERENCES
+from html.parser import HTMLParser
 
 from models import DescriptionBundle, SpecRow
 from textutils import clean_inline, dedupe_preserve_order, strip_markup_keep_lines
@@ -384,16 +388,73 @@ def template_for(key: str | DescriptionTemplate) -> DescriptionTemplate:
 # ---------------------------------------------------------------------------
 # Template conformance -- run once at startup, in place of a gate that reads markup
 # ---------------------------------------------------------------------------
-#: The five rows every template is tried on: a Brand row, a hyphenated code, an
-#: escaped ``&``, a value whose doubled space ``clean_inline`` must collapse, and
-#: the warranty row whose boldness the gates read as the warranty marker.
+#: The rows every template is tried on: a Brand row, a hyphenated code, an escaped
+#: ``&``, a value whose doubled space ``clean_inline`` must collapse, and **two** bold
+#: rows -- a component's term in the middle of the table and the Warranty line at the
+#: end.  The shop's listings name bold after a part far more often than after the word
+#: ``Warranty`` (``Compressor``, ``Parts``, ``PCB``), and a plain row follows the first
+#: bold one, so a shape that bolds by that word, by position or by a trailing run is
+#: caught here instead of shipping a Description the gate reads as unbolded.
 CONFORMANCE_ROWS: list[SpecRow] = [
     SpecRow("Brand", "Haier"),
     SpecRow("Model", "WD-1051 HC"),
+    SpecRow("Compressor", "10 Years", is_warranty=True),
     SpecRow("Color", "Black & White"),
     SpecRow("In the Box", "Remote  with  2 x AA"),
     SpecRow("Warranty", "1 Year", is_warranty=True),
 ]
+
+#: Rows whose own values are markup, for the rules a plain sample cannot show.
+#: :func:`_row_html` escapes each cell (``html.escape(text, quote=False)``), so these
+#: arrive as text; a pasted listing that interpolates ``{value}`` straight into the
+#: table sends the ``<b>`` as a tag and the ``&`` as a broken entity.  The other rows
+#: try the mistakes a *vocabulary* comparison cannot see: a value carrying tags the
+#: table itself writes (``<td>``, and ``<strong>`` inside a row the shape already
+#: bolds), a label carrying markup (a shape that escapes values and forgets labels), and
+#: the unterminated ``<b`` whose closing tag swallows the cell after it.
+ESCAPE_PROBE: list[SpecRow] = [
+    SpecRow("Material", 'Steel <b>1 mm</b> & "X"'),
+    SpecRow("Finish", "Matte <td>brushed</td> steel"),
+    SpecRow("Warranty", "Covers <strong>parts</strong> only", is_warranty=True),
+    SpecRow("Class <b>Room</b>", "Sits under the sink"),
+    SpecRow("Notes", "Cable <b"),
+]
+
+#: The same rows, same boldness, same label *words*, with nothing in the text a browser
+#: could read as markup.  Any tag this renders -- or any count of a tag -- that the real
+#: render does not match came out of the shop's text, not from the shape.  The label is
+#: cleared of markup but keeps its words, so a shape that bolds by the word ``Warranty``
+#: still bolds the same row here and does not show up as an injected tag.
+_PROBE_STANDIN: list[SpecRow] = [
+    SpecRow(_TAG_RE.sub("", row.label), "plain text", row.is_warranty) for row in ESCAPE_PROBE
+]
+
+#: An ``&`` is legal only as the start of an entity reference -- a named one, ``&#dd;``
+#: or ``&#xhh;``.  Everything else is text the template forgot to escape.
+_BARE_AMP_RE = re.compile(r"&(?![A-Za-z][A-Za-z0-9]*;|#[0-9]+;|#[Xx][0-9A-Fa-f]+;)")
+
+#: A named reference, for the second half of that rule: ``&bogus;`` has the shape of an
+#: entity and no browser's table has the name, so it is shipped as the letters.
+#: :data:`html.entities.html5` is the HTML5 named-character-reference table -- the same
+#: one :func:`html.unescape` decodes with -- and every key carries its ``;``.
+_NAMED_REF_RE = re.compile(r"&([A-Za-z][A-Za-z0-9]*);")
+
+#: A numeric reference: ``&#38;`` or ``&#x26;``.  The digits are a code point, so the
+#: third half of the rule asks whether Unicode has a character at that number at all.
+_NUMERIC_REF_RE = re.compile(r"&#([Xx])?([0-9A-Fa-f]+);")
+
+#: Categories that name no printable glyph: control codes, surrogates, and code points
+#: Unicode has not assigned.  A browser answers each one with the replacement character
+#: or with nothing, and both are visible to the customer.
+_UNPRINTABLE_CATEGORIES = frozenset({"Cc", "Cn", "Cs"})
+
+#: HTML5's void elements -- they open and close in one tag, so they never belong on the
+#: open-element stack a shape is judged against.  ``<br>`` between two spec lines is a
+#: legitimate way to space a table out and must not read as an unclosed tag.
+_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "param", "source", "track", "wbr",
+})
 
 #: The tag pairs ``audit.py`` counts, spelled as that gate spells them.  The
 #: trailing space in ``"th "`` is the gate's own blind spot -- a header written
@@ -417,15 +478,234 @@ def _value_of_row_chunk(chunk: str) -> str:
     return cells[1][1] if len(cells) == 2 else ""
 
 
+def _clip(text: str) -> str:
+    """``text`` as a repr short enough to read on a terminal line."""
+    shown = repr(text)
+    return shown if len(shown) <= 60 else shown[:57] + "...'"
+
+
+def _round_trip_problem(wrote: list[SpecRow], got: list[SpecRow], where: str) -> str:
+    """One line naming the first field a template's pair disagreed about.
+
+    This used to print the two label lists, which are identical whenever the damage is
+    inside a value or in its boldness -- the operator got a diff of the same thing
+    twice and had to guess.  Say which row, which field, and what each side holds.
+    The harness cannot tell whether ``render`` wrote it wrong or ``extract`` read it
+    wrong, so the line names the disagreement, not a culprit.  Returns "" when the
+    read-back matches, so the caller only appends real problems.
+    """
+    if len(got) != len(wrote):
+        return (
+            f"{where}: {len(got)} rows came back where the harness wrote {len(wrote)}"
+            f" -- {[row.label for row in got]} instead of {[row.label for row in wrote]}"
+        )
+    for index, (want, have) in enumerate(zip(wrote, got, strict=True), start=1):
+        differs: list[str] = []
+        if want.label != have.label:
+            differs.append(f"label {_clip(have.label)}, not {_clip(want.label)}")
+        if want.value != have.value:
+            differs.append(f"value {_clip(have.value)}, not {_clip(want.value)}")
+        if want.is_warranty != have.is_warranty:
+            differs.append(
+                f"{'bold' if have.is_warranty else 'plain'},"
+                f" not {'bold' if want.is_warranty else 'plain'}"
+            )
+        if differs:
+            return f"{where}: row {index} ({_clip(want.label)}) " + "; ".join(differs)
+    return ""
+
+
+def _row_markup_diffs(template: DescriptionTemplate) -> list[str]:
+    """One line per probe row whose own render writes a different table than its plain twin.
+
+    Row by row, not over the whole fragment: two rows can damage the same tag name in
+    opposite directions -- one injects a ``</td>``, the next swallows one -- and a
+    table-wide count then agrees with the plain table and says nothing.  Comparing a
+    row against the same row with ``plain text`` in it keeps every wrapper tag the
+    shape writes on both sides, so what is left is the shop's own markup.
+    """
+    lines: list[str] = []
+    for index, (probe, standin) in enumerate(zip(ESCAPE_PROBE, _PROBE_STANDIN, strict=True), 1):
+        have = Counter(_TAG_RE.findall(clean_inline(template.render([probe]))))
+        wrote = Counter(_TAG_RE.findall(clean_inline(template.render([standin]))))
+        extra = [f"{tag} written {have[tag]}x, not {wrote[tag]}x"
+                 for tag in sorted(set(have) | set(wrote)) if have[tag] > wrote[tag]]
+        eaten = [f"{tag} written {have[tag]}x, not {wrote[tag]}x"
+                 for tag in sorted(set(have) | set(wrote)) if have[tag] < wrote[tag]]
+        culprit = next((text for text in (probe.label, probe.value) if "<" in text), "")
+        if extra:
+            lines.append(
+                f"row {index} ({_clip(probe.label)}) ships the shop's own text as markup: "
+                + ", ".join(extra[:3])
+                + f" -- the tag came from {_clip(culprit)}; escape every label and value "
+                "(html.escape(text, quote=False)) so the table's tags stay the only tags"
+            )
+        if eaten:
+            lines.append(
+                f"row {index} ({_clip(probe.label)}) loses the shape's own markup: "
+                + ", ".join(eaten[:3])
+                + f" -- an unterminated '<' in {_clip(culprit)} swallows the tag that "
+                "follows it; escape every label and value the same way"
+            )
+    return lines
+
+
+class _Nesting(HTMLParser):
+    """The open-element stack a browser keeps while it reads this fragment.
+
+    Counts cannot see a crossing: ``<td>A</td><td>B</tr></td>`` writes exactly the tags
+    ``<td>A</td><td>B</td></tr>`` does, and so does a ``<strong>`` whose partner lands in
+    the next row.  A browser reads them differently -- it closes the open cell at the
+    ``</tr>`` and drops the tag that arrives after it, or keeps bolding into the row
+    after the warranty line -- so a shape is not finished when its tag counts agree.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.open: list[str] = []
+        self.problems: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _VOID_TAGS:
+            self.open.append(tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _VOID_TAGS:
+            self.problems.append(f"a self-closed <{tag}/> writes no cell the gate can fill")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _VOID_TAGS:
+            return
+        if not self.open:
+            self.problems.append(f"a stray </{tag}> with nothing open to close")
+        elif self.open[-1] != tag:
+            self.problems.append(
+                f"a </{tag}> written while <{self.open[-1]}> is still open -- the browser "
+                "closes that element first, so the tags that follow land in a cell the "
+                "shape did not put them in; close every tag in the order it opened them"
+            )
+            if tag in self.open:
+                del self.open[self.open.index(tag)]
+            else:
+                self.open.pop()
+        else:
+            self.open.pop()
+
+
+def _nesting_problems(markup: str) -> list[str]:
+    """Crossed, stray, self-closed or never-closed tags in one fragment.
+
+    One crossing usually breaks the next few tags too, so the walk reports the first two
+    and counts the rest: the operator needs the shape of the mistake, not a line for
+    every tag after it.
+    """
+    walker = _Nesting()
+    walker.feed(markup)
+    walker.close()
+    if walker.open:
+        walker.problems.append(
+            f"never closed: {walker.open[:3]} -- the browser carries them past the end of "
+            "the table and the listing prints the rest of the page inside them"
+        )
+    if len(walker.problems) > 3:
+        return [
+            *walker.problems[:2],
+            f"and {len(walker.problems) - 2} more tags closed out of order in the same table",
+        ]
+    return walker.problems
+
+
+def _unprintable_references(markup: str) -> list[str]:
+    """Every ``&#...;`` with no character behind it, in first-seen order.
+
+    ``&#999999999;`` is a syntactically clean reference, so the ampersand rule lets it
+    past, and :func:`html.unescape` answers it with U+FFFD -- the replacement glyph the
+    customer reads where the shop wrote a specification.  A surrogate, a zero, a code
+    point past U+10FFFF and the control and unassigned ranges all fail the same way, and
+    a control code like ``&#27;`` can silently disappear instead.
+    """
+    bad: list[str] = []
+    for match in _NUMERIC_REF_RE.finditer(markup):
+        value = int(match.group(2), 16 if match.group(1) else 10)
+        unprintable = (
+            not 0 < value <= 0x10FFFF
+            or unicodedata.category(chr(value)) in _UNPRINTABLE_CATEGORIES
+        )
+        if unprintable:
+            bad.append(match.group(0))
+    return dedupe_preserve_order(bad)
+
+
+def _unknown_entities(markup: str) -> list[str]:
+    """Every ``&name;`` the HTML5 table has no entry for, in first-seen order.
+
+    The shape's structural markup is scanned too: an entity out between the rows never
+    reaches a cell, so no round-trip can notice that the browser has no name for it.
+    """
+    return dedupe_preserve_order(
+        f"&{match.group(1)};"
+        for match in _NAMED_REF_RE.finditer(markup)
+        if f"{match.group(1)};" not in HTML5_NAMED_REFERENCES
+    )
+
+
+def _escaping_problems(template: DescriptionTemplate) -> list[str]:
+    """Whether a shape keeps the shop's text as text: markup escaped, references intact.
+
+    Five independent rules, because a pasted listing fails them separately: it can leak
+    the value's own tag, swallow one of the shape's, send a bare ``&`` that no browser
+    has to read as one character, ship a name no browser has, ship a number no browser
+    has a character for, or escape correctly while its ``extract`` forgets to undo it.
+    """
+    problems: list[str] = []
+    probe_html = template.render(list(ESCAPE_PROBE))
+    shipped = clean_inline(probe_html)
+
+    problems.extend(_row_markup_diffs(template))
+    unknown = _unknown_entities(shipped)
+    if unknown:
+        problems.append(
+            f"an entity no browser has a name for: {unknown[:3]} -- the HTML5 table has no such "
+            "entry, so the characters ship as they are and the listing prints the code to the "
+            "customer; write the character itself, or a name the table has (&amp;, &lt;, &gt;)"
+        )
+    unprintable = _unprintable_references(shipped)
+    if unprintable:
+        problems.append(
+            f"a numeric reference with no character behind it: {unprintable[:3]} -- the browser "
+            "prints the replacement glyph, or nothing at all, where the shop wrote a "
+            "specification; write the character itself, or a number that names one (&#38;, &#x26;)"
+        )
+    bare = _BARE_AMP_RE.search(shipped)
+    if bare is not None:
+        problems.append(
+            "an unescaped '&' in the cell: "
+            f"{shipped[max(0, bare.start() - 15):bare.start() + 15]!r} -- a bare ampersand "
+            "is not an entity, and the browser is free to read the letters after it as one; "
+            "ship '&' as '&amp;'"
+        )
+    try:
+        back = template.extract(probe_html)
+    except TemplateShapeError as error:
+        problems.append(f"the markup probe: extract() refused its own output: {error}")
+    else:
+        problem = _round_trip_problem(ESCAPE_PROBE, back, "the markup probe read back")
+        if problem:
+            problems.append(problem)
+    return problems
+
+
 def template_problems(template: DescriptionTemplate) -> list[str]:
     """Every way one Description shape would fail the gates that already exist.
 
     The shop's upload gate (``audit.py``) and the thin-listing report read the
     *built* file with markup-shaped regexes.  A template is free to look however
-    the store wants -- provided those readers still see every row it writes.  This
-    checks a template's own ``render`` and ``extract`` against exactly the rules
-    those readers apply, so a pasted listing shape that they could not follow is
-    refused at startup instead of shipping listings nobody can verify.
+    the store wants -- provided those readers still see every row it writes and the
+    browser still sees the shop's words as words.  This checks a template's own
+    ``render`` and ``extract`` against exactly the rules those readers apply, plus the
+    nesting, escaping and boldness rules a plain sample cannot show, so a pasted listing
+    shape they could not follow is refused at startup instead of shipping listings nobody
+    can verify.
 
     Returns one human-readable string per failed rule; empty means conforming.
     """
@@ -451,6 +731,9 @@ def template_problems(template: DescriptionTemplate) -> list[str]:
             problems.append(
                 f"unbalanced <{tag.strip()}> tags: {opened} open, {closed} close"
             )
+    # Balance counts each tag on its own; this one asks whether they are closed in the
+    # order they were opened, which a count can never show (see _Nesting).
+    problems.extend(_nesting_problems(cell))
     if _EMPTY_CELL_RE.search(cell):
         problems.append("description has an empty cell")
     if "  " in _TAG_RE.sub("", cell):
@@ -471,6 +754,14 @@ def template_problems(template: DescriptionTemplate) -> list[str]:
             "the gate's fact checker reads only a literal <tr>; an attribute on the "
             "row tag makes the row invisible to it"
         )
+    strong_open, strong_close = cell.count("<strong"), cell.count("</strong")
+    if (strong_open, strong_close) != (cell.count("<strong>"), cell.count("</strong>")):
+        problems.append(
+            "the gate reads a bold row as the literal text `<strong>...</strong>`: this shape "
+            f"opens {strong_open} and closes {strong_close} of them but spells that exact text "
+            f"{cell.count('<strong>')}/{cell.count('</strong>')} -- an attribute or a space "
+            "inside the tag makes the warranty the shop paid for read as a plain row"
+        )
 
     # --- bold is the warranty marker, not decoration
     body_rows = [chunk for chunk in _ROW_RE.findall(cell) if "<td" in chunk.lower()]
@@ -479,8 +770,10 @@ def template_problems(template: DescriptionTemplate) -> list[str]:
         expected = [i for i, row in enumerate(CONFORMANCE_ROWS) if row.is_warranty]
         if bolded != expected:
             problems.append(
-                "a value cell is bolded as a warranty row while the gate uses bold to "
-                f"spot one: bold rows {bolded}, warranty rows {expected}"
+                "bold and the warranty rows disagree: this shape bolds "
+                f"{bolded}, the harness writes warranty rows {expected} -- the gate reads "
+                "<strong> as *the* warranty marker, so a term it has to prove arrives "
+                "unbolded and a bolded plain row is read as a warranty"
             )
 
     # --- and the template must read back what it wrote
@@ -489,11 +782,12 @@ def template_problems(template: DescriptionTemplate) -> list[str]:
     except TemplateShapeError as error:
         problems.append(f"extract() refused its own output: {error}")
     else:
-        if back != CONFORMANCE_ROWS:
-            problems.append(
-                f"extract() read back {[r.label for r in back]} where the harness "
-                f"wrote {[r.label for r in CONFORMANCE_ROWS]}"
-            )
+        problem = _round_trip_problem(CONFORMANCE_ROWS, back, "extract() vs render()")
+        if problem:
+            problems.append(problem)
+
+    # --- and the shop's text has to stay text, whatever the shape looks like
+    problems.extend(_escaping_problems(template))
     return problems
 
 

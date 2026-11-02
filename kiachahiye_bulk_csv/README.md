@@ -275,7 +275,7 @@ python3 thin_report.py --input X.csv --built Y.csv --qc Z.csv --out W.csv
 | `Issues` | every reason that row was listed, e.g. `one-line Description; very short source (43 chars)` |
 | `One_Line` | `yes` when the source Description is a single line — filter this column for exactly that list |
 | `Description_Chars` / `Description_Lines` | what the sheet itself contains |
-| `Spec_Rows_In_Listing` / `Short_Desc_Bullets` | what the finished **DigiMall** file really shows — this report counts the built file's own rows (`<tr><td`), so it follows whichever Description template served that file |
+| `Spec_Rows_In_Listing` / `Short_Desc_Bullets` | what the file named by `--built` really shows — on a one-platform run that is that platform's own upload (`run_ui.py` grades the first file in scope, so an Alfa-only run reads the Alfa CSV, not a DigiMall one). This report counts the built file's own rows (`<tr><td`), so it follows whichever Description template served that file |
 | `Why_It_May_Matter` | the same reasons in plain English |
 | `QC_Flags` | the row's flags from the QC report, for context |
 
@@ -364,8 +364,10 @@ by digest). Two stores may name the **same** template and then ship the same byt
 one registry entry.
 
 Every cell renders its own rows, every row: nothing is cached and nothing is shared
-between files. That costs about 41 ms across a 1,504-render run (~7 s) and it is what
-keeps "Alfa looks different now" from ever meaning "check DigiMall again".
+between files. Re-measured on the real sheet (2026-11-02, 752 rows, `--platform both`,
+so 1,504 renders): 128 ms for the fastest of nine passes -- about 92 microseconds a
+render, ~1.8% of the ~7.5 s run -- and it is what keeps "Alfa looks different now" from
+ever meaning "check DigiMall again".
 
 ### Handing over a live listing
 
@@ -393,9 +395,17 @@ read the **built file** with markup-shaped patterns, and this change deliberatel
 them alone. So a pasted shape must keep these rules -- and it does not have to hope the
 gate notices later: `validate_vendor_cfg` runs the conformance harness
 (`template_problems`) over both cells of the store you are about to run, at startup, on
-five probe rows (a plain label, a hyphenated code, an `&`, a value with doubled spaces,
-and the bolded warranty row). One broken rule = one plain-English line naming the exact
-cell, and no file is written:
+six probe rows (a plain label, a hyphenated code, an `&`, a value with doubled spaces,
+and the bolded warranty line) plus a five-row **markup probe** whose own text is markup:
+`<b>` in a value, a `<td>` inside a value, `<strong>` inside a row the shape already
+bolds, markup in a **label**, and an unterminated `<b`. Each markup row is also rendered
+once with its label and value cleared to plain text, and the two renders are compared
+**tag by tag, by count** -- so a tag the shape already writes is caught exactly like one
+it never writes. Counts are not structure: the finished fragment is also walked with the
+open-element stack a browser keeps, so a closing tag written out of order is refused even
+when every count agrees with the well-formed table. A shape that *raises* while being
+judged is named the same way instead of crashing the run. One broken rule = one
+plain-English line naming the exact cell, and no file is written:
 
 | The shape must… | Because the readers… |
 |---|---|
@@ -403,9 +413,15 @@ cell, and no file is written:
 | write every spec row as exactly two `<td>` cells -- label first, value second | count a row only as a label/value pair; a one- or three-cell row is unreadable |
 | write the row literally as `<tr><td…>` -- no space, no line break, no attribute on the `<tr>` | read rows with `<tr><td[^>]*>(?:<strong>)?([^<]+)`, and match a bare `<tr>` when checking a row's facts |
 | keep `<table>` / `<thead>` / `<tbody>` / `<tr>` / `<td>` / `<th …>` balanced, and head a cell with an attribute (`<th style=…>`, never bare `<th>`) | count those six tags, spelling the header `"th "` with a trailing space |
+| close them **in the order it opened them** -- no `</tr>` before its `</td>`, no `<strong>` left running into the next row | a crossing writes the same tags as a clean table, so no count can see it; the browser closes the cell at the `</tr>` and drops what follows, and the gate then finds one `<td>` in that row and skips it (`audit.py:494`) |
 | carry exactly **one** header row of `<th>` cells | `row_check.csv`'s `Spec Rows` is `count("<tr") − 1`; no header (or two) reports one row short |
 | leave no cell empty and never repeat a label | the gate calls an empty `<td></td>` a broken description, and a row whose label duplicates another reads back as one row, not two |
-| bold the warranty row with `<strong>` -- both its cells, as `spec_table` does -- and nothing else | read bold as *the* warranty marker and prove `Attribute_Warranty` from it |
+| bold exactly the rows it is *handed* as warranty rows -- both cells, as `spec_table` does -- whichever label they carry and wherever they sit | read bold as *the* warranty marker and prove `Attribute_Warranty` from it; most of the shop's listings state a term after a part (`Compressor`, `Parts`, `PCB`), not after the word `Warranty` |
+| spell that bold as a literal `<strong>` and `</strong>` -- no attribute, no space inside the tag | `audit.py:408` and `:496` look for the text `<strong>`; `<strong class="w">` is bold to a browser and plain to the gate, so the warranty it marks stops being proved |
+| escape every label **and** value it interpolates (`html.escape(text, quote=False)`), so `&` ships as `&amp;` and a value's `<b>` as text | a bare `&` is not an entity and the shop's own tag joins the table's, so the file the gate counts rows in is not the table the shop wrote |
+| put the shop's words **between** the tags only, never inside one -- `title="{value}"` is not a smaller version of the same mistake | every reader takes a cell from between `>` and `<`, so text parked in an attribute is invisible to all of them, and `quote=False` -- the escaping this program documents -- leaves a `"` free to end the attribute early |
+| write only entities a browser has a name for (`&amp; &lt; &gt; &nbsp; &#38; &#x26;`) -- never a made-up `&bogus;`, and never a semicolon-less `&amp` | an unknown name is not an entity either: the browser prints the letters and `html.unescape` leaves them, so the customer reads the code and no reader can tell the cell meant one `&` |
+| write a numeric reference only where Unicode has a printable character (`&#38;`, `&#x26;`, `&#233;`) -- never `&#999999999;`, `&#0;`, `&#xD800;` or a control code like `&#27;` | `html.unescape` answers those with U+FFFD -- the replacement glyph in the middle of a specification -- or with nothing at all, and the shop's text silently loses a character |
 | read back what it wrote: `extract(render(rows)) == rows` | no report can verify a shape that cannot state its own rows |
 
 The harness cannot see that header row: a table written with no `<th>` at all passes every
