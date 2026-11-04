@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import attributes
+import config
 import description_builder
 import series_corpus
 from config import (
@@ -2005,8 +2006,11 @@ def build_title(
     `capacity` and `identity` are what the row stated -- the pipeline resolves them once, in
     `main`, and hands them here so a Title and the SKU under it can never disagree.
     """
+    active_strict_rebuild = getattr(config, "STRICT_TITLE_REBUILD", STRICT_TITLE_REBUILD)
     if strict_rebuild is None:
-        strict_rebuild = STRICT_TITLE_REBUILD
+        strict_rebuild = active_strict_rebuild
+    active_omit_categories = getattr(config, "OMIT_TITLE_COLOR_CATEGORIES", OMIT_TITLE_COLOR_CATEGORIES)
+    active_title_max = getattr(config, "TITLE_MAX", TITLE_MAX)
 
     text = f"{source_title}\n{source_description}"
     if warranty is None:
@@ -2063,7 +2067,7 @@ def build_title(
     identity_printed = ""
     subtype: str = ""
     subtype_from: SubtypeSource = ""
-    title_color = "" if product_type in OMIT_TITLE_COLOR_CATEGORIES else color
+    title_color = "" if product_type in active_omit_categories else color
     label_value = clean_inline(description_builder.subtype_label(source_description))
     # A word the Title prints anyway is not a sub-type word: `SubType: Air Conditioner` states the
     # category, and `Double Door Refrigerator` exactly one word more than `Double Door`.  The model
@@ -2250,7 +2254,7 @@ def build_title(
             for word in clean_feat.split():
                 if word_printed(word, printed):
                     continue
-                if product_type in OMIT_TITLE_COLOR_CATEGORIES and color and word.lower() == color.lower():
+                if product_type in active_omit_categories and color and word.lower() == color.lower():
                     continue
                 feat_words.append(word)
                 printed = f"{printed} {word}"
@@ -2292,7 +2296,7 @@ def build_title(
 
         # Color handling: LED TV category omits color from title
         color_val = deduped_slots.get("color", "")
-        if product_type in OMIT_TITLE_COLOR_CATEGORIES:
+        if product_type in active_omit_categories:
             color_val = ""
 
         # Extract USPs with budget protection so back_model and warranty are never truncated
@@ -2353,15 +2357,15 @@ def build_title(
         if title_formula == "vip_pipe" and protected_parts:
             protected_str = " | ".join(protected_parts)
             needed_space = len(protected_str) + 3
-            if len(seg1) + needed_space > TITLE_MAX:
-                allowed_seg1 = max(0, TITLE_MAX - needed_space)
+            if len(seg1) + needed_space > active_title_max:
+                allowed_seg1 = max(0, active_title_max - needed_space)
                 seg1 = _trim_to_limit(seg1, allowed_seg1)
             pipe_parts = [p for p in (seg1, back_model, *valid_usps, part3) if p]
             combined = " | ".join(pipe_parts)
         else:
             combined = _apply_formula(slots, title_formula)
 
-        title = clean_inline(_trim_to_limit(combined, TITLE_MAX))
+        title = clean_inline(_trim_to_limit(combined, active_title_max))
         strategy = "rebuilt"
         # The search title is the owner's shape, not the shop Title's wording: brand, the code (or
         # the name-and-number) the row states, the kind of machine it is, then the size it is sold by.
@@ -2398,7 +2402,7 @@ def build_title(
     else:
         usp_tokens_tuple = ()
         base_title = clean_inline(source_title)
-        if product_type in OMIT_TITLE_COLOR_CATEGORIES and color:
+        if product_type in active_omit_categories and color:
             base_title = re.sub(rf"\b{re.escape(color)}\b", "", base_title, flags=re.IGNORECASE)
             base_title = re.sub(r"\s{2,}", " ", base_title).strip()
         if warranty:
@@ -2410,7 +2414,7 @@ def build_title(
                     base_title = f"{base_title.rstrip('-').strip()} - {clean_warr}"
                 else:
                     base_title = f"{base_title} - {clean_warr}"
-        title = clean_inline(_trim_to_limit(base_title, TITLE_MAX))
+        title = clean_inline(_trim_to_limit(base_title, active_title_max))
         strategy = "kept-with-light-cleanup"
 
     # The name reached the series slot; this is the other half of the question -- did it survive the

@@ -516,7 +516,12 @@ def resolve_row(
         )
 
     price, compare_at = resolve_prices(row, flags)
-    quantity = resolve_quantity(row, flags)
+    default_qty = (
+        vendor_cfg.default_variant_quantity
+        if vendor_cfg is not None
+        else getattr(CONFIG, "DEFAULT_VARIANT_QUANTITY", 20)
+    )
+    quantity = resolve_quantity(row, flags, default_quantity=default_qty)
 
     weight, weight_unit, _source = resolve_weight(text, row.weight, row.weight_unit)
     if not weight:

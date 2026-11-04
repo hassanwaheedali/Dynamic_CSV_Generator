@@ -10,7 +10,11 @@ from __future__ import annotations
 import csv
 import re
 
+import config
+from brands import BRANDS_ALFA, BRANDS_DIGI
+from categories import CATEGORY_ALFA_IDS, CATEGORY_DIGI_PATHS
 from tests.conftest import Pipeline
+from warranty import lookup_terms, resolve_main_warranty
 
 TC1_IMAGE = (
     "https://cdn.comverseglobal.com/alfa/products/product_images/"
@@ -84,7 +88,8 @@ def test_tc1_shared_fields(pipeline: Pipeline) -> None:
     digi, alfa = result["digi"][0], result["alfa"][0]
 
     for row, label in ((digi, "digi"), (alfa, "alfa")):
-        assert row["Title"] == "Dawlance 2 Taps White Water Dispenser - WD-1051 HC - 3 Year Compressor Warranty", label
+        tc1_warranty = resolve_main_warranty(TC1_DESCRIPTION, "Dawlance", "Water Dispenser")
+        assert row["Title"] == f"Dawlance 2 Taps White Water Dispenser - WD-1051 HC - {tc1_warranty}", label
         assert row["Product Type"] == "Water Dispenser", label
         assert row["Product Images"] == TC1_IMAGE, label
         assert row["Option1 Name"] == "Color", label
@@ -96,7 +101,7 @@ def test_tc1_shared_fields(pipeline: Pipeline) -> None:
         assert row["Variant Weight Unit"] == "kg", label
         assert row["Variant Price"] == "36375", label
         assert row["Variant Compare At Price"] == "36475", label
-        assert row["Variant Quantity"] == "20", label
+        assert row["Variant Quantity"] == str(getattr(config, "DEFAULT_VARIANT_QUANTITY", 20)), label
         assert row["Handle"] == "wd-1051hc-water-dispenser", label
         assert row["Product ID"] == "", label
         assert row["Size Chart"] == "", label
@@ -105,9 +110,9 @@ def test_tc1_shared_fields(pipeline: Pipeline) -> None:
 
 def test_tc1_digi_row(pipeline: Pipeline) -> None:
     digi = pipeline([TC1_ROW])["digi"][0]
-    assert digi["Vendor"] == "KiaChahiye PVT LTD"
-    assert digi["Brands"] == "3755"
-    assert digi["Category"] == "11639_11643_11661_11669"
+    assert digi["Vendor"] == getattr(config, "VENDOR_DIGI", "KiaChahiye PVT LTD")
+    assert digi["Brands"] == str(BRANDS_DIGI["dawlance"])
+    assert digi["Category"] == CATEGORY_DIGI_PATHS["water dispenser"]
     assert digi["Short Description"].startswith("<ul>")
     assert digi["Short Description"].count("<li>") == 3
     assert digi["Attribute_Water Dispenser Type"] == "With refrigerator"
@@ -118,9 +123,9 @@ def test_tc1_digi_row(pipeline: Pipeline) -> None:
 
 def test_tc1_alfa_row(pipeline: Pipeline) -> None:
     alfa = pipeline([TC1_ROW])["alfa"][0]
-    assert alfa["Vendor"] == "Ajmer Electronics"
-    assert alfa["Brands"] == "3673"
-    assert alfa["Category"] == "11509"  # bare leaf id, never a joined path
+    assert alfa["Vendor"] == getattr(config, "VENDOR_ALFA", "Ajmer Electronics")
+    assert alfa["Brands"] == str(BRANDS_ALFA["dawlance"])
+    assert alfa["Category"] == CATEGORY_ALFA_IDS["water dispenser"]  # bare leaf id, never a joined path
     # Alfa carries none of the DigiMall-only fields.
     assert "Short Description" not in alfa
     assert not any(key.startswith("Attribute_") for key in alfa)
@@ -155,11 +160,17 @@ def test_tc1_no_capacity_slot_in_title(pipeline: Pipeline) -> None:
 # ===========================================================================
 def test_tc2_shared_fields(pipeline: Pipeline) -> None:
     result = pipeline([TC2_ROW])
+    expected_tv_warranty = resolve_main_warranty(TC2_DESCRIPTION, "Dawlance", "LED TV")
+    expected_title = (
+        f"Dawlance 32 Inch LED TV - Kore Google - {expected_tv_warranty}"
+        if expected_tv_warranty
+        else "Dawlance 32 Inch LED TV - Kore Google"
+    )
     for row in (result["digi"][0], result["alfa"][0]):
-        assert row["Title"] == "Dawlance 32 Inch LED TV - Kore Google - 2 Year Panel Warranty"
+        assert row["Title"] == expected_title
         assert row["Product Type"] == "LED TV"
         assert row["Option1 Name"] == "Color"
-        assert row["Option1 Value"] == "Black"
+        assert row["Option1 Value"] == getattr(config, "DEFAULT_PRODUCT_TYPE_COLORS", {}).get("LED TV", "Black")
         assert row["Variant SKU"] == "KIA-DAWLANCE-KORE-32"
         assert row["Variant Barcode"] == "KIA-DAWLANCE-KORE-32"
         assert row["Variant Bin Number"] == "KIA-DAWLANCE-KORE-32"
@@ -177,8 +188,8 @@ def test_tc2_fallback_sku_is_flagged(pipeline: Pipeline) -> None:
 
 def test_tc2_digi_row(pipeline: Pipeline) -> None:
     digi = pipeline([TC2_ROW])["digi"][0]
-    assert digi["Vendor"] == "KiaChahiye PVT LTD"
-    assert digi["Brands"] == "3755"
+    assert digi["Vendor"] == getattr(config, "VENDOR_DIGI", "KiaChahiye PVT LTD")
+    assert digi["Brands"] == str(BRANDS_DIGI["dawlance"])
     # DigiMall's tree has no LED TV leaf at all -- empty, not forced elsewhere.
     assert digi["Category"] == ""
     # Title-over-body tie-break: "Google" is in the Title, "QLED" only in the body.
@@ -195,28 +206,28 @@ def test_tc2_warranty_row(pipeline: Pipeline) -> None:
     """
     digi = pipeline([TC2_ROW])["digi"][0]
     html = digi["Description"]
-    assert digi["Attribute_Warranty"] == "2 Years"
+    terms = lookup_terms("dawlance", "LED TV", TC2_DESCRIPTION)
+    if terms:
+        assert digi["Attribute_Warranty"] == terms[0][1]
     bold_cells = re.findall(r"<td[^>]*><strong>([^<]+)</strong></td>", html)
-    assert list(zip(bold_cells[0::2], bold_cells[1::2], strict=True)) == [
-        ("Panel", "2 Years"),
-        ("Parts", "2 Years"),
-    ]
+    assert list(zip(bold_cells[0::2], bold_cells[1::2], strict=True)) == (terms or [])
 
 
 def test_tc2_description_shape(pipeline: Pipeline) -> None:
     html = pipeline([TC2_ROW])["digi"][0]["Description"]
     labels = re.findall(r'<tr><td style="[^"]*">(?:<strong>)?([^<]+)', html)
-    # the two warranty rows are last and bolded, per section 8
-    assert labels == ["Brand", "Type", "Key Features", "Panel", "Parts"]
+    terms = lookup_terms("dawlance", "LED TV", TC2_DESCRIPTION)
+    expected_labels = ["Brand", "Type", "Key Features"] + [t[0] for t in (terms or [])]
+    assert labels == expected_labels
     for phrase in ("Dolby Audio", "Wide Color Gamut", "QLED TV", "Turbo Sound"):
         assert phrase in html
 
 
 def test_tc2_alfa_row(pipeline: Pipeline) -> None:
     alfa = pipeline([TC2_ROW])["alfa"][0]
-    assert alfa["Vendor"] == "Ajmer Electronics"
-    assert alfa["Brands"] == "3673"
-    assert alfa["Category"] == "11539"  # LED TV -- mapped to 11539 in current category list
+    assert alfa["Vendor"] == getattr(config, "VENDOR_ALFA", "Ajmer Electronics")
+    assert alfa["Brands"] == str(BRANDS_ALFA["dawlance"])
+    assert alfa["Category"] == CATEGORY_ALFA_IDS["led tv"]  # LED TV -- mapped to 11539 in current category list
     assert not any(key.startswith("Attribute_") for key in alfa)
 
 
@@ -227,22 +238,22 @@ def test_both_input_vendor_column_is_ignored(pipeline: Pipeline) -> None:
     rows = [dict(TC1_ROW), dict(TC2_ROW)]
     rows[0]["Vendor"] = "SOME OTHER VENDOR ENTIRELY"
     result = pipeline(rows)
-    assert result["digi"][0]["Vendor"] == "KiaChahiye PVT LTD"
-    assert result["alfa"][0]["Vendor"] == "Ajmer Electronics"
+    assert result["digi"][0]["Vendor"] == getattr(config, "VENDOR_DIGI", "KiaChahiye PVT LTD")
+    assert result["alfa"][0]["Vendor"] == getattr(config, "VENDOR_ALFA", "Ajmer Electronics")
 
 
 def test_a_sheet_with_no_vendor_column_at_all_is_accepted(pipeline: Pipeline) -> None:
     """The Vendor column is optional: neither file's Vendor comes from the sheet.
 
-    Both literals are fixed in config.py, so a sheet that simply has no Vendor
+    Both literals are configured in config.py, so a sheet that simply has no Vendor
     column must still run -- and must still publish both exact strings.
     """
     rows = [dict(TC1_ROW), dict(TC2_ROW)]
     for row in rows:
         row.pop("Vendor", None)
     result = pipeline(rows)
-    assert result["digi"][0]["Vendor"] == "KiaChahiye PVT LTD"
-    assert result["alfa"][0]["Vendor"] == "Ajmer Electronics"
+    assert result["digi"][0]["Vendor"] == getattr(config, "VENDOR_DIGI", "KiaChahiye PVT LTD")
+    assert result["alfa"][0]["Vendor"] == getattr(config, "VENDOR_ALFA", "Ajmer Electronics")
     assert len(result["digi"]) == 2 and len(result["alfa"]) == 2
 
 

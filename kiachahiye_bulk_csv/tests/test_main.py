@@ -279,10 +279,15 @@ def test_the_summary_names_the_template_that_served_each_file(
     """The same rule as the lookup tables: tell the reader which cell actually served this run."""
     block, _ = _summary_run(tmp_path, capsys, vendor="kiachahiye")
     assert len(block) == 2, block
-    assert block[0].startswith("  DigiMall spec_table"), block[0]
-    assert "Kiachahiye.digi.description_template in vendor_config.py" in block[0], block[0]
-    assert block[1].startswith("  Alfa     kiachahiye_alfa_card"), block[1]
-    assert "Kiachahiye.alfa.description_template in vendor_config.py" in block[1], block[1]
+    cfg_kc = VENDOR_REGISTRY["kiachahiye"]
+    digi_t = cfg_kc.digi.description_template
+    d_name = digi_t if isinstance(digi_t, str) else digi_t.name
+    alfa_t = cfg_kc.alfa.description_template
+    a_name = alfa_t if isinstance(alfa_t, str) else alfa_t.name
+    assert block[0].startswith(f"  DigiMall {d_name}"), block[0]
+    assert f"{cfg_kc.display_name}.digi.description_template in vendor_config.py" in block[0], block[0]
+    assert block[1].startswith(f"  Alfa     {a_name}"), block[1]
+    assert f"{cfg_kc.display_name}.alfa.description_template in vendor_config.py" in block[1], block[1]
 
 
 def test_a_single_platform_run_names_only_the_file_it_wrote(
@@ -291,8 +296,11 @@ def test_a_single_platform_run_names_only_the_file_it_wrote(
     """An Alfa upload is not this run's news about DigiMall -- and never names its cell to edit."""
     block, _ = _summary_run(tmp_path, capsys, vendor="ajmer", platform="alfa")
     assert len(block) == 1, block
-    assert block[0].startswith("  Alfa     spec_table"), block[0]
-    assert "Ajmer.alfa.description_template in vendor_config.py" in block[0], block[0]
+    cfg_aj = VENDOR_REGISTRY["ajmer"]
+    aj_t = cfg_aj.alfa.description_template
+    aj_alfa_name = aj_t if isinstance(aj_t, str) else aj_t.name
+    assert block[0].startswith(f"  Alfa     {aj_alfa_name}"), block[0]
+    assert f"{cfg_aj.display_name}.alfa.description_template in vendor_config.py" in block[0], block[0]
     assert "digi" not in block[0].lower(), block[0]
 
 

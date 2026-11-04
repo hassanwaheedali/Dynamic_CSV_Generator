@@ -6,6 +6,7 @@ identically into both output files.
 
 from __future__ import annotations
 
+import config
 from config import COMPARE_AT_MARKUP_PERCENT
 from config import DEFAULT_VARIANT_QUANTITY as DEFAULT_VARIANT_QUANTITY  # edit in config.py
 from models import InputRow
@@ -36,7 +37,7 @@ def round_up_to_round_figure(value: int, price: int) -> int:
     163,999 -> 190,000 (nearest 10,000).  Only ever larger, so a discount always survives.
     """
     step = 10 ** max(0, len(str(price)) - 2)
-    return -(-value // step) * step
+    return int(-(-value // step) * step)
 
 
 def derive_compare_at(sell: int) -> int:
@@ -48,7 +49,9 @@ def derive_compare_at(sell: int) -> int:
     """
     if sell <= 0:
         return 0
-    markup = max(1, COMPARE_AT_MARKUP_PERCENT)  # a knob set to 0 would publish an equal pair
+    markup = max(
+        1, getattr(config, "COMPARE_AT_MARKUP_PERCENT", COMPARE_AT_MARKUP_PERCENT)
+    )  # a knob set to 0 would publish an equal pair
     marked_up = -(-sell * (100 + markup) // 100)
     return round_up_to_round_figure(marked_up, sell)
 
@@ -80,6 +83,7 @@ def resolve_prices(row: InputRow, flags: QCFlagCollector) -> tuple[int, int]:
         return sell, original
 
     compare_at = derive_compare_at(sell)
+    markup = max(1, getattr(config, "COMPARE_AT_MARKUP_PERCENT", COMPARE_AT_MARKUP_PERCENT))
     if compare_at > sell:
         # One line per row in the QC report: what was wrong with the sheet's Regular Price, and the
         # number published in its place.  A blank cell is a gap (info); unreadable text or a number
@@ -90,7 +94,7 @@ def resolve_prices(row: InputRow, flags: QCFlagCollector) -> tuple[int, int]:
                 row.title,
                 CAT_COMPARE_AT_DERIVED,
                 f"Variant Compare At Price {compare_at} derived from Sell Price {sell} "
-                f"(+{COMPARE_AT_MARKUP_PERCENT}%, rounded up) -- the sheet states no Regular Price.",
+                f"(+{markup}%, rounded up) -- the sheet states no Regular Price.",
             )
         else:
             reason = (
@@ -103,18 +107,24 @@ def resolve_prices(row: InputRow, flags: QCFlagCollector) -> tuple[int, int]:
                 row.title,
                 CAT_PRICE_INVERSION,
                 f"{reason} -- a strike-through cannot be that, so Variant Compare At Price is "
-                f"published as {compare_at} instead (+{COMPARE_AT_MARKUP_PERCENT}%, rounded up). "
+                f"published as {compare_at} instead (+{markup}%, rounded up). "
                 "Fix the source sheet.",
             )
     return sell, compare_at
 
 
-def resolve_quantity(row: InputRow, flags: QCFlagCollector) -> int:
-    """The input sheet has no stock column, so default to 20 and flag the row."""
+def resolve_quantity(
+    row: InputRow,
+    flags: QCFlagCollector,
+    default_quantity: int | None = None,
+) -> int:
+    """The input sheet has no stock column, so default to configured quantity and flag the row."""
+    if default_quantity is None:
+        default_quantity = getattr(config, "DEFAULT_VARIANT_QUANTITY", DEFAULT_VARIANT_QUANTITY)
     flags.flag(
         row.row_number,
         row.title,
         CAT_QTY_DEFAULTED,
-        f"Input sheet has no stock column -- Variant Quantity defaulted to {DEFAULT_VARIANT_QUANTITY}.",
+        f"Input sheet has no stock column -- Variant Quantity defaulted to {default_quantity}.",
     )
-    return DEFAULT_VARIANT_QUANTITY
+    return default_quantity

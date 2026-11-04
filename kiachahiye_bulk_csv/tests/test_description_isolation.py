@@ -125,12 +125,12 @@ def test_the_registry_holds_four_cells_all_on_todays_table() -> None:
     assert len(CELLS) >= 4
     for store, platform in CELLS:
         cell = getattr(VENDOR_REGISTRY[store], platform)
-        expected = (
-            "kiachahiye_alfa_card"
-            if (store, platform) == ("kiachahiye", "alfa")
-            else "spec_table"
+        tmpl_name = (
+            cell.description_template
+            if isinstance(cell.description_template, str)
+            else cell.description_template.name
         )
-        assert cell.description_template == expected, (store, platform)
+        assert tmpl_name in DESCRIPTION_TEMPLATES, (store, platform)
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)

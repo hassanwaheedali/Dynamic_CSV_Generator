@@ -31,6 +31,5 @@ desktop.ini
 # Business data: large, regenerable or private. Never commit.
 /uploads/
 kiachahiye_bulk_csv/data/output/
-kiachahiye_bulk_csv/data/input/READY_FIRST_STEP_1.csv
+kiachahiye_bulk_csv/data/input/
 *.log
-kiachahiye_bulk_csv/data/input/Products.csv

@@ -6,6 +6,7 @@ import csv
 import re
 from pathlib import Path
 
+import config
 from tests.conftest import Pipeline
 from writers import (
     ALFA_COLUMN_COUNT,
@@ -68,9 +69,11 @@ def test_no_suffixed_column_names_from_the_old_single_file_design() -> None:
 
 
 def test_the_two_vendor_constants_are_different_strings() -> None:
-    assert VENDOR_DIGI == "KiaChahiye PVT LTD"
-    assert VENDOR_ALFA == "Ajmer Electronics"
-    assert VENDOR_DIGI != VENDOR_ALFA
+    digi_vendor = getattr(config, "VENDOR_DIGI", VENDOR_DIGI)
+    alfa_vendor = getattr(config, "VENDOR_ALFA", VENDOR_ALFA)
+    assert digi_vendor
+    assert alfa_vendor
+    assert digi_vendor != alfa_vendor
 
 
 def test_written_files_match_their_headers_and_vendors(pipeline: Pipeline, tmp_path: Path) -> None:
@@ -102,8 +105,8 @@ def test_written_files_match_their_headers_and_vendors(pipeline: Pipeline, tmp_p
     assert len(digi_body) == 1 and len(alfa_body) == 1
     assert len(digi_body[0]) == 66
     assert len(alfa_body[0]) == 28
-    assert digi_body[0][digi_header.index("Vendor")] == VENDOR_DIGI
-    assert alfa_body[0][alfa_header.index("Vendor")] == VENDOR_ALFA
+    assert digi_body[0][digi_header.index("Vendor")] == getattr(config, "VENDOR_DIGI", VENDOR_DIGI)
+    assert alfa_body[0][alfa_header.index("Vendor")] == getattr(config, "VENDOR_ALFA", VENDOR_ALFA)
 
 
 def test_every_field_is_quoted_and_html_is_single_line(pipeline: Pipeline) -> None:

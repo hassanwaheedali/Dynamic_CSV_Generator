@@ -93,9 +93,15 @@ def read(path: Path) -> tuple[list[str], list[dict[str, str]], str]:
 def report() -> int:
     """Print the checklist and return the exit code (0 only when all pass)."""
     failed = [entry for entry in RESULTS if not entry[0]]
+    # Align check names in a fixed-width column so details, notes, and counts line up cleanly.
+    col_width = 75
     for ok, name, detail in RESULTS:
         mark = "PASS" if ok else "FAIL"
-        print(f"  [{mark}] {name}" + (f"  -- {detail}" if detail else ""))
+        detail_str = f"-- {detail}" if detail else ""
+        if len(name) <= col_width:
+            print(f"  [{mark}] {name:<{col_width}}  {detail_str}".rstrip())
+        else:
+            print(f"  [{mark}] {name}  {detail_str}".rstrip())
     print()
     print(f"  checks: {len(RESULTS)} | passed: {len(RESULTS) - len(failed)} | failed: {len(failed)}")
     if failed:

@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
+import config
 from config import APPLY_TV_WARRANTY_TABLE
 from models import SpecRow
 
@@ -89,16 +91,33 @@ def _split_category(key: str) -> tuple[str, tuple[str, ...]]:
     return category.strip(), words
 
 
-TERM_LINES: list[TermLine] = [
-    TermLine(
-        brand=brand,
-        category=_split_category(category)[0],
-        variant_words=_split_category(category)[1],
-        entries=_parse_value(value),
+_TERMS_CACHE: dict[str, Any] = {"lines": None, "key": None}
+
+
+def get_term_lines() -> list[TermLine]:
+    """Parse WARRANTY_TERMS into TermLine entries, caching until WARRANTY_TERMS is mutated."""
+    current_key = (
+        id(WARRANTY_TERMS),
+        tuple((b, tuple(sorted(t.items()))) for b, t in sorted(WARRANTY_TERMS.items())),
     )
-    for brand, table in WARRANTY_TERMS.items()
-    for category, value in table.items()
-]
+    if _TERMS_CACHE["lines"] is not None and current_key == _TERMS_CACHE["key"]:
+        return _TERMS_CACHE["lines"]  # type: ignore[no-any-return]
+    lines = [
+        TermLine(
+            brand=brand,
+            category=_split_category(category)[0],
+            variant_words=_split_category(category)[1],
+            entries=_parse_value(value),
+        )
+        for brand, table in WARRANTY_TERMS.items()
+        for category, value in table.items()
+    ]
+    _TERMS_CACHE["lines"] = lines
+    _TERMS_CACHE["key"] = current_key
+    return lines
+
+
+TERM_LINES: list[TermLine] = get_term_lines()
 
 
 def lookup_terms(
@@ -110,12 +129,12 @@ def lookup_terms(
     in WARRANTY_TERMS, so a narrower wording such as "non inverter" always wins
     over the plain category underneath it.
     """
-    if product_type == "LED TV" and not APPLY_TV_WARRANTY_FALLBACK:
+    if product_type == "LED TV" and not getattr(config, "APPLY_TV_WARRANTY_TABLE", APPLY_TV_WARRANTY_FALLBACK):
         return None
     b_key = brand_key.strip().lower()
     title = text.splitlines()[0] if text else ""
     default: TermLine | None = None
-    for line in TERM_LINES:
+    for line in get_term_lines():
         if line.brand != b_key or line.category != product_type:
             continue
         if not line.variant_words:

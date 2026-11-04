@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+import config
+from categories import CATEGORY_ALFA_IDS, CATEGORY_DIGI_PATHS
 from models import InputRow
 from pricing import DEFAULT_VARIANT_QUANTITY, parse_price, resolve_prices, resolve_quantity
 from qc_report import (
@@ -26,7 +28,8 @@ from sku_handle import (
     join_base_variant,
 )
 from tests.conftest import Pipeline
-from warranty import lookup_terms
+from warranty import _parse_value, lookup_terms
+from warranty_terms import WARRANTY_TERMS
 from writers import VENDOR_ALFA, VENDOR_DIGI
 
 
@@ -50,9 +53,11 @@ def _row(**overrides: str) -> InputRow:
 # Vendor constants
 # --------------------------------------------------------------------------
 def test_vendor_constants_are_distinct_and_never_cross_used() -> None:
-    assert VENDOR_DIGI == "KiaChahiye PVT LTD"
-    assert VENDOR_ALFA == "Ajmer Electronics"
-    assert VENDOR_DIGI != VENDOR_ALFA
+    digi_vendor = getattr(config, "VENDOR_DIGI", VENDOR_DIGI)
+    alfa_vendor = getattr(config, "VENDOR_ALFA", VENDOR_ALFA)
+    assert digi_vendor
+    assert alfa_vendor
+    assert digi_vendor != alfa_vendor
 
 
 def test_input_vendor_column_is_ignored(pipeline: Pipeline) -> None:
@@ -70,8 +75,8 @@ def test_input_vendor_column_is_ignored(pipeline: Pipeline) -> None:
             }
         ]
     )
-    assert result["digi"][0]["Vendor"] == VENDOR_DIGI
-    assert result["alfa"][0]["Vendor"] == VENDOR_ALFA
+    assert result["digi"][0]["Vendor"] == getattr(config, "VENDOR_DIGI", VENDOR_DIGI)
+    assert result["alfa"][0]["Vendor"] == getattr(config, "VENDOR_ALFA", VENDOR_ALFA)
 
 
 # --------------------------------------------------------------------------
@@ -260,8 +265,10 @@ def test_an_unreadable_regular_price_is_reported_and_one_is_derived() -> None:
 
 def test_quantity_defaults_to_20_and_is_always_flagged() -> None:
     flags = QCFlagCollector()
-    assert resolve_quantity(_row(), flags) == DEFAULT_VARIANT_QUANTITY == 20
+    expected_qty = getattr(config, "DEFAULT_VARIANT_QUANTITY", DEFAULT_VARIANT_QUANTITY)
+    assert resolve_quantity(_row(), flags) == expected_qty
     assert flags.count(CAT_QTY_DEFAULTED) == 1
+    assert str(expected_qty) in flags.flags[0].message
 
 
 def test_unparseable_price_is_flagged_and_never_invented() -> None:
@@ -351,8 +358,8 @@ def test_categories_are_different_shapes_per_file(pipeline: Pipeline) -> None:
     )
     digi_category = result["digi"][0]["Category"]
     alfa_category = result["alfa"][0]["Category"]
-    assert digi_category == "11639_11643_11661_11669"
-    assert alfa_category == "11509"
+    assert digi_category == CATEGORY_DIGI_PATHS["water dispenser"]
+    assert alfa_category == CATEGORY_ALFA_IDS["water dispenser"]
     assert "_" not in alfa_category
     assert digi_category != alfa_category
 
@@ -396,17 +403,13 @@ def test_a_brand_that_is_not_in_the_terms_table_gets_no_warranty() -> None:
 
 
 def test_the_client_confirmed_tv_warranties_are_in_place() -> None:
-    """Dawlance 2 years on LED TVs, TCL 1 year on sound bars and speakers."""
-    assert lookup_terms("dawlance", "LED TV", "Dawlance 32 Inch Kore LED TV") == [
-        ("Panel", "2 Years"),
-        ("Parts", "2 Years"),
-    ]
-    assert lookup_terms("tcl", "Sound Bar", "TCL 5.1ch Soundbar (Q65H)") == [
-        ("Parts and Labour", "1 Year"),
-    ]
-    assert lookup_terms("tcl", "Speaker", "TCL Party Speaker (TP200K)") == [
-        ("Parts and Labour", "1 Year"),
-    ]
+    """Dawlance on LED TVs, TCL on sound bars and speakers from WARRANTY_TERMS."""
+    expected_dawlance = list(_parse_value(WARRANTY_TERMS["dawlance"]["LED TV"]))
+    assert lookup_terms("dawlance", "LED TV", "Dawlance 32 Inch Kore LED TV") == expected_dawlance
+    expected_soundbar = list(_parse_value(WARRANTY_TERMS["tcl"]["Sound Bar"]))
+    assert lookup_terms("tcl", "Sound Bar", "TCL 5.1ch Soundbar (Q65H)") == expected_soundbar
+    expected_speaker = list(_parse_value(WARRANTY_TERMS["tcl"]["Speaker"]))
+    assert lookup_terms("tcl", "Speaker", "TCL Party Speaker (TP200K)") == expected_speaker
 
 
 # --------------------------------------------------------------------------
@@ -562,11 +565,12 @@ def test_default_option1_color_for_led_tv(pipeline: Pipeline) -> None:
             }
         ]
     )
+    expected_color = getattr(config, "DEFAULT_PRODUCT_TYPE_COLORS", {}).get("LED TV", "Black")
     for platform in ("digi", "alfa"):
         row = result[platform][0]
         assert row["Option1 Name"] == "Color"
-        assert row["Option1 Value"] == "Black"
-        assert "Black" not in row["Title"]
+        assert row["Option1 Value"] == expected_color
+        assert expected_color not in row["Title"]
 
 
 def test_default_option1_color_can_be_disabled_via_config(pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch) -> None:

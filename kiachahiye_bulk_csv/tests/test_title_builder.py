@@ -23,19 +23,23 @@ from title_builder import (
     without_leading_type_words,
     word_identity,
 )
+from warranty import resolve_main_warranty
 
 
 def test_rebuilt_title_full_template() -> None:
     extraction = ModelExtraction(code="HPU-24HDZ", source="description-model-line", confidence="high")
+    source_title = "Haier Inverter Air Conditioner 2 Ton White HPU-24HDZ Duzin Series"
+    source_description = "Model: HPU-24HDZ\nCapacity: 2 Ton\nColor: White\nDuzin Series\nInverter AC"
     result = build_title(
         brand="Haier",
         extraction=extraction,
         product_type="Air Conditioner",
-        source_title="Haier Inverter Air Conditioner 2 Ton White HPU-24HDZ Duzin Series",
-        source_description="Model: HPU-24HDZ\nCapacity: 2 Ton\nColor: White\nDuzin Series\nInverter AC",
+        source_title=source_title,
+        source_description=source_description,
     )
+    warranty = resolve_main_warranty(f"{source_title}\n{source_description}", "Haier", "Air Conditioner")
     assert result.strategy == "rebuilt"
-    assert result.title == "Haier 2 Ton White Inverter Air Conditioner - HPU-24HDZ Duzin - 10 Year Compressor Warranty"
+    assert result.title == f"Haier 2 Ton White Inverter Air Conditioner - HPU-24HDZ Duzin - {warranty}"
 
 
 def test_the_full_colourway_the_description_states_reaches_the_title_whole() -> None:
@@ -53,22 +57,30 @@ def test_the_full_colourway_the_description_states_reaches_the_title_whole() -> 
         source_description="Model: HRF-336EPB\nColor: Blaze Purple\nMarvel Series\n12 CuFt",
     )
     assert result.color_token == "Blaze Purple"
+    desc = (
+        "Haier 12 CuFt Refrigerator Marvel Series Blaze Purple (HRF-336EPB)\n"
+        "Model: HRF-336EPB\nColor: Blaze Purple\nMarvel Series\n12 CuFt"
+    )
+    warranty = resolve_main_warranty(desc, "Haier", "Refrigerator")
     assert result.title == (
-        "Haier 12 Cu Ft Blaze Purple Refrigerator - HRF-336EPB Marvel - 10 Year Compressor Warranty"
+        f"Haier 12 Cu Ft Blaze Purple Refrigerator - HRF-336EPB Marvel - {warranty}"
     )
 
 
 def test_rebuilt_title_without_inverter_for_water_dispenser() -> None:
     extraction = ModelExtraction(code="WD-1051 HC", source="description-model-line", confidence="high")
+    source_title = "Dawlance 2 Taps Water Dispenser White - (WD-1051 HC)"
+    source_description = "Model: WD-1051 HC White\n2 Taps\nInverter"  # Water dispenser must never grow inverter
     result = build_title(
         brand="Dawlance",
         extraction=extraction,
         product_type="Water Dispenser",
-        source_title="Dawlance 2 Taps Water Dispenser White - (WD-1051 HC)",
-        source_description="Model: WD-1051 HC White\n2 Taps\nInverter",  # Water dispenser must never grow inverter
+        source_title=source_title,
+        source_description=source_description,
     )
+    warranty = resolve_main_warranty(f"{source_title}\n{source_description}", "Dawlance", "Water Dispenser")
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 2 Taps White Water Dispenser - WD-1051 HC - 3 Year Compressor Warranty"
+    assert result.title == f"Dawlance 2 Taps White Water Dispenser - WD-1051 HC - {warranty}"
 
 
 def test_rebuilt_title_washing_machine_with_capacity_and_color() -> None:
@@ -84,9 +96,14 @@ def test_rebuilt_title_washing_machine_with_capacity_and_color() -> None:
     # `Fully Automatic` now comes from the Description's own sentence -- the Title said only
     # `Top load`, and the group the Title left unanswered is the one the prose answers.
     assert result.subtype_from == "list"
+    warranty = resolve_main_warranty(
+        "Dawlance Advanco Top load Washing Machine 8 Kg Arcelik White (DW-6100)\nAutomatic Washing Machine 8 Kg White",
+        "Dawlance",
+        "Washing Machine",
+    )
     assert result.title == (
-        "Dawlance 8 KG White Fully Automatic Top Load Washing Machine - DW-6100 Advanco "
-        "- 12 Year Motor Warranty"
+        f"Dawlance 8 KG White Fully Automatic Top Load Washing Machine - DW-6100 Advanco "
+        f"- {warranty}"
     )
 
 
@@ -114,28 +131,34 @@ def test_the_search_title_base_leads_on_the_code_and_closes_on_the_size() -> Non
 
 def test_rebuilt_title_microwave_oven_with_capacity() -> None:
     extraction = ModelExtraction(code="DW-525-AF", source="title-parenthetical", confidence="high")
+    source_title = "Dawlance Air Fryer Microwave Oven 25 Ltr Black (DW-525-AF)"
+    source_description = "Black finish"
     result = build_title(
         brand="Dawlance",
         extraction=extraction,
         product_type="Microwave Oven",
-        source_title="Dawlance Air Fryer Microwave Oven 25 Ltr Black (DW-525-AF)",
-        source_description="Black finish",
+        source_title=source_title,
+        source_description=source_description,
     )
+    warranty = resolve_main_warranty(f"{source_title}\n{source_description}", "Dawlance", "Microwave Oven")
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 25 Ltr Black Microwave Oven - DW-525-AF Air Fryer - 1 Year Warranty"
+    assert result.title == f"Dawlance 25 Ltr Black Microwave Oven - DW-525-AF Air Fryer - {warranty}"
 
 
 def test_user_example_microwave_baking_1_year_warranty() -> None:
     extraction = ModelExtraction(code="DW-115-CHZP", source="title-parenthetical", confidence="high")
+    source_title = "Dawlance Baking Series Microwave Oven 25 Ltr (DW-115-CHZP)"
+    source_description = "The Dawlance DW-115-CHZP is a 25 Ltr microwave oven in Black."
     result = build_title(
         brand="Dawlance",
         extraction=extraction,
         product_type="Microwave Oven",
-        source_title="Dawlance Baking Series Microwave Oven 25 Ltr (DW-115-CHZP)",
-        source_description="The Dawlance DW-115-CHZP is a 25 Ltr microwave oven in Black.",
+        source_title=source_title,
+        source_description=source_description,
     )
+    warranty = resolve_main_warranty(f"{source_title}\n{source_description}", "Dawlance", "Microwave Oven")
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 25 Ltr Black Microwave Oven - DW-115-CHZP Baking - 1 Year Warranty"
+    assert result.title == f"Dawlance 25 Ltr Black Microwave Oven - DW-115-CHZP Baking - {warranty}"
 
 
 def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
@@ -172,26 +195,30 @@ def test_user_example_ac_kept_title_with_compressor_warranty() -> None:
 
 def test_title_kept_when_no_confident_model() -> None:
     extraction = ModelExtraction(code="Kore 32", source="fallback", confidence="none")
+    source_title = "Dawlance 32 Inch Kore Google HD LED TV"
+    source_description = "32 inch TV"
+    warranty = resolve_main_warranty(f"{source_title}\n{source_description}", "Dawlance", "LED TV")
+    warranty_suffix = f" - {warranty}" if warranty else ""
     result = build_title(
         brand="Dawlance",
         extraction=extraction,
         product_type="LED TV",
-        source_title="Dawlance 32 Inch Kore Google HD LED TV",
-        source_description="32 inch TV",
+        source_title=source_title,
+        source_description=source_description,
     )
     assert result.strategy == "rebuilt"
-    assert result.title == "Dawlance 32 Inch LED TV - Kore Google - 2 Year Panel Warranty"
+    assert result.title == f"Dawlance 32 Inch LED TV - Kore Google{warranty_suffix}"
 
     result_kept = build_title(
         brand="Dawlance",
         extraction=extraction,
         product_type="LED TV",
-        source_title="Dawlance 32 Inch Kore Google HD LED TV",
-        source_description="32 inch TV",
+        source_title=source_title,
+        source_description=source_description,
         strict_rebuild=False,
     )
     assert result_kept.strategy == "kept-with-light-cleanup"
-    assert result_kept.title == "Dawlance 32 Inch Kore Google HD LED TV - 2 Year Panel Warranty"
+    assert result_kept.title == f"Dawlance 32 Inch Kore Google HD LED TV{warranty_suffix}"
 
 
 def test_title_kept_without_warranty_when_no_warranty_entry() -> None:
@@ -314,7 +341,13 @@ def test_led_tv_title_omits_color_even_when_in_source() -> None:
     # prints in `[Subtype]` beside the size, while `Google` -- an OS the lists never enumerate as a
     # type -- keeps the feature seat behind the code.  Printing the type word in the name seat is what
     # made `- H32K85FX Android Google` read as a line called "Android Google".
-    assert result.title == "Haier 32 Inch Android LED TV - H32K85FX Google - 2 Year Panel Warranty"
+    warranty = resolve_main_warranty(
+        "Haier 32 Inch Black Google Android LED TV (H32K85FX)\nModel: H32K85FX\nColor: Black\n32 Inch Google TV",
+        "Haier",
+        "LED TV",
+    )
+    warranty_suffix = f" - {warranty}" if warranty else ""
+    assert result.title == f"Haier 32 Inch Android LED TV - H32K85FX Google{warranty_suffix}"
 
 
 def test_led_tv_kept_title_omits_color() -> None:

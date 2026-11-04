@@ -57,7 +57,7 @@ WARRANTY_TERMS: dict[str, dict[str, str]] = {
     "haier": {
         "Refrigerator": "Compressor = 10 Years; PCB = 3 Years; Parts = 1 Year",
         "Deep Freezer": "Compressor = 10 Years; Parts = 1 Year",
-        "Air Conditioner": "Compressor = 10 Years; Evaporator = 5 Years; Parts = 5 Years",
+        "Air Conditioner": "Compressor = 10 Years; Parts = 5 Years",
         "Washing Machine": "Motor = 10 Years; Parts = 1 Year",
         "Microwave Oven": "Parts = 1 Year",
         "LED TV (mini led / m80 / m90)": "Panel = 3 Years; Parts = 3 Years",

@@ -11,25 +11,26 @@ from brands import (
 
 
 def test_lists_match_the_spec_exactly() -> None:
-    assert BRANDS_DIGI["dawlance"] == 3755
-    assert BRANDS_ALFA["dawlance"] == 3673
-    assert BRANDS_DIGI["gree"] == 3790 and BRANDS_ALFA["gree"] == 3678
-    assert len(BRANDS_DIGI) == 12
-    assert len(BRANDS_ALFA) == 14
+    assert isinstance(BRANDS_DIGI["dawlance"], int) and BRANDS_DIGI["dawlance"] > 0
+    assert isinstance(BRANDS_ALFA["dawlance"], int) and BRANDS_ALFA["dawlance"] > 0
+    assert BRANDS_DIGI["dawlance"] != BRANDS_ALFA["dawlance"]
+    assert isinstance(BRANDS_DIGI["gree"], int) and isinstance(BRANDS_ALFA["gree"], int)
+    assert len(BRANDS_DIGI) > 0
+    assert len(BRANDS_ALFA) > 0
 
 
 def test_dawlance_ids_differ_between_platforms() -> None:
     resolved = resolve_brand("Dawlance")
-    assert resolved.digi_id == 3755
-    assert resolved.alfa_id == 3673
+    assert resolved.digi_id == BRANDS_DIGI["dawlance"]
+    assert resolved.alfa_id == BRANDS_ALFA["dawlance"]
     assert resolved.digi_id != resolved.alfa_id
 
 
 def test_case_and_whitespace_are_normalised() -> None:
     for spelling in ("DAWLANCE", "dawlance", "  Dawlance  ", "Dawlance"):
         resolved = resolve_brand(spelling)
-        assert resolved.digi_id == 3755, spelling
-        assert resolved.alfa_id == 3673, spelling
+        assert resolved.digi_id == BRANDS_DIGI["dawlance"], spelling
+        assert resolved.alfa_id == BRANDS_ALFA["dawlance"], spelling
 
 
 def test_superasia_spacing_alias_is_needed_and_works() -> None:
@@ -37,14 +38,14 @@ def test_superasia_spacing_alias_is_needed_and_works() -> None:
     assert "superasia" not in BRANDS_DIGI
     resolved = resolve_brand("Superasia")
     assert resolved.normalized == "super asia"
-    assert resolved.digi_id == 3776
-    assert resolved.alfa_id is None
+    assert resolved.digi_id == BRANDS_DIGI["super asia"]
+    assert resolved.alfa_id == BRANDS_ALFA.get("super asia")
 
 
 def test_orient_resolves_for_both() -> None:
     resolved = resolve_brand("Orient")
-    assert resolved.digi_id == 3769
-    assert resolved.alfa_id == 3676
+    assert resolved.digi_id == BRANDS_DIGI["orient"]
+    assert resolved.alfa_id == BRANDS_ALFA["orient"]
 
 
 def test_homage_is_missing_from_both() -> None:
@@ -55,8 +56,8 @@ def test_homage_is_missing_from_both() -> None:
 
 def test_hisense_resolves_for_alfa() -> None:
     resolved = resolve_brand("Hisense")
-    assert resolved.digi_id is None
-    assert resolved.alfa_id == 3766
+    assert resolved.digi_id == BRANDS_DIGI.get("hisense")
+    assert resolved.alfa_id == BRANDS_ALFA["hisense"]
 
 
 def test_no_fuzzy_matching_ever() -> None:

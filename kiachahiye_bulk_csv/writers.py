@@ -21,6 +21,7 @@ import csv
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import config
 from config import VENDOR_ALFA as VENDOR_ALFA  # edit in config.py
 from config import VENDOR_DIGI as VENDOR_DIGI
 from description_builder import SPEC_TABLE, DescriptionTemplate, template_for
@@ -194,7 +195,7 @@ def build_digi_row(
     vendor_cfg: VendorConfig | None = None,
 ) -> DigiOutputRow:
     """Project one ProductRecord into DigiMall's 66-column schema (section 2A)."""
-    vendor = vendor_cfg.digi.vendor_name if vendor_cfg is not None else VENDOR_DIGI
+    vendor = vendor_cfg.digi.vendor_name if vendor_cfg is not None else getattr(config, "VENDOR_DIGI", VENDOR_DIGI)
     values = _record_common(record, vendor)
     values["Description"] = _description_cell(record, vendor_cfg, "digi")
     values["Brands"] = "" if record.brand.digi_id is None else str(record.brand.digi_id)
@@ -215,7 +216,7 @@ def build_alfa_row(
     No Short Description, no Commission Percentage, and none of the 36
     Attribute_* columns exist in this file.
     """
-    vendor = vendor_cfg.alfa.vendor_name if vendor_cfg is not None else VENDOR_ALFA
+    vendor = vendor_cfg.alfa.vendor_name if vendor_cfg is not None else getattr(config, "VENDOR_ALFA", VENDOR_ALFA)
     values = _record_common(record, vendor)
     values["Description"] = _description_cell(record, vendor_cfg, "alfa")
     values["Brands"] = "" if record.brand.alfa_id is None else str(record.brand.alfa_id)

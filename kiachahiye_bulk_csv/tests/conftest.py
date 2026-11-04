@@ -16,6 +16,8 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 import main  # noqa: E402
 from qc_report import QCFlagCollector  # noqa: E402
+from vendor_config import VendorConfig  # noqa: E402
+from warranty import resolve_main_warranty  # noqa: E402
 from writers import (  # noqa: E402
     ALFA_HEADER,
     DIGI_HEADER,
@@ -55,7 +57,11 @@ def build_input_csv(path: Path, rows: list[dict[str, str]]) -> Path:
     return path
 
 
-def run_pipeline(tmp_path: Path, rows: list[dict[str, str]]) -> dict[str, Any]:
+def run_pipeline(
+    tmp_path: Path,
+    rows: list[dict[str, str]],
+    vendor_cfg: VendorConfig | None = None,
+) -> dict[str, Any]:
     """Run the real pipeline and return both files' rows plus the QC flags."""
     input_path = build_input_csv(tmp_path / "input.csv", rows)
     digi_path = tmp_path / "digi" / "digimall_bulk_import.csv"
@@ -63,9 +69,17 @@ def run_pipeline(tmp_path: Path, rows: list[dict[str, str]]) -> dict[str, Any]:
 
     parsed = main.read_input(input_path)
     flags = QCFlagCollector()
-    records = main.run(parsed, flags)
-    write_csv(digi_path, DIGI_HEADER, [build_digi_row(r).values for r in records])
-    write_csv(alfa_path, ALFA_HEADER, [build_alfa_row(r).values for r in records])
+    records = main.run(parsed, flags, vendor_cfg=vendor_cfg)
+    write_csv(
+        digi_path,
+        DIGI_HEADER,
+        [build_digi_row(r, vendor_cfg=vendor_cfg).values for r in records],
+    )
+    write_csv(
+        alfa_path,
+        ALFA_HEADER,
+        [build_alfa_row(r, vendor_cfg=vendor_cfg).values for r in records],
+    )
     qc_path = tmp_path / "qc_report.csv"
     flags.write_csv(qc_path)
 
@@ -89,7 +103,16 @@ def run_pipeline(tmp_path: Path, rows: list[dict[str, str]]) -> dict[str, Any]:
 
 @pytest.fixture()
 def pipeline(tmp_path: Path) -> Pipeline:
-    def _run(rows: list[dict[str, str]]) -> dict[str, Any]:
-        return run_pipeline(tmp_path, rows)
+    def _run(
+        rows: list[dict[str, str]], vendor_cfg: VendorConfig | None = None
+    ) -> dict[str, Any]:
+        return run_pipeline(tmp_path, rows, vendor_cfg=vendor_cfg)
 
     return _run
+
+
+def expected_main_warranty(
+    source_text: str, brand: str, product_type: str
+) -> str | None:
+    """Helper for tests to resolve the expected warranty phrase for a title."""
+    return resolve_main_warranty(source_text, brand, product_type)
