@@ -281,7 +281,7 @@ def test_the_summary_names_the_template_that_served_each_file(
     assert len(block) == 2, block
     assert block[0].startswith("  DigiMall spec_table"), block[0]
     assert "Kiachahiye.digi.description_template in vendor_config.py" in block[0], block[0]
-    assert block[1].startswith("  Alfa     spec_table"), block[1]
+    assert block[1].startswith("  Alfa     kiachahiye_alfa_card"), block[1]
     assert "Kiachahiye.alfa.description_template in vendor_config.py" in block[1], block[1]
 
 

@@ -389,16 +389,27 @@ def _store(**overrides: object) -> VendorConfig:
 
 def test_every_cell_defaults_to_todays_template() -> None:
     """A store that says nothing ships the table the shop uses today."""
+    assert PlatformConfig("Vendor", {}, {}).description_template == "spec_table"
     for key, cfg in VENDOR_REGISTRY.items():
         for platform in ("digi", "alfa"):
             cell = getattr(cfg, platform)
-            assert cell.description_template == "spec_table", (key, platform)
-            assert template_for(cell.description_template) is SPEC_TABLE
+            expected_name = (
+                "kiachahiye_alfa_card"
+                if (key, platform) == ("kiachahiye", "alfa")
+                else "spec_table"
+            )
+            assert cell.description_template == expected_name, (key, platform)
+            assert (
+                template_for(cell.description_template)
+                is DESCRIPTION_TEMPLATES[expected_name]
+            )
 
 
 def test_a_template_may_be_shared_by_name_across_stores() -> None:
     """Requirement: the same named template on two stores is one object, not a copy."""
-    ajmer_alfa = dataclasses.replace(AJMER.alfa, description_template="spec_table")
+    ajmer_alfa = dataclasses.replace(
+        AJMER.alfa, description_template="kiachahiye_alfa_card"
+    )
     assert template_for(ajmer_alfa.description_template) is template_for(
         KIACHAHIYE.alfa.description_template
     )

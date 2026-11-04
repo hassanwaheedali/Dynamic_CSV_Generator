@@ -300,6 +300,37 @@ def test_the_single_platform_gate_reads_that_file_for_the_shared_rules(
     assert _rejected(other) == []
 
 
+def test_both_platforms_gate_audits_alfa_description_defect(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """Under --platform both, an empty cell in Alfa Description is caught and rejected.
+
+    Previously, --platform both only audited primary (DigiMall) Description, completely
+    bypassing Alfa. This regression test proves both platforms are audited independently.
+    """
+    result = pipeline([HOMAGE_LIFETIME])
+    _add_empty_spec_row(result["alfa_path"])
+
+    both = _gate(result, tmp_path / "input.csv", platform="both")
+    assert "Alfa description/SEO: description has an empty cell" in _rejected(both)
+
+
+def test_both_platforms_gate_audits_alfa_invented_facts(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """Under --platform both, invented values in Alfa Description are caught and rejected."""
+    result = pipeline([HOMAGE_LIFETIME])
+
+    def inject_invented_fact(html: str) -> str:
+        cut = html.rindex("</tr>") + len("</tr>")
+        return html[:cut] + "<tr><td>Color</td><td>Alien Purple Glow</td></tr>" + html[cut:]
+
+    _edit_cell(result["alfa_path"], "Description", inject_invented_fact)
+    both = _gate(result, tmp_path / "input.csv", platform="both")
+    assert "every value in the Description table exists in the source row" in _rejected(both)
+    assert any("Alfa" in detail and "Alien Purple Glow" in detail for ok, detail in both.values() if not ok)
+
+
 def test_the_alfa_gate_never_opens_the_digmall_file(
     pipeline: Pipeline, tmp_path: Path
 ) -> None:

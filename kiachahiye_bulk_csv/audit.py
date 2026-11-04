@@ -382,100 +382,111 @@ def main(argv: list[str] | None = None) -> int:
           f"{primary_label} Brands is numeric or empty")
 
     # ----------------------------------------------------------- description
-    problems: Counter[str] = Counter()
-    offenders: dict[str, list[str]] = {}
-    for source_row, r in enumerate(primary, start=2):
-        title = r["Title"]
-        html = r["Description"]
+    for file_label, _header, file_rows, _text in files:
+        is_digi = (file_label == "DigiMall")
+        problems: Counter[str] = Counter()
+        offenders: dict[str, list[str]] = {}
+        for source_row, r in enumerate(file_rows, start=2):
+            title = r["Title"]
+            html = r["Description"]
 
-        # ``title`` is bound as a default so the closure cannot pick up a later
-        # row's title if it is ever called outside this iteration.
-        def note(kind: str, title: str = title) -> None:
-            problems[kind] += 1
-            offenders.setdefault(kind, []).append(title)
+            # ``title``, ``problems``, and ``offenders`` are bound as defaults so the
+            # closure cannot pick up a later row's or file's values if called outside this iteration.
+            def note(
+                kind: str,
+                title: str = title,
+                p: Counter[str] = problems,
+                o: dict[str, list[str]] = offenders,
+            ) -> None:
+                p[kind] += 1
+                o.setdefault(kind, []).append(title)
 
-        if not html.startswith("<table") or not html.endswith("</table>"):
-            note("description is not one complete table")
-        if len(html.splitlines()) != 1:
-            note("description has a raw line break")
-        for tag in ("table", "thead", "tbody", "tr", "td", "th "):
-            if html.count(f"<{tag}") != html.count(f"</{tag.strip()}>"):
-                note(f"unbalanced <{tag.strip()}> tags")
-        if re.search(r"<td[^>]*></td>", html):
-            note("description has an empty cell")
-        if "  " in re.sub(r"<[^>]+>", "", html):
-            note("description has a double space")
-        labels = re.findall(r"<tr><td[^>]*>(?:<strong>)?([^<]+)", html)
-        if not labels:
-            note("description has no specification rows")
-        if "Brand" not in labels and r["Title"]:
-            pass  # verified against the source below, where we know the Brand cell
-        if len(labels) != len(set(labels)):
-            note("description repeats a label")
+            if not html.startswith("<table") or not html.endswith("</table>"):
+                note("description is not one complete table")
+            if len(html.splitlines()) != 1:
+                note("description has a raw line break")
+            for tag in ("table", "caption", "thead", "tbody", "tr", "td", "th "):
+                if html.count(f"<{tag}") != html.count(f"</{tag.strip()}>"):
+                    note(f"unbalanced <{tag.strip()}> tags")
+            if re.search(r"<td[^>]*></td>", html):
+                note("description has an empty cell")
+            if "  " in re.sub(r"<[^>]+>", "", html):
+                note("description has a double space")
+            labels = re.findall(r"<tr><td[^>]*>(?:<strong>)?([^<]+)", html)
+            if not labels:
+                note("description has no specification rows")
+            if "Brand" not in labels and r["Title"]:
+                pass  # verified against the source below, where we know the Brand cell
+            if len(labels) != len(set(labels)):
+                note("description repeats a label")
 
-        # Short Description and the Attribute_* columns are the two blocks of this loop that only
-        # DigiMall ships; under an Alfa upload there is no such cell to be wrong about.
-        if wants("digi"):
-            # short description
-            short = r["Short Description"]
-            bullets = short.count("<li>")
-            if not short.startswith("<ul>") or not short.endswith("</ul>"):
-                note("short description is not one list")
-            if bullets == 0 or bullets > 3:
-                note("short description bullet count outside 1-3")
-            if re.search(r"</strong>\s*(overview|brand|model|type|key features)\.",
-                         short, re.IGNORECASE):
-                note("short description has filler label text")
-            if "  " in re.sub(r"<[^>]+>", "", short):
-                note("short description has a double space")
+            # Short Description and the Attribute_* columns are the two blocks of this loop that only
+            # DigiMall ships; under an Alfa upload there is no such cell to be wrong about.
+            if is_digi:
+                # short description
+                short = r["Short Description"]
+                bullets = short.count("<li>")
+                if not short.startswith("<ul>") or not short.endswith("</ul>"):
+                    note("short description is not one list")
+                if bullets == 0 or bullets > 3:
+                    note("short description bullet count outside 1-3")
+                if re.search(r"</strong>\s*(overview|brand|model|type|key features)\.",
+                             short, re.IGNORECASE):
+                    note("short description has filler label text")
+                if "  " in re.sub(r"<[^>]+>", "", short):
+                    note("short description has a double space")
 
-        # SEO -- the Title formula may add nothing but ` Price in Pakistan`, so a row whose own facts
-        # stop under 65 characters ships short and that is the sheet's gap, not the file's defect:
-        # main.py counts it (`seo_title_length`) and row_check.csv names the row.  Running past the
-        # ceiling is the opposite case -- the fitter cut too little -- and it still stops an upload.
-        if len(r["SEO Title"]) > CONFIG.SEO_TITLE_MAX:
-            note("SEO Title longer than the platform ceiling")
-        if not 151 <= len(r["SEO Description"]) <= 155:
-            note("SEO Description outside 151-155 characters")
+            # SEO -- the Title formula may add nothing but ` Price in Pakistan`, so a row whose own facts
+            # stop under 65 characters ships short and that is the sheet's gap, not the file's defect:
+            # main.py counts it (`seo_title_length`) and row_check.csv names the row.  Running past the
+            # ceiling is the opposite case -- the fitter cut too little -- and it still stops an upload.
+            if len(r["SEO Title"]) > CONFIG.SEO_TITLE_MAX:
+                note("SEO Title longer than the platform ceiling")
+            if not 151 <= len(r["SEO Description"]) <= 155:
+                note("SEO Description outside 151-155 characters")
 
-        # tags
-        tags = [t for t in r["Tags"].split(",") if t.strip()]
-        if not 5 <= len(tags) <= 8:
-            note("Tags outside 5-8")
-        if len(tags) != len({t.strip().lower() for t in tags}):
-            note("Tags contain a duplicate")
+            # tags
+            tags = [t for t in r["Tags"].split(",") if t.strip()]
+            if not 5 <= len(tags) <= 8:
+                note("Tags outside 5-8")
+            if len(tags) != len({t.strip().lower() for t in tags}):
+                note("Tags contain a duplicate")
 
-        # attributes
-        if wants("digi"):
-            for column, value in r.items():
-                if column.startswith("Attribute_") and value:
-                    # ALLOWED is keyed by the WHOLE column name, "Attribute_Warranty" -- not by the
-                    # word after the prefix, which is what this lookup once used.  Stripping it made
-                    # every lookup miss, so a cell outside the platform's closed list sailed through.
-                    allowed = ALLOWED.get(column)
-                    if allowed is not None and value not in allowed:
-                        note(f"{column} value not in ALLOWED")
+            # attributes
+            if is_digi:
+                for column, value in r.items():
+                    if column.startswith("Attribute_") and value:
+                        # ALLOWED is keyed by the WHOLE column name, "Attribute_Warranty" -- not by the
+                        # word after the prefix, which is what this lookup once used.  Stripping it made
+                        # every lookup miss, so a cell outside the platform's closed list sailed through.
+                        allowed = ALLOWED.get(column)
+                        if allowed is not None and value not in allowed:
+                            note(f"{column} value not in ALLOWED")
 
-        # price sanity -- the pipeline now derives a strike-through whenever the sheet's own
-        # Regular Price could not be one, so a published row whose Compare At does not sit above
-        # its Price is a pipeline bug, not a source-data problem.  The single exception is a row
-        # with no readable Sell Price at all (flagged input_error): nothing can be derived from 0.
-        if r["Variant Price"] and r["Variant Compare At Price"]:
-            price = float(r["Variant Price"])
-            compare_at = float(r["Variant Compare At Price"])
-            if compare_at <= price and "input_error" not in flagged.get(source_row, set()):
-                note("Compare-At price is not above the sell price")
+            # price sanity -- the pipeline now derives a strike-through whenever the sheet's own
+            # Regular Price could not be one, so a published row whose Compare At does not sit above
+            # its Price is a pipeline bug, not a source-data problem.  The single exception is a row
+            # with no readable Sell Price at all (flagged input_error): nothing can be derived from 0.
+            if r["Variant Price"] and r["Variant Compare At Price"]:
+                price = float(r["Variant Price"])
+                compare_at = float(r["Variant Compare At Price"])
+                if compare_at <= price and "input_error" not in flagged.get(source_row, set()):
+                    note("Compare-At price is not above the sell price")
 
-    template_rule_name = (
-        "every Description, Short Description, SEO field, Tag set and Attribute value "
-        "passes its template rules"
-        if wants("digi")
-        else "every Description, SEO field and Tag set passes its template rules"
-    )
-    for kind, count in problems.most_common():
-        check(False, f"{primary_label} description/SEO: {kind}", f"{count} row(s): {offenders[kind][:3]}")
-    if not problems:
-        check(True, template_rule_name)
+        template_rule_name = (
+            "every Description, Short Description, SEO field, Tag set and Attribute value "
+            "passes its template rules"
+            if is_digi
+            else (
+                "every Description, SEO field and Tag set passes its template rules"
+                if len(files) == 1
+                else "every Alfa Description, SEO field and Tag set passes its template rules"
+            )
+        )
+        for kind, count in problems.most_common():
+            check(False, f"{file_label} description/SEO: {kind}", f"{count} row(s): {offenders[kind][:3]}")
+        if not problems:
+            check(True, template_rule_name)
 
     # A search title under 65 characters is the sheet stating too little, and the formula the owner
     # ruled may add nothing but ` Price in Pakistan` to cover for it.  The count is printed so the
@@ -485,48 +496,50 @@ def main(argv: list[str] | None = None) -> int:
 
     # --------------------------------------- facts must exist in the source
     invented: list[str] = []
-    for row, rec in zip(primary, source, strict=True):
-        # Every cell of the source row is fair game, including the Brand column
-        # that the display table's Brand row is filled from.
-        text = "\n".join(rec.values()).lower()
-        for cells in re.findall(r"<tr>(.*?)</tr>", row["Description"]):
-            found = re.findall(r"<td[^>]*>(.*?)</td>", cells)
-            if len(found) != 2:
-                continue
-            if "<strong>" in found[1]:
-                continue  # a warranty row, filled from warranty_terms.py
-            value = html_module.unescape(re.sub(r"<[^>]+>", "", found[1])).strip()
-            if not value or value.isdigit() or len(value) < 3:
-                continue
-            # the value must appear in the source, allowing for whitespace runs
-            haystack = re.sub(r"\s+", " ", text)
-            needle = re.sub(r"\s+", " ", value).lower()
-            if needle in haystack or needle.replace("-", " ") in haystack:
-                continue
-            # a comma-joined list is fine when every item came from the source
-            items = [i.strip().lower() for i in value.split(",") if i.strip()]
-            if items and all(i in haystack or i.replace("-", " ") in haystack for i in items):
-                continue
-            # The Model row re-emits the resolved model, and clean_model_code
-            # drops ONE colour word from it by design ("WD-1051 HC White" ->
-            # "WD-1051 HC").  So this row is checked word by word: every word
-            # must still come from the source, but the removed colour means the
-            # whole string will not appear verbatim.
-            label = html_module.unescape(re.sub(r"<[^>]+>", "", found[0])).strip().lower()
-            if label == "brand":
-                resolved_b = resolve_brand(
-                    rec.get("Brand", ""), rec.get("Title", ""), vendor_cfg=vendor_cfg
-                ).raw.lower()
-                if (
-                    needle == resolved_b
-                    or needle.replace(" ", "") in haystack.replace(" ", "")
+    for file_label, _header, file_rows, _text in files:
+        for row, rec in zip(file_rows, source, strict=True):
+            # Every cell of the source row is fair game, including the Brand column
+            # that the display table's Brand row is filled from.
+            text = "\n".join(rec.values()).lower()
+            for cells in re.findall(r"<tr>(.*?)</tr>", row["Description"]):
+                found = re.findall(r"<td[^>]*>(.*?)</td>", cells)
+                if len(found) != 2:
+                    continue
+                if "<strong>" in found[1]:
+                    continue  # a warranty row, filled from warranty_terms.py
+                value = html_module.unescape(re.sub(r"<[^>]+>", "", found[1])).strip()
+                if not value or value.isdigit() or len(value) < 3:
+                    continue
+                # the value must appear in the source, allowing for whitespace runs
+                haystack = re.sub(r"\s+", " ", text)
+                needle = re.sub(r"\s+", " ", value).lower()
+                if needle in haystack or needle.replace("-", " ") in haystack:
+                    continue
+                # a comma-joined list is fine when every item came from the source
+                items = [i.strip().lower() for i in value.split(",") if i.strip()]
+                if items and all(i in haystack or i.replace("-", " ") in haystack for i in items):
+                    continue
+                # The Model row re-emits the resolved model, and clean_model_code
+                # drops ONE colour word from it by design ("WD-1051 HC White" ->
+                # "WD-1051 HC").  So this row is checked word by word: every word
+                # must still come from the source, but the removed colour means the
+                # whole string will not appear verbatim.
+                label = html_module.unescape(re.sub(r"<[^>]+>", "", found[0])).strip().lower()
+                if label == "brand":
+                    resolved_b = resolve_brand(
+                        rec.get("Brand", ""), rec.get("Title", ""), vendor_cfg=vendor_cfg
+                    ).raw.lower()
+                    if (
+                        needle == resolved_b
+                        or needle.replace(" ", "") in haystack.replace(" ", "")
+                    ):
+                        continue
+                if label == "model" and all(
+                    word in haystack for word in re.findall(r"[a-z0-9][a-z0-9.\-]*", needle)
                 ):
                     continue
-            if label == "model" and all(
-                word in haystack for word in re.findall(r"[a-z0-9][a-z0-9.\-]*", needle)
-            ):
-                continue
-            invented.append(f"{row['Title'][:38]} -> {value!r}")
+                prefix = f"{file_label} " if len(files) > 1 else ""
+                invented.append(f"{prefix}{row['Title'][:38]} -> {value!r}")
     check(not invented, "every value in the Description table exists in the source row",
           f"{len(invented)} invented: {invented[:5]}")
 
@@ -551,8 +564,9 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(title_bad)}: {title_bad[:4]}")
 
     missing_brand_row = [
-        row["Title"][:40]
-        for row, rec in zip(primary, source, strict=True)
+        (f"{file_label} {row['Title'][:34]}" if len(files) > 1 else row["Title"][:40])
+        for file_label, _header, file_rows, _text in files
+        for row, rec in zip(file_rows, source, strict=True)
         if rec.get("Brand", "").strip() and "Brand" not in row["Description"]
     ]
     check(not missing_brand_row, "every row with a named brand shows a Brand row",
@@ -693,9 +707,12 @@ def main(argv: list[str] | None = None) -> int:
                 row_number, set()
             ):
                 warranty_bad.append(f"{row['Title'][:34]} {headline!r} left the cell empty, no flag")
-        for spec in warranty_rows:
-            if spec.label not in row["Description"] and spec.value not in row["Description"]:
-                warranty_bad.append(f"{row['Title'][:34]} warranty row {spec.label!r} missing")
+        for file_label, _header, file_rows, _text in files:
+            file_row = file_rows[row_number - 2]
+            for spec in warranty_rows:
+                if spec.label not in file_row["Description"] and spec.value not in file_row["Description"]:
+                    prefix = f"{file_label} " if len(files) > 1 else ""
+                    warranty_bad.append(f"{prefix}{file_row['Title'][:34]} warranty row {spec.label!r} missing")
     check(not warranty_bad,
           "Attribute_Warranty and the warranty table agree with warranty.py"
           if wants("digi")

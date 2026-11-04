@@ -25,6 +25,7 @@ from description_builder import (
     CONFORMANCE_ROWS,
     DESCRIPTION_TEMPLATES,
     ESCAPE_PROBE,
+    KIACHAHIYE_ALFA_CARD,
     SPEC_TABLE,
     TABLE_HEAD,
     TABLE_TAIL,
@@ -1099,3 +1100,170 @@ def test_the_watch_catches_the_one_drift_the_harness_cannot_see() -> None:
     assert not any("thin_report.py" in problem for problem in drift), (
         f"plain_table keeps the <tr><td shape thin_report counts: {drift}"
     )
+
+
+def test_kiachahiye_alfa_card_conforms() -> None:
+    """The Kiachahiye.alfa card passes the full startup conformance and escaping harness."""
+    assert KIACHAHIYE_ALFA_CARD.name == "kiachahiye_alfa_card"
+    assert template_for("kiachahiye_alfa_card") is KIACHAHIYE_ALFA_CARD
+    assert template_problems(KIACHAHIYE_ALFA_CARD) == []
+    assert_template_conforms(KIACHAHIYE_ALFA_CARD)
+
+
+def test_kiachahiye_alfa_card_round_trip_covers_every_real_row(
+    real_spec_rows: list[list[SpecRow]],
+) -> None:
+    """Every product row in the real sheets round-trips losslessly through the card."""
+    assert len(real_spec_rows) > 500
+    for rows in real_spec_rows:
+        rendered = KIACHAHIYE_ALFA_CARD.render(rows)
+        assert KIACHAHIYE_ALFA_CARD.extract(rendered) == rows
+        assert KIACHAHIYE_ALFA_CARD.extract(clean_inline(rendered)) == rows
+
+
+def test_kiachahiye_alfa_card_dynamic_model_badges_and_warranty_rows() -> None:
+    """Model badge, static caption badges, alternating stripes, and 0/1/multi warranty rows."""
+    no_warranty = [
+        SpecRow("Brand", "Gree"),
+        SpecRow("Model", "GS-18PITH11W"),
+        SpecRow("Capacity", "1.5 Ton"),
+        SpecRow("Color", "White"),
+    ]
+    html_no_w = KIACHAHIYE_ALFA_CARD.render(no_warranty)
+    assert "100% Genuine Pin-Packed" in html_no_w
+    assert "Delivery All Over Pakistan" in html_no_w
+    assert "After Sales Service" in html_no_w
+    assert (
+        '<span style="background:rgba(91,20,155,0.08);color:#5b149b;'
+        'padding:2px 8px;border-radius:4px;font-weight:bold;">GS-18PITH11W</span>'
+    ) in html_no_w
+    assert "<strong>" not in html_no_w
+    assert "\u2605" not in html_no_w
+    assert KIACHAHIYE_ALFA_CARD.extract(html_no_w) == no_warranty
+
+    multi_warranty = [
+        *no_warranty,
+        SpecRow("Compressor Warranty", "10 Years", is_warranty=True),
+        SpecRow("Parts Warranty", "1 Year", is_warranty=True),
+    ]
+    html_multi = KIACHAHIYE_ALFA_CARD.render(multi_warranty)
+    assert html_multi.count("\u2605") == 2
+    assert html_multi.count("<strong>") == 4
+    assert "<strong>Compressor Warranty</strong>" in html_multi
+    assert "<strong>Parts Warranty</strong>" in html_multi
+    assert KIACHAHIYE_ALFA_CARD.extract(html_multi) == multi_warranty
+
+
+def test_kiachahiye_alfa_card_warranty_star_style_resilience() -> None:
+    """Warranty star extraction is resilient to style reordering, whitespace, extra attributes, and entities."""
+    base_rows = [
+        SpecRow("Brand", "Haier"),
+        SpecRow("Compressor Warranty", "10 Years", is_warranty=True),
+    ]
+    standard_html = KIACHAHIYE_ALFA_CARD.render(base_rows)
+
+    # Harmless variation 1: reversed style properties and extra whitespace
+    alt_style = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ',
+        '<span style="margin-right: 4px; color: #d72314;">  \u2605  </span>  ',
+    )
+    assert KIACHAHIYE_ALFA_CARD.extract(alt_style) == base_rows
+
+    # Harmless variation 2: extra attributes and attribute ordering
+    alt_attrs = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ',
+        '<span class="warranty-star" aria-hidden="true" style="color:#d72314;margin-right:4px;">\u2605</span> ',
+    )
+    assert KIACHAHIYE_ALFA_CARD.extract(alt_attrs) == base_rows
+
+    # Harmless variation 3: single quotes in attributes
+    alt_quotes = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ',
+        "<span style='color:#d72314;margin-right:4px;'>\u2605</span> ",
+    )
+    assert KIACHAHIYE_ALFA_CARD.extract(alt_quotes) == base_rows
+
+    # Harmless variation 4: HTML entity &#9733; for star
+    alt_entity = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ',
+        '<span style="color:#d72314;margin-right:4px;">&#9733;</span> ',
+    )
+    assert KIACHAHIYE_ALFA_CARD.extract(alt_entity) == base_rows
+
+
+def test_kiachahiye_alfa_card_rejects_missing_and_malformed_warranty_stars() -> None:
+    """Malformed, missing, or ambiguous star markup is safely rejected with TemplateShapeError."""
+    base_rows = [
+        SpecRow("Brand", "Haier"),
+        SpecRow("Compressor Warranty", "10 Years", is_warranty=True),
+    ]
+    standard_html = KIACHAHIYE_ALFA_CARD.render(base_rows)
+
+    # 1. Missing star on warranty row
+    missing_star = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ', ""
+    )
+    with pytest.raises(TemplateShapeError, match="missing the required warranty star badge"):
+        KIACHAHIYE_ALFA_CARD.extract(missing_star)
+
+    # 2. Bare star without span element
+    bare_star = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ', "\u2605 "
+    )
+    with pytest.raises(TemplateShapeError, match="malformed warranty star markup"):
+        KIACHAHIYE_ALFA_CARD.extract(bare_star)
+
+    # 3. Unclosed star span element
+    unclosed_star = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ',
+        '<span style="color:#d72314;margin-right:4px;">\u2605 ',
+    )
+    with pytest.raises(TemplateShapeError, match="malformed warranty star markup"):
+        KIACHAHIYE_ALFA_CARD.extract(unclosed_star)
+
+    # 4. Ambiguous multiple star badges
+    double_star = (
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> '
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> '
+    )
+    multi_star = standard_html.replace(
+        '<span style="color:#d72314;margin-right:4px;">\u2605</span> ',
+        double_star,
+    )
+    with pytest.raises(TemplateShapeError, match="ambiguous multiple warranty stars"):
+        KIACHAHIYE_ALFA_CARD.extract(multi_star)
+
+    # 5. Unexpected star badge in non-warranty row
+    unexpected_star = standard_html.replace(
+        ">Haier</td>",
+        '><span style="color:#d72314;margin-right:4px;">\u2605</span> Haier</td>',
+    )
+    with pytest.raises(TemplateShapeError, match="unexpected warranty star badge in non-warranty row"):
+        KIACHAHIYE_ALFA_CARD.extract(unexpected_star)
+
+
+def test_caption_tag_validation_catches_unbalanced_and_malformed_caption() -> None:
+    """template_problems catches unbalanced <caption> tags and malformed elements inside <caption>."""
+    # A custom template with an unclosed <caption> tag
+    unclosed_caption = dataclasses.replace(
+        KIACHAHIYE_ALFA_CARD,
+        render=lambda rows: KIACHAHIYE_ALFA_CARD.render(rows).replace("</caption>", ""),
+    )
+    problems = template_problems(unclosed_caption)
+    assert any("unbalanced <caption> tags" in p for p in problems)
+
+    # An unclosed <div> inside <caption>
+    unclosed_div = dataclasses.replace(
+        KIACHAHIYE_ALFA_CARD,
+        render=lambda rows: KIACHAHIYE_ALFA_CARD.render(rows).replace("</div></caption>", "</caption>"),
+    )
+    problems_div = template_problems(unclosed_div)
+    assert any("never closed" in p or "closed out of order" in p for p in problems_div)
+
+    # Stray </caption>
+    stray_caption = dataclasses.replace(
+        KIACHAHIYE_ALFA_CARD,
+        render=lambda rows: "</caption>" + KIACHAHIYE_ALFA_CARD.render(rows),
+    )
+    problems_stray = template_problems(stray_caption)
+    assert any("unbalanced <caption> tags" in p for p in problems_stray)

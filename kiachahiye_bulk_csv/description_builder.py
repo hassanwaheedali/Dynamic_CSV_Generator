@@ -33,7 +33,11 @@ from html.entities import html5 as HTML5_NAMED_REFERENCES
 from html.parser import HTMLParser
 
 from models import DescriptionBundle, SpecRow
-from textutils import clean_inline, dedupe_preserve_order, strip_markup_keep_lines
+from textutils import (
+    clean_inline,
+    dedupe_preserve_order,
+    strip_markup_keep_lines as strip_markup_keep_lines,
+)
 
 TABLE_HEAD = (
     '<table style="width:100%;border-collapse:collapse;font-family:Arial,sans-serif;'
@@ -365,7 +369,222 @@ SPEC_TABLE = DescriptionTemplate(
 #: Every Description shape the shop may choose, by name.  A cell's
 #: ``description_template`` is a key of this dict (or an inline template object), so
 #: two stores can point at one entry and a new listing shape is added here once.
-DESCRIPTION_TEMPLATES: dict[str, DescriptionTemplate] = {SPEC_TABLE.name: SPEC_TABLE}
+_ALFA_CARD_HEAD = (
+    '<table style="width:100%;border-collapse:separate;border-spacing:0;border-radius:14px;'
+    "overflow:hidden;border:1px solid #ebd9dc;"
+    "box-shadow:0 12px 32px rgba(91,20,155,0.06),0 2px 8px rgba(215,35,20,0.04);"
+    "margin-bottom:20px;background:#ffffff;font-family:Arial,sans-serif;font-size:13px;"
+    'line-height:1.6;text-align:left !important;">'
+    '<caption style="caption-side:top;padding:0;text-align:left;background:#ffffff;">'
+    '<div style="height:4px;background:linear-gradient(90deg,#d72314 0%,#5b149b 50%,#f5a623 100%);">'
+    "</div>"
+    '<div style="background:linear-gradient(180deg,#fdfbfe 0%,#faf8fc 100%);padding:12px 16px;'
+    "border-bottom:1px solid #ede4f5;display:flex;flex-wrap:wrap;align-items:center;"
+    'justify-content:space-between;gap:10px;text-align:left !important;">'
+    '<div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:bold;'
+    "color:#b31b0e;background:rgba(215,35,20,0.09);border:1px solid rgba(215,35,20,0.28);"
+    "padding:5px 13px;border-radius:20px;box-shadow:0 2px 6px rgba(215,35,20,0.08);"
+    'text-align:left !important;">'
+    '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#d72314;">'
+    "</span>100% Genuine Pin-Packed</div>"
+    '<div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:bold;'
+    "color:#5b149b;background:rgba(91,20,155,0.09);border:1px solid rgba(91,20,155,0.28);"
+    "padding:5px 13px;border-radius:20px;box-shadow:0 2px 6px rgba(91,20,155,0.08);"
+    'text-align:left !important;">'
+    '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#5b149b;">'
+    "</span>Delivery All Over Pakistan</div>"
+    '<div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:bold;'
+    "color:#8a5600;background:rgba(245,166,35,0.14);border:1px solid rgba(245,166,35,0.36);"
+    "padding:5px 13px;border-radius:20px;box-shadow:0 2px 6px rgba(245,166,35,0.1);"
+    'text-align:left !important;">'
+    '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#f5a623;">'
+    "</span>After Sales Service</div>"
+    "</div></caption>"
+    "<thead><tr>"
+    '<th style="background:linear-gradient(90deg,#fdf4f4 0%,#f9f3fa 100%);padding:12px 16px;'
+    "text-align:left !important;width:35%;color:#222;font-weight:bold;letter-spacing:0.3px;"
+    'font-size:14px;border-bottom:2px solid #5b149b;">Specification</th>'
+    '<th style="background:linear-gradient(90deg,#f9f3fa 0%,#f8f3fc 38%,#fffdf7 100%);padding:12px 16px;'
+    "text-align:left !important;width:65%;color:#222;font-weight:bold;letter-spacing:0.3px;"
+    'font-size:14px;border-bottom:2px solid #5b149b;">Details</th>'
+    "</tr></thead><tbody>"
+)
+_WARRANTY_STAR_SPAN = '<span style="color:#d72314;margin-right:4px;">\u2605</span> '
+_STRUCTURAL_STAR_RE = re.compile(
+    r"^\s*<span\b(?P<attrs>[^>]*)>(?P<star>.*?)</span>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _alfa_card_row_html(
+    row: SpecRow,
+    *,
+    index: int,
+    total_rows: int,
+    first_warranty_index: int | None,
+) -> str:
+    """Render one specification or warranty row for the Kiachahiye.alfa card."""
+    label_html = html.escape(row.label, quote=False)
+    value_html = html.escape(row.value, quote=False)
+    is_last = index == total_rows - 1
+
+    if row.is_warranty:
+        border_top = "border-top:1px solid #f0d5db;" if index == first_warranty_index else ""
+        border_bottom = "border-bottom:none;" if is_last else "border-bottom:1px solid #f0d5db;"
+        left_style = (
+            "background:linear-gradient(90deg,#fff5f5 0%,#fcf4f9 100%);"
+            f"{border_top}{border_bottom}padding:12px 16px;text-align:left !important;"
+            "color:#d72314;font-weight:bold;"
+        )
+        right_style = (
+            "background:linear-gradient(90deg,#fcf4f9 0%,#faf4ff 100%);"
+            f"{border_top}{border_bottom}padding:12px 16px;text-align:left !important;"
+            "color:#5b149b;font-weight:bold;"
+        )
+        return (
+            f'<tr><td style="{left_style}"><strong>{label_html}</strong></td>'
+            f'<td style="{right_style}"><strong>{_WARRANTY_STAR_SPAN}{value_html}</strong></td></tr>'
+        )
+
+    bg = "background:#faf8fd;" if index % 2 == 1 else ""
+    border_bottom = "border-bottom:none;" if is_last else "border-bottom:1px solid #f2ecf7;"
+    left_style = (
+        f"{bg}{border_bottom}padding:10px 16px;text-align:left !important;"
+        "color:#2c3345;font-weight:600;"
+    )
+    label_key = row.label.strip().lower()
+    if label_key == "model":
+        right_style = f"{bg}{border_bottom}padding:10px 16px;text-align:left !important;"
+        rendered_value = (
+            '<span style="background:rgba(91,20,155,0.08);color:#5b149b;'
+            f'padding:2px 8px;border-radius:4px;font-weight:bold;">{value_html}</span>'
+        )
+    elif label_key in ("brand", "capacity"):
+        right_style = (
+            f"{bg}{border_bottom}padding:10px 16px;text-align:left !important;"
+            "color:#111;font-weight:600;"
+        )
+        rendered_value = value_html
+    else:
+        right_style = (
+            f"{bg}{border_bottom}padding:10px 16px;text-align:left !important;color:#222;"
+        )
+        rendered_value = value_html
+
+    return (
+        f'<tr><td style="{left_style}">{label_html}</td>'
+        f'<td style="{right_style}">{rendered_value}</td></tr>'
+    )
+
+
+def build_kiachahiye_alfa_card_html(rows: list[SpecRow]) -> str:
+    """Render the rounded-card specification table for Kiachahiye.alfa."""
+    first_warranty_index = next(
+        (idx for idx, r in enumerate(rows) if r.is_warranty), None
+    )
+    total = len(rows)
+    body = "".join(
+        _alfa_card_row_html(
+            row,
+            index=idx,
+            total_rows=total,
+            first_warranty_index=first_warranty_index,
+        )
+        for idx, row in enumerate(rows)
+    )
+    return _ALFA_CARD_HEAD + body + TABLE_TAIL
+
+
+def extract_kiachahiye_alfa_card_rows(text: str) -> list[SpecRow]:
+    """Read a Kiachahiye.alfa card table back into its SpecRow list.
+
+    Structurally validates the table, ensures warranty rows have the required warranty
+    star badge without coupling to exact inline styles or attribute ordering, and rejects
+    missing stars, malformed markup, or ambiguous multiple stars.
+    """
+    body = (text or "").strip()
+    if not (body.lower().startswith("<table") and body.lower().endswith("</table>")):
+        raise TemplateShapeError(
+            f"Description is not one '<table'...'</table>' fragment: {body[:60]!r}"
+        )
+    rows: list[SpecRow] = []
+    for chunk in _ROW_RE.findall(body):
+        cells = _CELL_RE.findall(chunk)
+        if cells and all(tag.lower() == "h" for tag, _ in cells):
+            continue  # table header
+        if len(cells) != 2 or any(tag.lower() != "d" for tag, _ in cells):
+            raise TemplateShapeError(
+                f"a spec row must be exactly two <td> cells, got {len(cells)}: {chunk[:60]!r}"
+            )
+        label_raw = cells[0][1]
+        val_raw = cells[1][1]
+
+        label_match = _STRONG_RE.match(label_raw)
+        is_warranty = bool(label_match)
+        label_inner = label_match.group(1) if label_match else label_raw
+        label_text = html.unescape(_TAG_RE.sub("", label_inner)).strip()
+
+        val_match = _STRONG_RE.match(val_raw)
+        val_inner = val_match.group(1) if val_match else val_raw
+
+        if is_warranty:
+            if not val_match:
+                raise TemplateShapeError(
+                    f"warranty row {label_text!r} value is not wrapped in strong tags: {val_raw[:60]!r}"
+                )
+            star_match = _STRUCTURAL_STAR_RE.match(val_inner)
+            if not star_match:
+                if any(probe in val_inner for probe in ("\u2605", "&#9733;", "&#x2605;", "&starf;")):
+                    raise TemplateShapeError(
+                        f"malformed warranty star markup in row {label_text!r}: {val_inner[:60]!r}"
+                    )
+                raise TemplateShapeError(
+                    f"warranty row {label_text!r} is missing the required warranty star badge: {val_inner[:60]!r}"
+                )
+            star_content = html.unescape(star_match.group("star")).strip()
+            if star_content != "\u2605":
+                raise TemplateShapeError(
+                    f"warranty row {label_text!r} star span contains {star_content!r}, expected '\\u2605'"
+                )
+            attrs = star_match.group("attrs")
+            if attrs.count('"') % 2 != 0 or attrs.count("'") % 2 != 0:
+                raise TemplateShapeError(
+                    f"malformed quotes in warranty star attributes for row {label_text!r}: {attrs!r}"
+                )
+            remainder = val_inner[star_match.end():]
+            if _STRUCTURAL_STAR_RE.search(remainder):
+                raise TemplateShapeError(
+                    f"ambiguous multiple warranty stars in row {label_text!r}: {val_inner[:60]!r}"
+                )
+            value_text = html.unescape(_TAG_RE.sub("", remainder)).strip()
+            rows.append(SpecRow(label_text, value_text, is_warranty=True))
+        else:
+            if val_match:
+                raise TemplateShapeError(
+                    f"mismatched boldness in spec row {label_text!r}: value is bold but label is not"
+                )
+            star_match = _STRUCTURAL_STAR_RE.search(val_inner)
+            if star_match and html.unescape(star_match.group("star")).strip() == "\u2605":
+                raise TemplateShapeError(
+                    f"unexpected warranty star badge in non-warranty row {label_text!r}: {val_inner[:60]!r}"
+                )
+            value_text = html.unescape(_TAG_RE.sub("", val_inner)).strip()
+            rows.append(SpecRow(label_text, value_text, is_warranty=False))
+    return rows
+
+
+KIACHAHIYE_ALFA_CARD = DescriptionTemplate(
+    name="kiachahiye_alfa_card",
+    render=build_kiachahiye_alfa_card_html,
+    extract=extract_kiachahiye_alfa_card_rows,
+    starts_with="<table",
+    ends_with="</table>",
+)
+
+DESCRIPTION_TEMPLATES: dict[str, DescriptionTemplate] = {
+    SPEC_TABLE.name: SPEC_TABLE,
+    KIACHAHIYE_ALFA_CARD.name: KIACHAHIYE_ALFA_CARD,
+}
 
 
 def template_for(key: str | DescriptionTemplate) -> DescriptionTemplate:
@@ -460,7 +679,7 @@ _VOID_TAGS = frozenset({
 #: trailing space in ``"th "`` is the gate's own blind spot -- a header written
 #: bare as ``<th>`` counts as unbalanced -- and a template has to live with it,
 #: because the gate is not being changed to accommodate a new shape.
-CONFORMANCE_TAGS = ("table", "thead", "tbody", "tr", "td", "th ")
+CONFORMANCE_TAGS = ("table", "caption", "thead", "tbody", "tr", "td", "th ")
 
 _EMPTY_CELL_RE = re.compile(r"<td[^>]*></td>", re.IGNORECASE)
 _GATE_ROW_RE = re.compile(r"<tr>", re.IGNORECASE)
@@ -643,9 +862,11 @@ def _unknown_entities(markup: str) -> list[str]:
     reaches a cell, so no round-trip can notice that the browser has no name for it.
     """
     return dedupe_preserve_order(
-        f"&{match.group(1)};"
-        for match in _NAMED_REF_RE.finditer(markup)
-        if f"{match.group(1)};" not in HTML5_NAMED_REFERENCES
+        [
+            f"&{match.group(1)};"
+            for match in _NAMED_REF_RE.finditer(markup)
+            if f"{match.group(1)};" not in HTML5_NAMED_REFERENCES
+        ]
     )
 
 

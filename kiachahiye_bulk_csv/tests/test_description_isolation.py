@@ -22,6 +22,7 @@ from conftest import run_pipeline
 import main
 from description_builder import (
     DESCRIPTION_TEMPLATES,
+    KIACHAHIYE_ALFA_CARD,
     SPEC_TABLE,
     DescriptionTemplate,
     extract_spec_rows,
@@ -124,7 +125,12 @@ def test_the_registry_holds_four_cells_all_on_todays_table() -> None:
     assert len(CELLS) >= 4
     for store, platform in CELLS:
         cell = getattr(VENDOR_REGISTRY[store], platform)
-        assert cell.description_template == "spec_table", (store, platform)
+        expected = (
+            "kiachahiye_alfa_card"
+            if (store, platform) == ("kiachahiye", "alfa")
+            else "spec_table"
+        )
+        assert cell.description_template == expected, (store, platform)
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -257,7 +263,7 @@ def test_the_resolver_that_names_a_cell_is_the_one_that_renders_it() -> None:
     """
     cfg = VENDOR_REGISTRY["kiachahiye"]
     assert template_for_cell(cfg, "digi") is SPEC_TABLE
-    assert template_for_cell(cfg, "alfa") is SPEC_TABLE
+    assert template_for_cell(cfg, "alfa") is KIACHAHIYE_ALFA_CARD
     assert template_for_cell(None, "digi") is SPEC_TABLE, "a bare run ships the shop's own table"
     with pytest.raises(KeyError):
         template_for_cell(cfg, "digiity")
@@ -299,3 +305,22 @@ def test_a_cell_may_not_edit_the_rows_it_is_handed(
         "digi's template edited the rows the record shares, so one cell's shape reached "
         "the other file -- hand every render its own copy of spec_rows"
     )
+
+
+def test_kiachahiye_alfa_card_leaves_other_three_cells_on_spec_table(
+    tmp_path: Path,
+) -> None:
+    """Only Kiachahiye.alfa renders the card; the other three cells ship SPEC_TABLE."""
+    records = run_pipeline(tmp_path, ROWS)["records"]
+    projected = _all_cells(records)
+    expected_spec = [
+        SPEC_TABLE.render(list(r.description.spec_rows)) for r in records
+    ]
+    expected_card = [
+        KIACHAHIYE_ALFA_CARD.render(list(r.description.spec_rows)) for r in records
+    ]
+    assert projected[("kiachahiye", "digi")] == expected_spec
+    assert projected[("ajmer", "digi")] == expected_spec
+    assert projected[("ajmer", "alfa")] == expected_spec
+    assert projected[("kiachahiye", "alfa")] == expected_card
+    assert projected[("kiachahiye", "alfa")] != expected_spec

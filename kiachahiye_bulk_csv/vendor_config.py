@@ -248,6 +248,7 @@ KIACHAHIYE = VendorConfig(
     ),
     alfa=PlatformConfig(
         vendor_name="Kia Chahiye Pvt Ltd",
+        description_template="kiachahiye_alfa_card",
         brands={
             "super general": 4133,
             "midea": 3821,
