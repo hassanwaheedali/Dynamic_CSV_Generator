@@ -318,6 +318,11 @@ AJMER = VendorConfig(
         "microwave ovens": "microwaves",
     },
     alfa_segment_aliases={
+        "iron": "iron & garment steamer",
+        "irons": "iron & garment steamer",
+        "iron & garment steamer": "iron & garment steamer",
+        "garment steamer": "iron & garment steamer",
+        "cooking range": "cooking range",
         "microwave oven": "microwaves",
         "microwave ovens": "microwaves",
     },
@@ -354,20 +359,27 @@ AJMER = VendorConfig(
             "samsung": 3669,
         },
         categories={
-            # Ajmer's Alfa tree exactly as the platform lists it.  Alfa takes the
-            # bare leaf id.  "Cooking range" (11526) and "Baking & Flavours"
-            # (11856) exist in the tree but are is_active:false, so nothing is
-            # routed to them; there is no Deep Freezer / Geyser leaf at all, so
-            # those rows ship with an empty Category and a category_missing_alfa
-            # flag until the platform opens a leaf for them.
+            # Ajmer Alfa Category Mapping (exact platform seller tree -- 16 items):
+            # 12351 -> 12353 (Air Conditioners AlfaBNPL)
+            "ac": "12353",
+            "air conditioner": "12353",
+            "air conditioners": "12353",
+            "air conditioners alfabnpl": "12353",
+            # 11504 -> 11506 (Washing machine), 11507 (Refrigerators), 11509 (Water dispenser), 11511 (Air cooler), 11515 (Iron & Garment steamer)
             "washing machine": "11506",
+            "washing machines": "11506",
             "refrigerators": "11507",
             "water dispenser": "11509",
             "air cooler": "11511",
+            "air coolers": "11511",
             "iron & garment steamer": "11515",
+            # 11518 -> 11519 (Microwaves), 11526 (Cooking range - inactive)
             "microwaves": "11519",
+            "cooking range": "11526",
+            # Root: 11539 (LED TV)
             "led tv": "11539",
-            "air conditioners alfabnpl": "12353",
+            # 11855 -> 11856 (Baking & Flavours - inactive)
+            "baking & flavours": "11856",
         },
     ),
 )
