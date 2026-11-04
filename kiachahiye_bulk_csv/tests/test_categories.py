@@ -17,6 +17,7 @@ from categories import (
 )
 
 # (breadcrumb, expected DigiMall path, expected Alfa id, expected Product Type)
+_SMART_ALFA_TV = CATEGORY_ALFA_IDS.get("smart led tv", CATEGORY_ALFA_IDS["led tv"])
 REAL_BREADCRUMBS = [
     ("Electronics / Home appliances / Refrigerators",
      CATEGORY_DIGI_PATHS["refrigerators"], CATEGORY_ALFA_IDS["refrigerators"], "Refrigerator"),
@@ -24,18 +25,18 @@ REAL_BREADCRUMBS = [
      CATEGORY_DIGI_PATHS["washing machines"], CATEGORY_ALFA_IDS["washing machine"], "Washing Machine"),
     ("Electronics / Kitchen appliances / Microwaves",
      CATEGORY_DIGI_PATHS["microwaves"], CATEGORY_ALFA_IDS["microwaves"], "Microwave Oven"),
-    ("LED TV / Smart LED TV / TCL LED", None, CATEGORY_ALFA_IDS["led tv"], "LED TV"),
+    ("LED TV / Smart LED TV / TCL LED", None, _SMART_ALFA_TV, "LED TV"),
     ("Electronics / Home appliances / Deep Freezer",
-     CATEGORY_DIGI_PATHS["freezers"], None, "Deep Freezer"),
+     CATEGORY_DIGI_PATHS["freezers"], CATEGORY_ALFA_IDS.get("deep freezer"), "Deep Freezer"),
     ("Electronics / Home appliances / Water dispenser",
      CATEGORY_DIGI_PATHS["water dispenser"], CATEGORY_ALFA_IDS["water dispenser"], "Water Dispenser"),
-    ("Electronics / Home appliances / Geysers", None, None, "Geyser"),
+    ("Electronics / Home appliances / Geysers", None, CATEGORY_ALFA_IDS.get("geysers"), "Geyser"),
     ("Electronics / Home appliances / Air cooler",
      CATEGORY_DIGI_PATHS["air coolers"], CATEGORY_ALFA_IDS["air cooler"], "Air Cooler"),
     ("Electronics / Home appliances / Air purifier & humdifier",
      CATEGORY_DIGI_PATHS["air purifiers"], None, "Air Purifier"),
-    ("LED TV / Smart LED TV / Haier LED", None, CATEGORY_ALFA_IDS["led tv"], "LED TV"),
-    ("LED TV / Smart LED TV / Dawlance LED", None, CATEGORY_ALFA_IDS["led tv"], "LED TV"),
+    ("LED TV / Smart LED TV / Haier LED", None, _SMART_ALFA_TV, "LED TV"),
+    ("LED TV / Smart LED TV / Dawlance LED", None, _SMART_ALFA_TV, "LED TV"),
 ]
 
 
@@ -54,12 +55,13 @@ def test_ac_breadcrumbs_need_text_inverter_signal() -> None:
     """DigiMall splits Inverter / Non-Invertor; the breadcrumb never says which."""
     breadcrumb = "Electronics / Home appliances / AC / AC's 2026 / Gree AC 2026"
     inverter = resolve_category(breadcrumb, "Gree Zeno DC Inverter Split AC", "")
+    alfa_ac = CATEGORY_ALFA_IDS.get("ac") or CATEGORY_ALFA_IDS.get("air conditioner") or CATEGORY_ALFA_IDS.get("air conditioners alfabnpl")
     assert inverter.digi_path == CATEGORY_DIGI_PATHS["ac inverter"]
-    assert inverter.alfa_id == CATEGORY_ALFA_IDS["air conditioners alfabnpl"]
+    assert inverter.alfa_id == alfa_ac
 
     non_inverter = resolve_category(breadcrumb, "Gree Non Inverter Split AC", "")
     assert non_inverter.digi_path == CATEGORY_DIGI_PATHS["ac non-inverter"]
-    assert non_inverter.alfa_id == CATEGORY_ALFA_IDS["air conditioners alfabnpl"]
+    assert non_inverter.alfa_id == alfa_ac
 
 
 def test_ac_silent_on_inverter_leaves_digi_blank_but_alfa_resolves() -> None:
@@ -67,7 +69,8 @@ def test_ac_silent_on_inverter_leaves_digi_blank_but_alfa_resolves() -> None:
     breadcrumb = "Electronics / Home appliances / AC"
     resolved = resolve_category(breadcrumb, "Dawlance Infinity Pro Split AC 1 Ton", "")
     assert resolved.digi_path is None
-    assert resolved.alfa_id == CATEGORY_ALFA_IDS["air conditioners alfabnpl"]
+    alfa_ac = CATEGORY_ALFA_IDS.get("ac") or CATEGORY_ALFA_IDS.get("air conditioner") or CATEGORY_ALFA_IDS.get("air conditioners alfabnpl")
+    assert resolved.alfa_id == alfa_ac
     assert "inverter" in resolved.reason.lower()
     assert resolve_product_type(resolved, "Dawlance")[0] == "Air Conditioner"
 
@@ -85,12 +88,13 @@ def test_led_tv_is_always_blank_on_digimall() -> None:
 
 
 def test_led_tv_resolves_to_single_leaf_on_alfa() -> None:
-    """Alfa maps all LED TVs to CATEGORY_ALFA_IDS['led tv'] in current category list."""
+    """Alfa maps LED TVs according to active CATEGORY_ALFA_IDS."""
     plain = resolve_category("LED TV / Smart LED TV / Haier LED", "", "Haier LED TV 32")
     assert plain.alfa_id == CATEGORY_ALFA_IDS["led tv"]
+    expected_smart = CATEGORY_ALFA_IDS.get("smart led tv", CATEGORY_ALFA_IDS["led tv"])
     for signal in ("Google TV", "Android TV", "Smart LED TV", "Andriod"):
         smart = resolve_category("LED TV / Smart LED TV / Haier LED", "", signal)
-        assert smart.alfa_id == CATEGORY_ALFA_IDS["led tv"], signal
+        assert smart.alfa_id == expected_smart, signal
 
 
 def test_stop_segments_do_not_fall_through_to_a_parent() -> None:
@@ -109,7 +113,7 @@ def test_stop_segments_do_not_fall_through_to_a_parent() -> None:
 def test_geysers_have_no_digimall_key_and_no_alfa_key() -> None:
     resolved = resolve_category("Electronics / Home appliances / Geysers", "Gas geyser", "")
     assert resolved.digi_path is None
-    assert resolved.alfa_id is None
+    assert resolved.alfa_id == CATEGORY_ALFA_IDS.get("geysers")
     assert "heaters" in CATEGORY_DIGI_PATHS  # the key exists, but is not a geyser match
 
 

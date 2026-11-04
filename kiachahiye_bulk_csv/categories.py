@@ -72,24 +72,35 @@ CATEGORY_DIGI_PATHS: dict[str, str] = {
 #  EDIT HERE -- Alfa: bare leaf id only, never a joined path
 # ===========================================================================
 CATEGORY_ALFA_IDS: dict[str, str] = {
-    # Leaves from Alfa category tree:
-    # 11504 -> 11506 (Washing machine), 11507 (Refrigerators), 11509 (Water dispenser), 11511 (Air cooler), 11515 (Iron & Garment steamer)
-    "air cooler": "11511",
-    "air coolers": "11511",
-    "iron & garment steamer": "11515",
+    # KiaChahiye Alfa Category Mapping (exact platform tree):
+    # 11504 (Home appliances)
+    "ac": "11505",
+    "air conditioner": "11505",
+    "air conditioners": "11505",
     "washing machine": "11506",
     "washing machines": "11506",
     "refrigerators": "11507",
+    "deep freezer": "11508",
     "water dispenser": "11509",
-    # 11518 -> 11519 (Microwaves), 11526 (Cooking range)
+    "geysers": "11510",
+    "air cooler": "11511",
+    "air coolers": "11511",
+    # 11518 (Kitchen appliances)
     "microwaves": "11519",
-    "cooking range": "11526",
+    "air fryer": "11522",
+    "air fryers": "11522",
+    "oven": "11527",
+    "ovens": "11527",
+    "blenders": "11528",
+    "food factory": "11529",
+    "coffee maker": "11530",
     # Root: 11539 (LED TV)
     "led tv": "11539",
-    # 11855 -> 11856 (Baking & Flavours)
-    "baking & flavours": "11856",
-    # 12351 -> 12353 (Air Conditioners AlfaBNPL)
-    "air conditioners alfabnpl": "12353",
+    "smart led tv": "11540",
+    # Inactive/Special
+    "dishwashing": "11874",
+    "dish washer": "12068",
+    "dishwashers": "12068",
 }
 
 # ===========================================================================
@@ -349,9 +360,10 @@ def resolve_category(
     alfa_reason = ""
     if alfa_key == _GROUP_AC:
         alfa_id = (
-            alfa_cats.get("air conditioners alfabnpl")
+            alfa_cats.get("ac")
             or alfa_cats.get("air conditioner")
-            or alfa_cats.get("ac")
+            or alfa_cats.get("air conditioners")
+            or alfa_cats.get("air conditioners alfabnpl")
         )
     elif alfa_key == _GROUP_LED:
         # If smart led tv is present in the row text or leaf segment use it, otherwise use led tv

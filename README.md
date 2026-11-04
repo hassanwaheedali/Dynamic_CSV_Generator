@@ -1,4 +1,4 @@
-# KiaChahiye Bulk CSV Pipeline
+# Bulk CSV Pipeline
 
 Turns one product sheet (1,800+ rows) into **two finished bulk-upload CSVs** —
 one for DigiMall, one for Alfa — written to two separate folders, plus one

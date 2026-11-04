@@ -227,7 +227,7 @@ def test_tc2_alfa_row(pipeline: Pipeline) -> None:
     alfa = pipeline([TC2_ROW])["alfa"][0]
     assert alfa["Vendor"] == getattr(config, "VENDOR_ALFA", "Ajmer Electronics")
     assert alfa["Brands"] == str(BRANDS_ALFA["dawlance"])
-    assert alfa["Category"] == CATEGORY_ALFA_IDS["led tv"]  # LED TV -- mapped to 11539 in current category list
+    assert alfa["Category"] == (CATEGORY_ALFA_IDS.get("smart led tv") or CATEGORY_ALFA_IDS["led tv"])  # LED TV -- mapped to 11539 in current category list
     assert not any(key.startswith("Attribute_") for key in alfa)
 
 
