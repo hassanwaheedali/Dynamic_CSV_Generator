@@ -75,22 +75,16 @@ CATEGORY_ALFA_IDS: dict[str, str] = {
     # KiaChahiye Alfa Category Mapping (exact platform tree):
     # 11504 (Home appliances)
     "ac": "11505",
-    "air conditioner": "11505",
-    "air conditioners": "11505",
     "washing machine": "11506",
-    "washing machines": "11506",
     "refrigerators": "11507",
     "deep freezer": "11508",
     "water dispenser": "11509",
     "geysers": "11510",
     "air cooler": "11511",
-    "air coolers": "11511",
     # 11518 (Kitchen appliances)
     "microwaves": "11519",
     "air fryer": "11522",
-    "air fryers": "11522",
     "oven": "11527",
-    "ovens": "11527",
     "blenders": "11528",
     "food factory": "11529",
     "coffee maker": "11530",
@@ -100,7 +94,6 @@ CATEGORY_ALFA_IDS: dict[str, str] = {
     # Inactive/Special
     "dishwashing": "11874",
     "dish washer": "12068",
-    "dishwashers": "12068",
 }
 
 # ===========================================================================

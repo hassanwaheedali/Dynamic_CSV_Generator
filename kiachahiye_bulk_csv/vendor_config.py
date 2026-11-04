@@ -267,21 +267,15 @@ KIACHAHIYE = VendorConfig(
         },
         categories={
             "ac": "11505",
-            "air conditioner": "11505",
-            "air conditioners": "11505",
             "washing machine": "11506",
-            "washing machines": "11506",
             "refrigerators": "11507",
             "deep freezer": "11508",
             "water dispenser": "11509",
             "geysers": "11510",
             "air cooler": "11511",
-            "air coolers": "11511",
             "microwaves": "11519",
             "air fryer": "11522",
-            "air fryers": "11522",
             "oven": "11527",
-            "ovens": "11527",
             "blenders": "11528",
             "food factory": "11529",
             "coffee maker": "11530",
@@ -289,7 +283,6 @@ KIACHAHIYE = VendorConfig(
             "smart led tv": "11540",
             "dishwashing": "11874",
             "dish washer": "12068",
-            "dishwashers": "12068",
         },
     ),
 )
@@ -359,26 +352,16 @@ AJMER = VendorConfig(
             "samsung": 3669,
         },
         categories={
-            # Ajmer Alfa Category Mapping (exact platform seller tree -- 16 items):
-            # 12351 -> 12353 (Air Conditioners AlfaBNPL)
-            "ac": "12353",
-            "air conditioner": "12353",
-            "air conditioners": "12353",
+            # Ajmer Alfa tree (exact 10 leaf categories from 16-item tree):
             "air conditioners alfabnpl": "12353",
-            # 11504 -> 11506 (Washing machine), 11507 (Refrigerators), 11509 (Water dispenser), 11511 (Air cooler), 11515 (Iron & Garment steamer)
             "washing machine": "11506",
-            "washing machines": "11506",
             "refrigerators": "11507",
             "water dispenser": "11509",
             "air cooler": "11511",
-            "air coolers": "11511",
             "iron & garment steamer": "11515",
-            # 11518 -> 11519 (Microwaves), 11526 (Cooking range - inactive)
             "microwaves": "11519",
             "cooking range": "11526",
-            # Root: 11539 (LED TV)
             "led tv": "11539",
-            # 11855 -> 11856 (Baking & Flavours - inactive)
             "baking & flavours": "11856",
         },
     ),
