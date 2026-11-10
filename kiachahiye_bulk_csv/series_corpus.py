@@ -50,7 +50,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import attributes
 import categories
@@ -58,6 +58,9 @@ import sku_handle
 import textutils
 import warranty_terms
 from brands import BRAND_ALIASES, BRAND_DISPLAY_MAP, BRANDS_DIGI, resolve_brand
+
+if TYPE_CHECKING:
+    from vendor_config import VendorConfig
 
 #: The slots in claim order; the first slot that can own a word owns it.
 SLOT_ORDER: tuple[str, ...] = (
@@ -204,6 +207,44 @@ def brand_words() -> frozenset[str]:
 def brand_phrases() -> tuple[tuple[str, ...], ...]:
     """Multi-word brand names, longest first, for claiming a run of pieces at once."""
     return tuple(sorted((tuple(name.split()) for name in brand_names() if " " in name), key=lambda w: -len(w)))
+
+
+def _vendor_vocabularies(
+    vendor_cfg: VendorConfig | None,
+) -> tuple[frozenset[str], frozenset[str], tuple[tuple[str, ...], ...]]:
+    """Category words, glued brand words, and multi-word brand phrases from ``vendor_cfg``."""
+    if vendor_cfg is None:
+        return frozenset(), frozenset(), ()
+    cat_words: set[str] = set()
+    cat_words |= _flatten(vendor_cfg.product_type_map)
+    cat_words |= _flatten(vendor_cfg.digi.categories)
+    cat_words |= _flatten(vendor_cfg.alfa.categories)
+    cat_words |= _flatten(vendor_cfg.digi_segment_aliases)
+    cat_words |= _flatten(vendor_cfg.alfa_segment_aliases)
+
+    raw_names = (
+        set(vendor_cfg.brand_display_map)
+        | set(vendor_cfg.brand_display_map.values())
+        | set(vendor_cfg.brand_aliases)
+        | set(vendor_cfg.brand_aliases.values())
+        | set(vendor_cfg.digi.brands)
+        | set(vendor_cfg.alfa.brands)
+    )
+    norm_names = {
+        _SPACES_RE.sub(" ", name.strip().lower())
+        for name in raw_names
+        if name and name.strip()
+    }
+    b_words = frozenset(
+        _alnum(name).lower() for name in norm_names if _alnum(name)
+    )
+    b_phrases = tuple(
+        sorted(
+            (tuple(name.split()) for name in norm_names if " " in name),
+            key=lambda w: -len(w),
+        )
+    )
+    return frozenset(cat_words), b_words, b_phrases
 
 
 @lru_cache(maxsize=1)
@@ -394,6 +435,7 @@ class _Vocabulary:
     structural: frozenset[str]
     colors: frozenset[str]
     row_class_words: frozenset[str]
+    brand_phrases: tuple[tuple[str, ...], ...] = ()
 
 
 def _pieces(title: str) -> tuple[list[str], frozenset[str], frozenset[str]]:
@@ -520,7 +562,7 @@ def _claim_brand_phrases(present: dict[str, None], vocabulary: _Vocabulary) -> d
     """Claim the brand names this row actually states, so a two-word brand is read as one brand."""
     claimed: dict[str, str] = {}
     pieces = list(present)
-    for words in brand_phrases():
+    for words in (vocabulary.brand_phrases or brand_phrases()):
         span = len(words)
         for start in range(len(pieces) - span + 1):
             if tuple(pieces[start : start + span]) == words:
@@ -555,6 +597,7 @@ def _vocabulary(
     capacity: str,
     color: str,
     inverter: str,
+    vendor_cfg: VendorConfig | None = None,
 ) -> tuple[_Vocabulary, str]:
     """The word sets one text brings to the claim test, built from the row's own columns.
 
@@ -563,9 +606,15 @@ def _vocabulary(
     a Title are the same slots, but a Description states category words the Title never writes, and
     a row may not lend a claim from one column to the other.
     """
-    row_brand_raw = resolve_brand(brand, "").raw or brand
+    row_brand_raw = resolve_brand(brand, "", vendor_cfg=vendor_cfg).raw or brand
     row_words = _words(row_brand_raw)
     row_context = _words(product_type) | _words(breadcrumb)
+    v_cat_words, v_brand_words, v_brand_phrases = _vendor_vocabularies(vendor_cfg)
+    combined_phrases = (
+        tuple(sorted(set(brand_phrases()) | set(v_brand_phrases), key=lambda w: -len(w)))
+        if v_brand_phrases
+        else brand_phrases()
+    )
     vocabulary = _Vocabulary(
         explicit={
             "model": _value_words(model),
@@ -574,14 +623,15 @@ def _vocabulary(
             "inverter": _value_words(inverter),
         },
         subtype=_subtype_words(product_type, pieces),
-        category=frozenset(category_vocabulary() | row_context),
-        brands=brand_words() | frozenset(row_words),
+        category=frozenset(category_vocabulary() | v_cat_words | row_context),
+        brands=brand_words() | v_brand_words | frozenset(row_words),
         row_brand=_alnum(row_brand_raw).lower(),
         row_brand_words=frozenset(row_words),
         warranty=warranty_vocabulary(),
         structural=frozenset(noise_vocabulary() | row_context),
         colors=color_vocabulary(),
         row_class_words=frozenset(row_context),
+        brand_phrases=combined_phrases,
     )
     return vocabulary, row_brand_raw
 
@@ -777,6 +827,7 @@ def analyze_row(
     color: str = "",
     inverter: str = "",
     description: str = "",
+    vendor_cfg: VendorConfig | None = None,
 ) -> RowAnalysis:
     """Read one row once: normalise its shape, let the slots claim it, return the residue.
 
@@ -789,7 +840,7 @@ def analyze_row(
     # Title repeats -- and running it over a paragraph would silently rewrite the very letters this
     # channel swears to render faithfully.
     described_text = description.strip()
-    row_inputs = {
+    row_inputs: dict[str, Any] = {
         "brand": brand,
         "product_type": product_type,
         "breadcrumb": breadcrumb,
@@ -797,6 +848,7 @@ def analyze_row(
         "capacity": capacity,
         "color": color,
         "inverter": inverter,
+        "vendor_cfg": vendor_cfg,
     }
     vocabulary, row_brand_raw = _vocabulary(pieces=tuple(_pieces(normalized)[0]), **row_inputs)
     read = _read(normalized, vocabulary)

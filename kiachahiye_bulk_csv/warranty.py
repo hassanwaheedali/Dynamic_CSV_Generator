@@ -121,7 +121,10 @@ TERM_LINES: list[TermLine] = get_term_lines()
 
 
 def lookup_terms(
-    brand_key: str, product_type: str, text: str
+    brand_key: str,
+    product_type: str,
+    text: str,
+    apply_tv_warranty_table: bool | None = None,
 ) -> list[tuple[str, str]] | None:
     """The reference terms for this row, or ``None`` when there are none.
 
@@ -129,7 +132,12 @@ def lookup_terms(
     in WARRANTY_TERMS, so a narrower wording such as "non inverter" always wins
     over the plain category underneath it.
     """
-    if product_type == "LED TV" and not getattr(config, "APPLY_TV_WARRANTY_TABLE", APPLY_TV_WARRANTY_FALLBACK):
+    active_apply_tv = (
+        getattr(config, "APPLY_TV_WARRANTY_TABLE", APPLY_TV_WARRANTY_FALLBACK)
+        if apply_tv_warranty_table is None
+        else apply_tv_warranty_table
+    )
+    if product_type == "LED TV" and not active_apply_tv:
         return None
     b_key = brand_key.strip().lower()
     title = text.splitlines()[0] if text else ""
@@ -406,7 +414,10 @@ def headline_duration(parts: list[StatedPart]) -> str | None:
 
 
 def resolve_warranty(
-    source_text: str, brand_key: str, product_type: str
+    source_text: str,
+    brand_key: str,
+    product_type: str,
+    apply_tv_warranty_table: bool | None = None,
 ) -> tuple[list[SpecRow], str | None, str]:
     """Return ``(rows, headline_duration, source)`` for one product.
 
@@ -429,7 +440,12 @@ def resolve_warranty(
         if has_explicit_non_numeric_term(stated):
             return build_stated_rows(stated), None, "stated"
 
-    entries = lookup_terms(brand_key, product_type, source_text)
+    entries = lookup_terms(
+        brand_key,
+        product_type,
+        source_text,
+        apply_tv_warranty_table=apply_tv_warranty_table,
+    )
     if entries is None:
         if stated:
             return build_stated_rows(stated), None, "stated"
@@ -504,10 +520,18 @@ def format_main_warranty(part: str, duration: str) -> str:
 
 
 def resolve_main_warranty(
-    source_text: str, brand_key: str, product_type: str
+    source_text: str,
+    brand_key: str,
+    product_type: str,
+    apply_tv_warranty_table: bool | None = None,
 ) -> str | None:
     """Return the formatted main warranty phrase for the title, or ``None``."""
-    entries = lookup_terms(brand_key, product_type, source_text)
+    entries = lookup_terms(
+        brand_key,
+        product_type,
+        source_text,
+        apply_tv_warranty_table=apply_tv_warranty_table,
+    )
 
     stated = find_stated_warranty_text(source_text)
     if stated:

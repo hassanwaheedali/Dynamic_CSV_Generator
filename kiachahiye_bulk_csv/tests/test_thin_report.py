@@ -15,6 +15,8 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 import main  # noqa: E402
 import thin_report  # noqa: E402
+from description_builder import KIACHAHIYE_ALFA_CARD, TemplateShapeError  # noqa: E402
+from vendor_config import KIACHAHIYE  # noqa: E402
 
 Pipeline = Any
 
@@ -154,3 +156,35 @@ def test_the_worklist_counts_the_rows_the_uploaded_shape_actually_has(
             f"{record.title}: the worklist counts in spec_table's grammar -- make thin_report.py "
             "and audit.py template-aware before any cell names another template"
         )
+
+
+def test_thin_report_is_template_aware_and_rejects_malformed_template_markup(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """thin_report extracts spec rows using the cell's DescriptionTemplate and fails on malformed HTML."""
+    result = pipeline([SHAPE_ROW], vendor_cfg=KIACHAHIYE)
+    facts = thin_report.read_listing_facts(
+        result["alfa_path"], template=KIACHAHIYE_ALFA_CARD
+    )
+    assert facts[2][0] == len(result["records"][0].description.spec_rows)
+
+    out_csv = tmp_path / "thin_out.csv"
+    rc = thin_report.main(
+        [
+            "--input", str(result["alfa_path"].parent.parent / "input.csv"),
+            "--built", str(result["alfa_path"]),
+            "--qc", str(result["qc_path"]),
+            "--out", str(out_csv),
+            "--vendor", "kiachahiye",
+        ]
+    )
+    assert rc == 0
+
+    # Corrupting the warranty star in Kiachahiye.alfa card HTML must raise TemplateShapeError, never silently fall back
+    bad_alfa = tmp_path / "bad_alfa.csv"
+    bad_alfa.write_text(
+        result["alfa_path"].read_text(encoding="utf-8-sig").replace("\u2605", ""),
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(TemplateShapeError):
+        thin_report.read_listing_facts(bad_alfa, template=KIACHAHIYE_ALFA_CARD)

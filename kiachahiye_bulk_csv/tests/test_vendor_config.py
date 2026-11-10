@@ -11,13 +11,19 @@ from __future__ import annotations
 import csv
 import dataclasses
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import audit
 import main as pipeline_main
-from brands import resolve_brand
-from categories import resolve_category, resolve_product_type
+from brands import BRANDS_ALFA, BRANDS_DIGI, resolve_brand
+from categories import (
+    CATEGORY_ALFA_IDS,
+    CATEGORY_DIGI_PATHS,
+    resolve_category,
+    resolve_product_type,
+)
 from description_builder import (
     DESCRIPTION_TEMPLATES,
     SPEC_TABLE,
@@ -25,6 +31,7 @@ from description_builder import (
     SpecRow,
     template_for,
 )
+from series_corpus import analyze_row
 from sku_handle import SKU_PREFIX, ModelExtraction, build_sku_token
 from title_builder import build_title
 from vendor_config import (
@@ -377,13 +384,13 @@ def test_adversarial_brand_display_and_no_title_brand_stutter() -> None:
 # ---------------------------------------------------------------------------
 # Per-(store x platform) Description template
 # ---------------------------------------------------------------------------
-def _cell(platform: str, **overrides: object) -> PlatformConfig:
+def _cell(platform: str, **overrides: Any) -> PlatformConfig:
     """One store's platform block, with only the override changed."""
     base = getattr(KIACHAHIYE, platform)
     return dataclasses.replace(base, **overrides)
 
 
-def _store(**overrides: object) -> VendorConfig:
+def _store(**overrides: Any) -> VendorConfig:
     return dataclasses.replace(KIACHAHIYE, **overrides)
 
 
@@ -586,3 +593,277 @@ def test_a_description_template_is_not_enough_without_a_vendor_name() -> None:
     with pytest.raises(ConfigError) as caught:
         validate_vendor_cfg(broken)
     assert "alfa.vendor_name is empty" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 Stabilization: Dead Knobs, Corpus Isolation, Missing-Mapping Contract, CLI & UI
+# ---------------------------------------------------------------------------
+def test_omit_title_color_categories_wired_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """vendor_cfg.omit_title_color_categories controls Title color inclusion per store."""
+    tv_row = pipeline_main.InputRow(
+        row_number=2,
+        title="Haier 43 Inch Black Smart LED TV (H43K85FX)",
+        description="Haier 43 inch smart LED TV in Black.\n• Model: H43K85FX\n• Color: Black",
+        sell_price="85000",
+        original_price="90000",
+        categories="Electronics / TV & Video / LED TV",
+        brand="Haier",
+        image="https://example.com/tv.jpg",
+        vendor="",
+    )
+    cfg_omit = dataclasses.replace(
+        KIACHAHIYE, omit_title_color_categories=frozenset({"LED TV"})
+    )
+    cfg_keep = dataclasses.replace(
+        KIACHAHIYE, omit_title_color_categories=frozenset()
+    )
+
+    flags_omit = pipeline_main.QCFlagCollector()
+    rec_omit = pipeline_main.run([tv_row], flags_omit, vendor_cfg=cfg_omit)[0]
+    assert "Black" not in rec_omit.title_digi
+    assert "Black" not in rec_omit.title_alfa
+    assert rec_omit.option1_value == "Black"
+
+    flags_keep = pipeline_main.QCFlagCollector()
+    rec_keep = pipeline_main.run([tv_row], flags_keep, vendor_cfg=cfg_keep)[0]
+    assert "Black" in rec_keep.title_digi
+    assert "Black" in rec_keep.title_alfa
+    assert rec_keep.option1_value == "Black"
+
+
+def test_apply_tv_warranty_table_wired_end_to_end_and_in_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """vendor_cfg.apply_tv_warranty_table controls LED TV fallback warranty in pipeline and audit."""
+    sheet = tmp_path / "tv.csv"
+    with sheet.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
+        writer.writerow(
+            ["Title", "Description", "Sell Price", "Original Price", "Categories", "Brand", "Image"]
+        )
+        writer.writerow(
+            [
+                "Dawlance 43 Inch Smart LED TV (43G3A)",
+                "The Dawlance 43G3A is a 43 inch smart LED TV with vibrant 4K display and Dolby Audio.",
+                "89000",
+                "95000",
+                "Electronics / TV & Video / LED TV",
+                "Dawlance",
+                "https://example.com/43g3a.jpg",
+            ]
+        )
+
+    for apply_flag in (False, True):
+        custom_key = f"tv_{str(apply_flag).lower()}"
+        custom_cfg = dataclasses.replace(
+            KIACHAHIYE, apply_tv_warranty_table=apply_flag
+        )
+        monkeypatch.setitem(VENDOR_REGISTRY, custom_key, custom_cfg)
+        out_dir = tmp_path / custom_key
+        digi_p = out_dir / "digi.csv"
+        alfa_p = out_dir / "alfa.csv"
+        qc_p = out_dir / "qc.csv"
+        sample_p = out_dir / "sample.csv"
+
+        assert (
+            pipeline_main.main(
+                [
+                    "--input", str(sheet),
+                    "--vendor", custom_key,
+                    "--platform", "both",
+                    "--digi", str(digi_p),
+                    "--alfa", str(alfa_p),
+                    "--qc", str(qc_p),
+                    "--sample-titles", str(sample_p),
+                ]
+            )
+            == 0
+        )
+        assert (
+            audit.main(
+                [
+                    "--input", str(sheet),
+                    "--vendor", custom_key,
+                    "--platform", "both",
+                    "--digi", str(digi_p),
+                    "--alfa", str(alfa_p),
+                    "--qc", str(qc_p),
+                ]
+            )
+            == 0
+        )
+        with digi_p.open(encoding="utf-8-sig", newline="") as f:
+            digi_row = next(csv.DictReader(f))
+        with alfa_p.open(encoding="utf-8-sig", newline="") as f:
+            alfa_row = next(csv.DictReader(f))
+        if apply_flag:
+            assert digi_row["Attribute_Warranty"] != ""
+            assert "Warranty" in alfa_row["Title"]
+        else:
+            assert digi_row["Attribute_Warranty"] == ""
+            assert "Warranty" not in alfa_row["Title"]
+
+
+def test_series_corpus_respects_active_vendor_vocabulary_without_cross_store_leakage() -> None:
+    """series_corpus claims vendor-specific brand and category words without leaking across vendors."""
+    custom_store = dataclasses.replace(
+        KIACHAHIYE,
+        brand_display_map={**KIACHAHIYE.brand_display_map, "auroracorp": "AuroraCorp", "aurora prime": "Aurora Prime"},
+        brand_aliases={**KIACHAHIYE.brand_aliases, "aurora prime": "auroracorp"},
+        product_type_map={**KIACHAHIYE.product_type_map, "wine chillers": "Wine Chiller"},
+        digi=dataclasses.replace(
+            KIACHAHIYE.digi,
+            brands={**KIACHAHIYE.digi.brands, "auroracorp": 7777},
+            categories={**KIACHAHIYE.digi.categories, "wine chillers": "10_20"},
+        ),
+    )
+    analysis_custom = analyze_row(
+        "Aurora Prime Lumina Wine Chillers 50L (AP-50W)",
+        brand="aurora prime",
+        product_type="Wine Chiller",
+        breadcrumb="Appliances / Wine Chillers",
+        vendor_cfg=custom_store,
+    )
+    # Under custom_store, 'aurora' and 'prime' are claimed as brand, 'wine' and 'chillers' as category,
+    # leaving only 'lumina' as the series candidate.
+    assert analysis_custom.claimed.get("aurora") == "brand"
+    assert analysis_custom.claimed.get("prime") == "brand"
+    assert analysis_custom.claimed.get("wine") == "category"
+    assert analysis_custom.claimed.get("chillers") == "category"
+    assert [c.key for c in analysis_custom.candidates] == ["lumina"]
+
+    # Analyzing under AJMER (which does not have 'auroracorp' or 'wine chillers' in its config)
+    # must NOT inherit custom_store's vocabulary when given an unrelated row.
+    analysis_ajmer = analyze_row(
+        "Dawlance Aurora Prime Refrigerator (REF-99)",
+        brand="Dawlance",
+        product_type="Refrigerator",
+        breadcrumb="Appliances / Refrigerators",
+        vendor_cfg=AJMER,
+    )
+    assert "aurora" not in analysis_ajmer.claimed
+
+
+def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workflow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Missing mappings never borrow IDs across stores/platforms/globals, leave CSV blank, and keep QC/UI."""
+    # 1. Every store x platform cell resolves ONLY its own configured IDs, never another store's or global tables.
+    all_brand_keys = set(BRANDS_DIGI) | set(BRANDS_ALFA)
+    all_cat_keys = set(CATEGORY_DIGI_PATHS) | set(CATEGORY_ALFA_IDS)
+    for cfg in VENDOR_REGISTRY.values():
+        all_brand_keys |= set(cfg.digi.brands) | set(cfg.alfa.brands)
+        all_cat_keys |= set(cfg.digi.categories) | set(cfg.alfa.categories)
+
+    for vendor_key, cfg in VENDOR_REGISTRY.items():
+        for b_key in all_brand_keys:
+            res = resolve_brand(b_key, vendor_cfg=cfg)
+            if res.normalized not in cfg.digi.brands:
+                assert res.digi_id is None, f"{vendor_key}.digi leaked brand ID for {b_key!r}"
+            if res.normalized not in cfg.alfa.brands:
+                assert res.alfa_id is None, f"{vendor_key}.alfa leaked brand ID for {b_key!r}"
+
+        for c_key in all_cat_keys:
+            cat_res = resolve_category(c_key, "", "", vendor_cfg=cfg)
+            if cat_res.digi_path is not None:
+                assert cat_res.digi_path in set(cfg.digi.categories.values()), (
+                    f"{vendor_key}.digi leaked category path {cat_res.digi_path!r} for {c_key!r}"
+                )
+            if cat_res.alfa_id is not None:
+                assert cat_res.alfa_id in set(cfg.alfa.categories.values()), (
+                    f"{vendor_key}.alfa leaked category ID {cat_res.alfa_id!r} for {c_key!r}"
+                )
+
+    # 2. End-to-end verification of missing mappings (e.g. Ajmer.digi and unmapped brand/category on any vendor):
+    # CSV fields stay blank (""), CSV generation succeeds, QC flags and UI summary table are emitted, and audit passes.
+    sheet = tmp_path / "unmapped.csv"
+    with sheet.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
+        writer.writerow(
+            ["Title", "Description", "Sell Price", "Original Price", "Categories", "Brand", "Image"]
+        )
+        writer.writerow(
+            [
+                "Gree 1.5 Ton Inverter Split AC (GS-18PITH11W)",
+                "Gree 1.5 Ton DC Inverter Split Air Conditioner with 10 Years Compressor Warranty.",
+                "145000",
+                "155000",
+                "Electronics > Home appliances > Air Conditioner",
+                "Gree",
+                "https://example.com/gree.jpg",
+            ]
+        )
+
+    # Gree and Air Conditioner exist in KIACHAHIYE.digi and AJMER.alfa, but NOT in AJMER.digi (which is empty)
+    digi_out = tmp_path / "ajmer_digi.csv"
+    alfa_out = tmp_path / "ajmer_alfa.csv"
+    qc_out = tmp_path / "ajmer_qc.csv"
+    sample_out = tmp_path / "ajmer_sample.csv"
+
+    rc = pipeline_main.main(
+        [
+            "--input", str(sheet),
+            "--vendor", "ajmer",
+            "--platform", "both",
+            "--digi", str(digi_out),
+            "--alfa", str(alfa_out),
+            "--qc", str(qc_out),
+            "--sample-titles", str(sample_out),
+        ]
+    )
+    assert rc == 0
+    captured = capsys.readouterr().out
+    assert "BRAND NOT FOUND IN LOOKUP TABLE" in captured
+    assert "CATEGORY NOT FOUND IN LOOKUP TABLE" in captured
+
+    with digi_out.open(encoding="utf-8-sig", newline="") as f:
+        ajmer_digi_row = next(csv.DictReader(f))
+    with alfa_out.open(encoding="utf-8-sig", newline="") as f:
+        ajmer_alfa_row = next(csv.DictReader(f))
+
+    # Ajmer.digi leaves Brands and Category blank (never borrowing from Kiachahiye.digi or Ajmer.alfa)
+    assert ajmer_digi_row["Brands"] == ""
+    assert ajmer_digi_row["Category"] == ""
+    # Ajmer.alfa resolves its own configured IDs
+    expected_alfa_ac = (
+        AJMER.alfa.categories.get("air conditioners alfabnpl")
+        or AJMER.alfa.categories.get("air conditioner")
+        or AJMER.alfa.categories.get("ac")
+    )
+    assert ajmer_alfa_row["Brands"] == str(AJMER.alfa.brands["gree"])
+    assert ajmer_alfa_row["Category"] == expected_alfa_ac
+
+    # QC report records the missing DigiMall mappings and audit passes without blocking upload
+    with qc_out.open(encoding="utf-8-sig", newline="") as f:
+        qc_flags = {row["Flag Type"] for row in csv.DictReader(f)}
+    assert "brand_missing_digi" in qc_flags
+    assert "category_missing_digi" in qc_flags
+
+    audit_rc = audit.main(
+        [
+            "--input", str(sheet),
+            "--vendor", "ajmer",
+            "--platform", "both",
+            "--digi", str(digi_out),
+            "--alfa", str(alfa_out),
+            "--qc", str(qc_out),
+        ]
+    )
+    assert audit_rc == 0
+
+
+def test_cli_requires_explicit_vendor_when_argv_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """User-facing CLI execution (argv=None) requires explicit --vendor in main.py and audit.py."""
+    monkeypatch.setattr("sys.argv", ["main.py"])
+    with pytest.raises(SystemExit) as exc_main:
+        pipeline_main.main(None)
+    assert exc_main.value.code == 2
+
+    monkeypatch.setattr("sys.argv", ["audit.py"])
+    with pytest.raises(SystemExit) as exc_audit:
+        audit.main(None)
+    assert exc_audit.value.code == 2

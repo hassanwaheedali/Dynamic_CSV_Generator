@@ -26,7 +26,7 @@ from writers import (  # noqa: E402
     write_csv,
 )
 
-Pipeline = Callable[[list[dict[str, str]]], dict[str, Any]]
+Pipeline = Callable[..., dict[str, Any]]
 
 INPUT_COLUMNS = [
     "Title", "Description", "Sell Price", "Original Price",

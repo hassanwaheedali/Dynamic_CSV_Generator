@@ -226,3 +226,16 @@ def test_digimall_technical_attributes_unaffected_by_title_exclusion(
         # Title must omit inverter, but attribute column must retain 'Inverter'
         assert "Inverter" not in digi_row["Title"]
         assert digi_row.get("Attribute_INV/NON-INV") == "Inverter"
+
+    # Even when BOTH platforms disable include_inverter, Attribute_INV/NON-INV still resolves "Inverter"
+    base_cfg = next(iter(VENDOR_REGISTRY.values()))
+    both_no_inv_cfg = dataclasses.replace(
+        base_cfg,
+        digi=dataclasses.replace(base_cfg.digi, include_inverter=False),
+        alfa=dataclasses.replace(base_cfg.alfa, include_inverter=False),
+    )
+    res_both_off = pipeline([inverter_deep_freezer_row], vendor_cfg=both_no_inv_cfg)
+    assert "Inverter" not in res_both_off["digi"][0]["Title"]
+    assert "Inverter" not in res_both_off["alfa"][0]["Title"]
+    assert res_both_off["digi"][0].get("Attribute_INV/NON-INV") == "Inverter"
+

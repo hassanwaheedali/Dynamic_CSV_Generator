@@ -78,7 +78,12 @@ from textutils import (
     pick_weight_columns,
     strip_markup_keep_lines,
 )
-from title_builder import build_title, without_leading_type_words, word_identity
+from title_builder import (
+    build_title,
+    extract_inverter,
+    without_leading_type_words,
+    word_identity,
+)
 from vendor_config import VENDOR_REGISTRY, VendorConfig, description_cell_label, get_vendor
 from warranty import TERM_LINES, resolve_warranty
 from writers import (
@@ -253,6 +258,7 @@ def read_rows(
                 product_type=product_type,
                 breadcrumb=row.categories.strip(),
                 description=row.description.strip(),
+                vendor_cfg=vendor_cfg,
             )
         )
     return analyses, build_corpus(analyses)
@@ -373,6 +379,12 @@ def resolve_row(
     strict_rebuild = (
         vendor_cfg.strict_title_rebuild if vendor_cfg is not None else None
     )
+    omit_color_categories = (
+        vendor_cfg.omit_title_color_categories if vendor_cfg is not None else None
+    )
+    apply_tv_warranty_table = (
+        vendor_cfg.apply_tv_warranty_table if vendor_cfg is not None else None
+    )
 
     digi_cfg = vendor_cfg.digi if vendor_cfg is not None else None
     alfa_cfg = vendor_cfg.alfa if vendor_cfg is not None else None
@@ -391,6 +403,8 @@ def resolve_row(
         title_formula=digi_formula,
         include_inverter=digi_inverter,
         include_warranty=digi_warranty,
+        omit_color_categories=omit_color_categories,
+        apply_tv_warranty_table=apply_tv_warranty_table,
     )
     if (alfa_formula, alfa_inverter, alfa_warranty) == (
         digi_formula,
@@ -406,6 +420,8 @@ def resolve_row(
             title_formula=alfa_formula,
             include_inverter=alfa_inverter,
             include_warranty=alfa_warranty,
+            omit_color_categories=omit_color_categories,
+            apply_tv_warranty_table=apply_tv_warranty_table,
         )
     title_result = title_result_digi
     if title_result.strategy == "kept-with-light-cleanup":
@@ -454,7 +470,10 @@ def resolve_row(
         )
 
     warranty_rows, warranty_headline, warranty_source = resolve_warranty(
-        text, brand.normalized, product_type
+        text,
+        brand.normalized,
+        product_type,
+        apply_tv_warranty_table=apply_tv_warranty_table,
     )
 
     other_colors = colour_disagreements(text, row.title)
@@ -500,20 +519,21 @@ def resolve_row(
             "Source Description is thin -- the table shows only what was genuinely "
             "stated, with no filler rows added.",
         )
-    if not (151 <= len(description.seo_description) <= 155):
+    if not (CONFIG.SEO_DESC_MIN <= len(description.seo_description) <= CONFIG.SEO_DESC_MAX):
         flags.flag(
             row.row_number, row.title, CAT_SEO_DESCRIPTION_LENGTH,
             f"SEO Description is {len(description.seo_description)} characters, outside "
-            "the required 151-155 -- the source had too little product-specific "
+            f"the required {CONFIG.SEO_DESC_MIN}-{CONFIG.SEO_DESC_MAX} -- the source had too little product-specific "
             "material to pad with honestly.",
         )
-    if not (65 <= len(description.seo_title) <= 90):
+    if not (CONFIG.SEO_TITLE_MIN <= len(description.seo_title) <= CONFIG.SEO_TITLE_MAX):
         # The search title is this row's own words and the one anchored phrase, so a length the
         # window cannot hold is a gap in the sheet, not a cut to hide: a model code or a stated size
         # is what carries a short row into 65-90 (measured: `Haier UPS`, 9 words' worth of row).
         flags.flag(
             row.row_number, row.title, CAT_SEO_TITLE_LENGTH,
-            f"SEO Title is {len(description.seo_title)} characters, outside the 65-90 the search "
+            f"SEO Title is {len(description.seo_title)} characters, outside the "
+            f"{CONFIG.SEO_TITLE_MIN}-{CONFIG.SEO_TITLE_MAX} the search "
             "window asks for -- the row states too little to build a longer title from its own "
             "words; a Model code or a Capacity on this row would carry it.",
         )
@@ -524,8 +544,13 @@ def resolve_row(
             "bullet(s) -- fewer than 3 standout facts existed in the source.",
         )
 
+    attribute_title = (
+        title_result_alfa.title
+        if alfa_inverter
+        else f"{title_result_digi.title} {extract_inverter(text)}".strip()
+    )
     attributes, unmatched = build_attributes(
-        title=title_result_alfa.title,
+        title=attribute_title,
         description=row.description,
         product_type=product_type,
         warranty_headline=warranty_headline,
@@ -1029,6 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
         "--vendor",
         choices=list(VENDOR_REGISTRY),
         default=None,
+        required=(argv is None),
         help="which vendor's config to use (e.g. kiachahiye, ajmer)",
     )
     args = parser.parse_args(argv)

@@ -16,6 +16,7 @@ from typing import Any
 import audit
 from config import SEO_TITLE_MIN
 from tests.conftest import Pipeline
+from vendor_config import KIACHAHIYE
 
 HAIER_FREEZER = {
     "Title": "Haier Twin Inverter IOT Freezer-On-Top Refrigerator 18 Cu Ft Black (HRF-538TIFB1U1)",
@@ -553,3 +554,109 @@ def test_a_row_that_states_enough_reports_no_gap(pipeline: Pipeline, tmp_path: P
 
     failures = _gate(result, tmp_path / "input.csv", platform="alfa")
     assert failures["Alfa thin search titles reported"] == (True, "0 row(s) thin")
+
+
+def test_both_platforms_gate_audits_alfa_title_weight_colour_and_freezer_independently(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """Under --platform both, defects in Alfa Title, Weight, Colour, or Freezer fail even when DigiMall is clean."""
+    # 1. Alfa Title missing model code
+    res_title = pipeline([HAIER_FREEZER])
+    _rewrite_cell(res_title["alfa_path"], "Title", "Haier 18 Cu Ft Black Refrigerator")
+    failures_title = _gate(res_title, tmp_path / "input.csv", platform="both")
+    assert "Alfa" in _failure(failures_title, "every Title is ")
+
+    # 2. Alfa Variant Weight invented
+    res_weight = pipeline([HAIER_FREEZER])
+    _rewrite_cell(res_weight["alfa_path"], "Variant Weight", "999")
+    _rewrite_cell(res_weight["alfa_path"], "Variant Weight Unit", "kg")
+    failures_weight = _gate(res_weight, tmp_path / "input.csv", platform="both")
+    assert "Alfa" in _failure(
+        failures_weight, "Variant Weight is never invented when the source states none"
+    )
+
+    # 3. Alfa Option1 Value invented colour
+    res_colour = pipeline([HAIER_FREEZER])
+    _rewrite_cell(res_colour["alfa_path"], "Option1 Value", "Cosmic Magenta")
+    failures_colour = _gate(res_colour, tmp_path / "input.csv", platform="both")
+    assert "Alfa" in _failure(
+        failures_colour, "every colour the file ships is a colour the row stated"
+    )
+
+    # 4. Alfa Title invented Freezer-On-Top placement
+    res_freezer = pipeline([SUPER_ASIA_TWO_NUMBERS])
+    _rewrite_cell(
+        res_freezer["alfa_path"],
+        "Title",
+        "Super Asia Freezer-On-Top Washing Machine 10 Kg - SA-260",
+    )
+    failures_freezer = _gate(res_freezer, tmp_path / "input.csv", platform="both")
+    assert "Alfa" in _failure(
+        failures_freezer, "no freezer placement the row does not state itself"
+    )
+
+
+def test_audit_enforces_platform_title_exclusions_and_template_extraction_for_vendor(
+    pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """When --vendor is active, audit enforces DigiMall title exclusions and KIACHAHIYE_ALFA_CARD extraction."""
+    result = pipeline([HAIER_FREEZER], vendor_cfg=KIACHAHIYE)
+    evidence_path = tmp_path / "evidence.csv"
+
+    def _vendor_gate() -> dict[str, tuple[bool, str]]:
+        audit.RESULTS.clear()
+        audit.main(
+            [
+                "--input", str(tmp_path / "input.csv"),
+                "--vendor", "kiachahiye",
+                "--digi", str(result["digi_path"]),
+                "--alfa", str(result["alfa_path"]),
+                "--qc", str(result["qc_path"]),
+                "--evidence", str(evidence_path),
+            ]
+        )
+        return {name: (ok, detail) for ok, name, detail in audit.RESULTS}
+
+    # Clean run passes and writes accurate Spec Rows from KIACHAHIYE_ALFA_CARD.extract()
+    clean_checks = _vendor_gate()
+    assert _rejected(clean_checks) == []
+    with evidence_path.open(encoding="utf-8-sig", newline="") as f:
+        ev_rows = list(csv.DictReader(f))
+    assert len(ev_rows) == 2
+    assert int(ev_rows[0]["Spec Rows"]) == int(ev_rows[1]["Spec Rows"]) > 2
+
+    # Injecting excluded Warranty or Inverter into DigiMall Title fails the gate
+    _edit_cell(result["digi_path"], "Title", lambda t: f"{t} - 10 Year Warranty")
+    bad_title_checks = _vendor_gate()
+    assert "warranty present when excluded" in _failure(bad_title_checks, "every Title is ")
+
+    # Restore Title, then corrupt Kiachahiye.alfa card HTML by removing the required warranty star ★
+    result = pipeline([HAIER_FREEZER], vendor_cfg=KIACHAHIYE)
+    _edit_cell(result["alfa_path"], "Description", lambda h: h.replace("\u2605", ""))
+    bad_template_checks = _vendor_gate()
+    assert any(
+        "description rejected by template kiachahiye_alfa_card" in name
+        for name in _rejected(bad_template_checks)
+    )
+
+    # Leaking a shipped color word into a category listed in omit_title_color_categories fails Title check
+    result = pipeline([HAIER_FREEZER], vendor_cfg=KIACHAHIYE)
+    _edit_cell(result["alfa_path"], "Product Type", lambda _pt: "LED TV")
+    _edit_cell(result["alfa_path"], "Title", lambda t: f"{t} Black")
+    bad_color_checks = _vendor_gate()
+    assert "color 'Black' present in omitted category" in _failure(
+        bad_color_checks, "every Title is "
+    )
+
+    # Removing a warranty SpecRow label while leaving its text in another cell still fails warranty check
+    result = pipeline([HAIER_FREEZER], vendor_cfg=KIACHAHIYE)
+    _edit_cell(
+        result["digi_path"],
+        "Description",
+        lambda h: h.replace(">Compressor Warranty<", ">Note (Compressor Warranty)<"),
+    )
+    bad_warranty_checks = _vendor_gate()
+    assert "warranty row 'Compressor Warranty' missing" in _failure(
+        bad_warranty_checks, "Attribute_Warranty and the warranty table agree with warranty.py"
+    )
+

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import html as html_module
 import re
 import sys
 from collections import Counter
@@ -35,6 +34,7 @@ import config as CONFIG
 from attributes import ALLOWED, match_warranty
 from brands import resolve_brand
 from categories import resolve_category, resolve_product_type
+from description_builder import TemplateShapeError
 from qc_report import CAT_ATTRIBUTE_EMPTY
 from sku_handle import extract_model
 from textutils import (
@@ -45,10 +45,10 @@ from textutils import (
     parse_weight_unit,
     pick_weight_columns,
 )
-from title_builder import without_leading_type_words
-from vendor_config import VENDOR_REGISTRY, get_vendor
+from title_builder import INVERTER_CONCEPT_CATEGORIES, without_leading_type_words
+from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor
 from warranty import resolve_warranty
-from writers import ALFA_HEADER, DIGI_HEADER
+from writers import ALFA_HEADER, DIGI_HEADER, template_for_cell
 
 
 def source_weight(rec: dict[str, str], text: str) -> tuple[str, str]:
@@ -115,6 +115,7 @@ def write_evidence(
     path: Path,
     source: list[dict[str, str]],
     gated: list[tuple[str, list[dict[str, str]]]],
+    vendor_cfg: VendorConfig | None = None,
 ) -> None:
     """One line per row per platform: what that row produced, and whether it conforms.
 
@@ -132,6 +133,7 @@ def write_evidence(
         writer = csv.DictWriter(handle, fieldnames=columns, quoting=csv.QUOTE_ALL)
         writer.writeheader()
         for platform, rows in gated:
+            template = template_for_cell(vendor_cfg, platform)
             for index, (_rec, row) in enumerate(zip(source, rows, strict=True), start=2):
                 notes: list[str] = []
                 for required in ("Title", "Product Type", "Vendor", "Variant SKU", "Handle"):
@@ -144,8 +146,13 @@ def write_evidence(
                     notes.append("SEO Title length")
                 if not CONFIG.SEO_DESC_MIN <= len(row["SEO Description"]) <= CONFIG.SEO_DESC_MAX:
                     notes.append("SEO Description length")
-                if not row["Description"].startswith("<table"):
+                if not row["Description"].lower().startswith(template.starts_with.lower()):
                     notes.append("Description not a table")
+                try:
+                    spec_rows_count = len(template.extract(row["Description"]))
+                except TemplateShapeError:
+                    spec_rows_count = -1
+                    notes.append("Description failed template extraction")
                 if platform == "digi":
                     for column, value in row.items():
                         if column.startswith("Attribute_") and value:
@@ -165,7 +172,7 @@ def write_evidence(
                     "Product Type": row["Product Type"],
                     "Warranty": row.get("Attribute_Warranty", "") if platform == "digi" else "",
                     "Tags": len(tags),
-                    "Spec Rows": row["Description"].count("<tr") - 1,
+                    "Spec Rows": spec_rows_count,
                     "Short Bullets": row["Short Description"].count("<li>") if platform == "digi" else 0,
                     "Desc Chars": len(row["Description"]),
                     "SEO Title Chars": len(row["SEO Title"]),
@@ -197,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         "--vendor",
         choices=list(VENDOR_REGISTRY),
         default=None,
+        required=(argv is None),
         help="vendor key from vendor_config.py (defaults to legacy config when omitted)",
     )
     args = parser.parse_args(argv)
@@ -232,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         files.append(("Alfa", alfa_header, alfa, alfa_text))
     # The rules both files must satisfy are read from one file; under a single-platform run they are
     # read from THAT file, so uploading only Alfa still proves Alfa's Title, Description and SKU.
-    primary_label, primary_header, primary, primary_text = files[0]
+    primary_label, primary_header, primary, _primary_text = files[0]
 
     # Every row the pipeline flagged, by source row number.  The point of the
     # audit is that nothing is wrong *silently*: an anomaly a human has been
@@ -289,12 +297,25 @@ def main(argv: list[str] | None = None) -> int:
             return report()
 
     # ------------------------------------------------------- one line, quoted
-    bad_newline = [r["Variant SKU"] for r in primary
-                   if any("\n" in v or "\r" in v for v in r.values())]
+    bad_newline = [
+        f"{file_label} {r['Variant SKU']}" if len(files) > 1 else r["Variant SKU"]
+        for file_label, _header, file_rows, _text in files
+        for r in file_rows
+        if any("\n" in v or "\r" in v for v in r.values())
+    ]
     check(not bad_newline, "no cell contains a raw newline", f"{len(bad_newline)} bad")
-    check(all(line.count(",") >= 1 for line in primary_text.splitlines()[1:]),
-          "CSV is quoted with the real csv module")
-    check("\r\n" in primary_text or "\n" in primary_text, "output is CRLF-or-LF consistent")
+    check(
+        all(
+            line.count(",") >= 1
+            for _label, _header, _rows, text in files
+            for line in text.splitlines()[1:]
+        ),
+        "CSV is quoted with the real csv module",
+    )
+    check(
+        all("\r\n" in text or "\n" in text for _label, _header, _rows, text in files),
+        "output is CRLF-or-LF consistent",
+    )
 
     # ------------------------------------------------------------- identity
     skus = [r["Variant SKU"] for r in primary]
@@ -306,8 +327,14 @@ def main(argv: list[str] | None = None) -> int:
     if wants("digi") and wants("alfa"):
         check([r["Variant SKU"] for r in alfa] == skus, "both files carry the same SKUs, same order")
         check([r["Handle"] for r in alfa] == handles, "both files carry the same Handles")
-    check(all(r["Variant Barcode"] == r["Variant SKU"] == r["Variant Bin Number"]
-              for r in primary), "Barcode and Bin Number always equal the SKU")
+    check(
+        all(
+            r["Variant Barcode"] == r["Variant SKU"] == r["Variant Bin Number"]
+            for _label, _header, file_rows, _text in files
+            for r in file_rows
+        ),
+        "Barcode and Bin Number always equal the SKU",
+    )
     check(all(re.fullmatch(r"[A-Z0-9\-.]+", s) for s in skus),
           "SKUs are upper-case alphanumeric only", str([s for s in skus if not re.fullmatch(r"[A-Z0-9\-.]+", s)][:3]))
     check(all(re.fullmatch(r"[a-z0-9\-]+", h) for h in handles),
@@ -342,16 +369,27 @@ def main(argv: list[str] | None = None) -> int:
             all(r["Vendor"] == expected_alfa_vendor for r in alfa),
             "Alfa Vendor is the exact literal",
         )
-    # Both files carry these two columns out of the same record, so one file proves them.
     expected_qty = str(
         vendor_cfg.default_variant_quantity
         if vendor_cfg is not None
         else CONFIG.DEFAULT_VARIANT_QUANTITY
     )
-    check(all(r["Variant Quantity"] == expected_qty for r in primary),
-          f"quantity default is {expected_qty} everywhere")
-    check(all(r["Product ID"] == "" for r in primary),
-          "Product ID is left empty for the importer to assign")
+    check(
+        all(
+            r["Variant Quantity"] == expected_qty
+            for _label, _header, file_rows, _text in files
+            for r in file_rows
+        ),
+        f"quantity default is {expected_qty} everywhere",
+    )
+    check(
+        all(
+            r["Product ID"] == ""
+            for _label, _header, file_rows, _text in files
+            for r in file_rows
+        ),
+        "Product ID is left empty for the importer to assign",
+    )
 
     # -------------------------------------------------------- category shape
     if wants("digi"):
@@ -367,29 +405,41 @@ def main(argv: list[str] | None = None) -> int:
     # different set.  An id from the other store -- or from brands.py / categories.py's legacy
     # tables -- lands products in a category or under a brand the shop does not sell in, and
     # the importer accepts it silently.
-    if wants("alfa") and vendor_cfg is not None:
-        store_lists = {
-            "Category": set(vendor_cfg.alfa.categories.values()),
-            "Brands": {str(b) for b in vendor_cfg.alfa.brands.values()},
-        }
-        for cell_name, own_ids in store_lists.items():
-            borrowed = [
-                f"{r[cell_name]} for {r['Title'][:40]}"
-                for r in alfa
-                if r[cell_name] and r[cell_name] not in own_ids
-            ]
-            check(
-                not borrowed,
-                f"every Alfa {cell_name} id is one of {vendor_cfg.display_name}'s own "
-                f"{len(own_ids)} entries",
-                str(borrowed[:3]),
-            )
-    check(all(r["Brands"].isdigit() or r["Brands"] == "" for r in primary),
-          f"{primary_label} Brands is numeric or empty")
+    if vendor_cfg is not None:
+        platform_specs = [
+            ("digi", "DigiMall", digi, vendor_cfg.digi),
+            ("alfa", "Alfa", alfa, vendor_cfg.alfa),
+        ]
+        for plat_key, plat_label, plat_rows, plat_cfg in platform_specs:
+            if not wants(plat_key):
+                continue
+            store_lists = {
+                "Category": set(plat_cfg.categories.values()),
+                "Brands": {str(b) for b in plat_cfg.brands.values()},
+            }
+            for cell_name, own_ids in store_lists.items():
+                borrowed = [
+                    f"{r[cell_name]} for {r['Title'][:40]}"
+                    for r in plat_rows
+                    if r[cell_name] and r[cell_name] not in own_ids
+                ]
+                check(
+                    not borrowed,
+                    f"every {plat_label} {cell_name} id is one of {vendor_cfg.display_name}'s own "
+                    f"{len(own_ids)} entries",
+                    str(borrowed[:3]),
+                )
+    for file_label, _header, file_rows, _text in files:
+        check(
+            all(r["Brands"].isdigit() or r["Brands"] == "" for r in file_rows),
+            f"{file_label} Brands is numeric or empty",
+        )
 
     # ----------------------------------------------------------- description
     for file_label, _header, file_rows, _text in files:
         is_digi = (file_label == "DigiMall")
+        platform_key = "digi" if is_digi else "alfa"
+        template = template_for_cell(vendor_cfg, platform_key)
         problems: Counter[str] = Counter()
         offenders: dict[str, list[str]] = {}
         for source_row, r in enumerate(file_rows, start=2):
@@ -407,7 +457,10 @@ def main(argv: list[str] | None = None) -> int:
                 p[kind] += 1
                 o.setdefault(kind, []).append(title)
 
-            if not html.startswith("<table") or not html.endswith("</table>"):
+            if not (
+                html.lower().startswith(template.starts_with.lower())
+                and html.lower().endswith(template.ends_with.lower())
+            ):
                 note("description is not one complete table")
             if len(html.splitlines()) != 1:
                 note("description has a raw line break")
@@ -418,13 +471,21 @@ def main(argv: list[str] | None = None) -> int:
                 note("description has an empty cell")
             if "  " in re.sub(r"<[^>]+>", "", html):
                 note("description has a double space")
-            labels = re.findall(r"<tr><td[^>]*>(?:<strong>)?([^<]+)", html)
-            if not labels:
-                note("description has no specification rows")
-            if "Brand" not in labels and r["Title"]:
-                pass  # verified against the source below, where we know the Brand cell
-            if len(labels) != len(set(labels)):
-                note("description repeats a label")
+            try:
+                extracted_rows = template.extract(html)
+            except TemplateShapeError as exc:
+                note(f"description rejected by template {template.name}: {exc}")
+                extracted_rows = None
+            if extracted_rows is not None:
+                if any(not sr.value for sr in extracted_rows) and not re.search(r"<td[^>]*></td>", html):
+                    note("description has an empty cell")
+                labels = [sr.label for sr in extracted_rows]
+                if not labels:
+                    note("description has no specification rows")
+                if "Brand" not in labels and r["Title"]:
+                    pass  # verified against the source below, where we know the Brand cell
+                if len(labels) != len(set(labels)):
+                    note("description repeats a label")
 
             # Short Description and the Attribute_* columns are the two blocks of this loop that only
             # DigiMall ships; under an Alfa upload there is no such cell to be wrong about.
@@ -448,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
             # ceiling is the opposite case -- the fitter cut too little -- and it still stops an upload.
             if len(r["SEO Title"]) > CONFIG.SEO_TITLE_MAX:
                 note("SEO Title longer than the platform ceiling")
-            if not 151 <= len(r["SEO Description"]) <= 155:
+            if not CONFIG.SEO_DESC_MIN <= len(r["SEO Description"]) <= CONFIG.SEO_DESC_MAX:
                 note("SEO Description outside 151-155 characters")
 
             # tags
@@ -497,23 +558,31 @@ def main(argv: list[str] | None = None) -> int:
     # A search title under 65 characters is the sheet stating too little, and the formula the owner
     # ruled may add nothing but ` Price in Pakistan` to cover for it.  The count is printed so the
     # upload is never blocked by words the shop did not write; row_check.csv names every thin row.
-    thin_titles = sum(1 for r in primary if len(r["SEO Title"]) < CONFIG.SEO_TITLE_MIN)
-    check(True, f"{primary_label} thin search titles reported", f"{thin_titles} row(s) thin")
+    for file_label, _header, file_rows, _text in files:
+        thin_titles = sum(1 for r in file_rows if len(r["SEO Title"]) < CONFIG.SEO_TITLE_MIN)
+        check(True, f"{file_label} thin search titles reported", f"{thin_titles} row(s) thin")
 
     # --------------------------------------- facts must exist in the source
     invented: list[str] = []
     for file_label, _header, file_rows, _text in files:
+        platform_key = "digi" if file_label == "DigiMall" else "alfa"
+        template = template_for_cell(vendor_cfg, platform_key)
         for row, rec in zip(file_rows, source, strict=True):
             # Every cell of the source row is fair game, including the Brand column
             # that the display table's Brand row is filled from.
             text = "\n".join(rec.values()).lower()
-            for cells in re.findall(r"<tr>(.*?)</tr>", row["Description"]):
-                found = re.findall(r"<td[^>]*>(.*?)</td>", cells)
-                if len(found) != 2:
-                    continue
-                if "<strong>" in found[1]:
+            try:
+                spec_rows = template.extract(row["Description"])
+            except TemplateShapeError as exc:
+                prefix = f"{file_label} " if len(files) > 1 else ""
+                invented.append(
+                    f"{prefix}{row['Title'][:38]} -> template {template.name} extraction failed: {exc}"
+                )
+                continue
+            for spec_row in spec_rows:
+                if spec_row.is_warranty:
                     continue  # a warranty row, filled from warranty_terms.py
-                value = html_module.unescape(re.sub(r"<[^>]+>", "", found[1])).strip()
+                value = spec_row.value.strip()
                 if not value or value.isdigit() or len(value) < 3:
                     continue
                 # the value must appear in the source, allowing for whitespace runs
@@ -530,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                 # "WD-1051 HC").  So this row is checked word by word: every word
                 # must still come from the source, but the removed colour means the
                 # whole string will not appear verbatim.
-                label = html_module.unescape(re.sub(r"<[^>]+>", "", found[0])).strip().lower()
+                label = spec_row.label.strip().lower()
                 if label == "brand":
                     resolved_b = resolve_brand(
                         rec.get("Brand", ""), rec.get("Title", ""), vendor_cfg=vendor_cfg
@@ -550,53 +619,99 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(invented)} invented: {invented[:5]}")
 
     # ----------------------------------- Title tokens must exist in source
+    omit_color_categories: set[str] | frozenset[str] = (
+        vendor_cfg.omit_title_color_categories
+        if vendor_cfg is not None
+        else getattr(CONFIG, "OMIT_TITLE_COLOR_CATEGORIES", frozenset())
+    )
     title_bad: list[str] = []
-    for row, rec in zip(primary, source, strict=True):
-        title = row["Title"]
-        if len(title) > CONFIG.TITLE_MAX:
-            title_bad.append(f"{title[:40]} (too long)")
-        if re.search(r"\s{2,}", title):
-            title_bad.append(f"{title[:40]} (double space)")
-        if title != title.strip():
-            title_bad.append(f"{title[:40]} (untrimmed)")
-        # The Title must carry the model the row SHIPS, and the pipeline peels the technology
-        # words in front of a written-in code before it publishes one: `Model: Twin Inverter IOT
-        # HRF-538TIFBU` is the shop's sentence about his machine, and `HRF-538TIFBU` is its code.
-        # Re-deriving the raw line here demanded words the formula spends on other slots.
-        model = without_leading_type_words(extract_model(rec["Title"], rec["Description"]))
-        if model.code and model.code.replace(" ", "").lower() not in title.replace(" ", "").lower():
-            title_bad.append(f"{title[:40]} (model {model.code!r} missing)")
+    for file_label, _header, file_rows, _text in files:
+        prefix = f"{file_label} " if len(files) > 1 else ""
+        title_plat_cfg = (
+            (vendor_cfg.digi if file_label == "DigiMall" else vendor_cfg.alfa)
+            if vendor_cfg is not None
+            else None
+        )
+        for row, rec in zip(file_rows, source, strict=True):
+            title = row["Title"]
+            seo_title = row.get("SEO Title", "")
+            if len(title) > CONFIG.TITLE_MAX:
+                title_bad.append(f"{prefix}{title[:40]} (too long)")
+            if re.search(r"\s{2,}", title):
+                title_bad.append(f"{prefix}{title[:40]} (double space)")
+            if title != title.strip():
+                title_bad.append(f"{prefix}{title[:40]} (untrimmed)")
+            # The Title must carry the model the row SHIPS, and the pipeline peels the technology
+            # words in front of a written-in code before it publishes one: `Model: Twin Inverter IOT
+            # HRF-538TIFBU` is the shop's sentence about his machine, and `HRF-538TIFBU` is its code.
+            # Re-deriving the raw line here demanded words the formula spends on other slots.
+            model = without_leading_type_words(extract_model(rec["Title"], rec["Description"]))
+            if model.code and model.code.replace(" ", "").lower() not in title.replace(" ", "").lower():
+                title_bad.append(f"{prefix}{title[:40]} (model {model.code!r} missing)")
+            if row.get("Product Type", "") in omit_color_categories:
+                shipped_color = row.get("Option1 Value", "").strip()
+                if shipped_color and re.search(rf"\b{re.escape(shipped_color)}\b", title, re.IGNORECASE):
+                    title_bad.append(
+                        f"{prefix}{title[:40]} (color {shipped_color!r} present in omitted category)"
+                    )
+            if title_plat_cfg is not None:
+                if not title_plat_cfg.include_warranty:
+                    if re.search(r"\bwarrant(?:y|ies)\b", title, re.IGNORECASE):
+                        title_bad.append(f"{prefix}{title[:40]} (warranty present when excluded)")
+                    if re.search(r"\bwarrant(?:y|ies)\b", seo_title, re.IGNORECASE):
+                        title_bad.append(f"{prefix}{seo_title[:40]} (SEO Title warranty present when excluded)")
+                if (
+                    not title_plat_cfg.include_inverter
+                    and row.get("Product Type", "") in INVERTER_CONCEPT_CATEGORIES
+                ):
+                    if re.search(r"\b(?:non-?)?inverter\b", title, re.IGNORECASE):
+                        title_bad.append(f"{prefix}{title[:40]} (inverter present when excluded)")
+                    if re.search(r"\b(?:non-?)?inverter\b", seo_title, re.IGNORECASE):
+                        title_bad.append(f"{prefix}{seo_title[:40]} (SEO Title inverter present when excluded)")
     check(not title_bad, f"every Title is <={CONFIG.TITLE_MAX} chars, single-spaced and carries its model code",
           f"{len(title_bad)}: {title_bad[:4]}")
 
-    missing_brand_row = [
-        (f"{file_label} {row['Title'][:34]}" if len(files) > 1 else row["Title"][:40])
-        for file_label, _header, file_rows, _text in files
-        for row, rec in zip(file_rows, source, strict=True)
-        if rec.get("Brand", "").strip() and "Brand" not in row["Description"]
-    ]
+    missing_brand_row: list[str] = []
+    for file_label, _header, file_rows, _text in files:
+        platform_key = "digi" if file_label == "DigiMall" else "alfa"
+        template = template_for_cell(vendor_cfg, platform_key)
+        for row, rec in zip(file_rows, source, strict=True):
+            if not rec.get("Brand", "").strip():
+                continue
+            try:
+                row_labels = {sr.label for sr in template.extract(row["Description"])}
+            except TemplateShapeError:
+                row_labels = set()
+            if "Brand" not in row_labels:
+                missing_brand_row.append(
+                    f"{file_label} {row['Title'][:34]}" if len(files) > 1 else row["Title"][:40]
+                )
     check(not missing_brand_row, "every row with a named brand shows a Brand row",
           str(missing_brand_row[:3]))
 
     # ------------------------------------------- Variant Weight is never guessed
     weight_bad: list[str] = []
     weight_invented: list[str] = []
-    for row_number, (file_row, rec) in enumerate(zip(primary, source, strict=True), start=2):
-        text = f"{rec['Title'].strip()}\n{rec['Description']}"
-        expected, expected_unit = source_weight(rec, text)
-        shown = file_row["Variant Weight"]
-        unit = file_row["Variant Weight Unit"]
-        if shown and unit not in ("kg", "g", "lb", "oz"):
-            weight_bad.append(f"row {row_number}: unit {unit!r} is not one the platforms accept")
-        if shown:
-            try:
-                float(shown)
-            except ValueError:
-                weight_bad.append(f"row {row_number}: weight {shown!r} is not a number")
-        if expected and shown != expected:
-            weight_bad.append(f"row {row_number}: source says {expected} {expected_unit}, file says {shown!r}")
-        if shown and not expected:
-            weight_invented.append(f"row {row_number}: {shown!r} appears in no source cell")
+    for file_label, _header, file_rows, _text in files:
+        prefix = f"{file_label} " if len(files) > 1 else ""
+        for row_number, (file_row, rec) in enumerate(zip(file_rows, source, strict=True), start=2):
+            text = f"{rec['Title'].strip()}\n{rec['Description']}"
+            expected, expected_unit = source_weight(rec, text)
+            shown = file_row["Variant Weight"]
+            unit = file_row["Variant Weight Unit"]
+            if shown and unit not in ("kg", "g", "lb", "oz"):
+                weight_bad.append(f"{prefix}row {row_number}: unit {unit!r} is not one the platforms accept")
+            if shown:
+                try:
+                    float(shown)
+                except ValueError:
+                    weight_bad.append(f"{prefix}row {row_number}: weight {shown!r} is not a number")
+            if expected and shown != expected:
+                weight_bad.append(
+                    f"{prefix}row {row_number}: source says {expected} {expected_unit}, file says {shown!r}"
+                )
+            if shown and not expected:
+                weight_invented.append(f"{prefix}row {row_number}: {shown!r} appears in no source cell")
     if wants("digi") and wants("alfa"):
         # One product, two files: the same machine cannot weigh two things.  This is a cross-file
         # rule, so it is only a rule when this run uploads to both.
@@ -639,25 +754,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     colour_invented: list[str] = []
     colour_cut: list[str] = []
-    for row_number, (row, rec) in enumerate(zip(primary, source, strict=True), start=2):
-        shipped = row.get("Option1 Value", "").strip()
-        stated = re.sub(r"\s+", " ", f"{rec['Title']}\n{rec['Description']}").lower()
-        stated = stated.replace("gray", "grey")
-        # A documented default for a whole Product Type (`LED TV` is Black in Pakistan) is a config
-        # choice the owner can read and edit -- not a word this file pulled out of thin air.
-        defaulted = shipped == colour_defaults.get(row.get("Product Type", ""), "")
-        if shipped and not defaulted:
-            for word in shipped.lower().replace("gray", "grey").split():
-                if word not in stated:
-                    colour_invented.append(
-                        f"row {row_number}: {shipped!r} -- {word!r} appears in no source cell"
-                    )
-                    break
-        painted = color_in_title(rec["Title"])
-        if painted and shipped and not names_the_same_colour(painted, shipped):
-            colour_cut.append(
-                f"row {row_number}: the Title says {painted!r}, the file ships {shipped!r}"
-            )
+    for file_label, _header, file_rows, _text in files:
+        prefix = f"{file_label} " if len(files) > 1 else ""
+        for row_number, (row, rec) in enumerate(zip(file_rows, source, strict=True), start=2):
+            shipped = row.get("Option1 Value", "").strip()
+            stated = re.sub(r"\s+", " ", f"{rec['Title']}\n{rec['Description']}").lower()
+            stated = stated.replace("gray", "grey")
+            # A documented default for a whole Product Type (`LED TV` is Black in Pakistan) is a config
+            # choice the owner can read and edit -- not a word this file pulled out of thin air.
+            defaulted = shipped == colour_defaults.get(row.get("Product Type", ""), "")
+            if shipped and not defaulted:
+                for word in shipped.lower().replace("gray", "grey").split():
+                    if word not in stated:
+                        colour_invented.append(
+                            f"{prefix}row {row_number}: {shipped!r} -- {word!r} appears in no source cell"
+                        )
+                        break
+            painted = color_in_title(rec["Title"])
+            if painted and shipped and not names_the_same_colour(painted, shipped):
+                colour_cut.append(
+                    f"{prefix}row {row_number}: the Title says {painted!r}, the file ships {shipped!r}"
+                )
     check(not colour_invented, "every colour the file ships is a colour the row stated",
           f"{len(colour_invented)}: {colour_invented[:3]}")
     check(not colour_cut,
@@ -670,21 +787,23 @@ def main(argv: list[str] | None = None) -> int:
     # keeps it that way: any row that ships the phrase must have written it somewhere.
     freezer_re = re.compile(r"freezer[\s\- ]*on[\s\- ]*top", re.IGNORECASE)
     freezer_invented: list[str] = []
-    for row_number, (row, rec) in enumerate(zip(primary, source, strict=True), start=2):
-        if freezer_re.search(f"{rec['Title']}\n{rec['Description']}\n{rec['Categories']}"):
-            continue
-        for cell in ("Title", "Attribute_Refrigerator Type"):
-            if freezer_re.search(row.get(cell, "")):
-                freezer_invented.append(
-                    f"row {row_number}: {cell} says Freezer-On-Top, no source cell does"
-                )
-                break
+    for file_label, _header, file_rows, _text in files:
+        prefix = f"{file_label} " if len(files) > 1 else ""
+        for row_number, (row, rec) in enumerate(zip(file_rows, source, strict=True), start=2):
+            if freezer_re.search(f"{rec['Title']}\n{rec['Description']}\n{rec['Categories']}"):
+                continue
+            for cell in ("Title", "Attribute_Refrigerator Type"):
+                if freezer_re.search(row.get(cell, "")):
+                    freezer_invented.append(
+                        f"{prefix}row {row_number}: {cell} says Freezer-On-Top, no source cell does"
+                    )
+                    break
     check(not freezer_invented, "no freezer placement the row does not state itself",
           f"{len(freezer_invented)}: {freezer_invented[:3]}")
 
     # ------------------------------------------- warranty matches the table
     warranty_bad: list[str] = []
-    for row_number, (row, rec) in enumerate(zip(primary, source, strict=True), start=2):
+    for row_number, (_row, rec) in enumerate(zip(primary, source, strict=True), start=2):
         text = f"{rec['Title'].strip()}\n{rec['Description']}"
         resolved_brand = resolve_brand(
             rec["Brand"], rec["Title"], vendor_cfg=vendor_cfg
@@ -696,9 +815,17 @@ def main(argv: list[str] | None = None) -> int:
         product_type, _ = resolve_product_type(
             category, resolved_brand.raw, vendor_cfg=vendor_cfg
         )
-        warranty_rows, headline, _src = resolve_warranty(text, brand, product_type)
+        warranty_rows, headline, _src = resolve_warranty(
+            text,
+            brand,
+            product_type,
+            apply_tv_warranty_table=(
+                vendor_cfg.apply_tv_warranty_table if vendor_cfg is not None else None
+            ),
+        )
         if wants("digi"):
-            shown = row["Attribute_Warranty"]
+            digi_row = digi[row_number - 2]
+            shown = digi_row["Attribute_Warranty"]
             # The cell never holds the headline itself: it holds the platform's word for it, chosen
             # out of the closed list.  `Lifetime` answers the warranty question but the list has no
             # such option, so the pipeline ships the cell empty and names the row in the QC report
@@ -707,16 +834,29 @@ def main(argv: list[str] | None = None) -> int:
             listed, _signal = match_warranty(headline)
             if (listed or "") != shown:
                 warranty_bad.append(
-                    f"{row['Title'][:34]} pipeline says {listed!r} file says {shown!r}"
+                    f"{digi_row['Title'][:34]} pipeline says {listed!r} file says {shown!r}"
                 )
             elif headline and listed is None and "Attribute_Warranty" not in attribute_gaps.get(
                 row_number, set()
             ):
-                warranty_bad.append(f"{row['Title'][:34]} {headline!r} left the cell empty, no flag")
+                warranty_bad.append(f"{digi_row['Title'][:34]} {headline!r} left the cell empty, no flag")
         for file_label, _header, file_rows, _text in files:
             file_row = file_rows[row_number - 2]
+            platform_key = "digi" if file_label == "DigiMall" else "alfa"
+            template = template_for_cell(vendor_cfg, platform_key)
+            try:
+                extracted_specs = template.extract(file_row["Description"])
+            except TemplateShapeError as exc:
+                prefix = f"{file_label} " if len(files) > 1 else ""
+                warranty_bad.append(
+                    f"{prefix}{file_row['Title'][:34]} template {template.name} extraction failed: {exc}"
+                )
+                continue
             for spec in warranty_rows:
-                if spec.label not in file_row["Description"] and spec.value not in file_row["Description"]:
+                if not any(
+                    sr.label == spec.label and sr.value == spec.value
+                    for sr in extracted_specs
+                ):
                     prefix = f"{file_label} " if len(files) > 1 else ""
                     warranty_bad.append(f"{prefix}{file_row['Title'][:34]} warranty row {spec.label!r} missing")
     check(not warranty_bad,
@@ -732,7 +872,7 @@ def main(argv: list[str] | None = None) -> int:
             gated.append(("digi", digi))
         if wants("alfa"):
             gated.append(("alfa", alfa))
-        write_evidence(args.evidence, source, gated)
+        write_evidence(args.evidence, source, gated, vendor_cfg=vendor_cfg)
 
     # ------------------------------------------------------------ report
     return report()

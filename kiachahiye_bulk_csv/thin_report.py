@@ -40,8 +40,11 @@ from config import (
     THIN_SHORT_BULLETS,
     THIN_SPEC_ROWS,
 )
+from description_builder import SPEC_TABLE, DescriptionTemplate
 from main import read_input
 from models import InputRow
+from vendor_config import VENDOR_REGISTRY, get_vendor
+from writers import template_for_cell
 
 HEADER = [
     "Row",
@@ -116,7 +119,10 @@ def read_output(path: Path) -> list[dict[str, str]]:
         return [dict(zip(header, values)) for values in reader if values]  # noqa: B905
 
 
-def read_listing_facts(path: Path) -> dict[int, tuple[int, int | None, str]]:
+def read_listing_facts(
+    path: Path,
+    template: DescriptionTemplate = SPEC_TABLE,
+) -> dict[int, tuple[int, int | None, str]]:
     """``sheet row number -> (spec rows shown, short-description bullets, type)``.
 
     Row numbers start at 2 to match ``read_input`` and the QC report: the first
@@ -128,8 +134,9 @@ def read_listing_facts(path: Path) -> dict[int, tuple[int, int | None, str]]:
     for index, row in enumerate(read_output(path), start=2):
         html = row["Description"]
         short = row.get("Short Description")
+        spec_rows = template.extract(html)
         facts[index] = (
-            len(_SPEC_ROW_RE.findall(html)),
+            len(spec_rows),
             len(_BULLET_RE.findall(short)) if short is not None else None,
             row["Product Type"].strip(),
         )
@@ -218,10 +225,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--qc", type=Path, default=QC_REPORT)
     parser.add_argument("--out", type=Path, default=THIN_REPORT)
+    parser.add_argument(
+        "--vendor",
+        choices=list(VENDOR_REGISTRY),
+        default=None,
+        help="vendor key from vendor_config.py",
+    )
+    parser.add_argument(
+        "--platform",
+        choices=("digi", "alfa"),
+        default=None,
+        help="platform of the built upload file (inferred from --built path when omitted)",
+    )
     args = parser.parse_args(argv)
 
+    vendor_cfg = get_vendor(args.vendor) if args.vendor is not None else None
+    platform_key = (
+        args.platform
+        if args.platform is not None
+        else (
+            "alfa"
+            if "alfa" in args.built.name.lower()
+            or "alfa" in [part.lower() for part in args.built.parts]
+            else "digi"
+        )
+    )
+    template = template_for_cell(vendor_cfg, platform_key)
     parsed = read_input(args.input)
-    rows = build_rows(parsed, read_listing_facts(args.built), read_flags(args.qc))
+    rows = build_rows(
+        parsed,
+        read_listing_facts(args.built, template=template),
+        read_flags(args.qc),
+    )
     write_report(args.out, rows)
     print_summary(rows, len(parsed), args.out)
     return 0

@@ -538,8 +538,11 @@ def main() -> int:
         py, "audit.py", "--input", str(sheet), "--vendor", vendor_key, *uploads,
         "--qc", str(qc), "--evidence", str(evidence), "--platform", platform,
     ]
-    thin_cmd = [py, "thin_report.py", "--input", str(sheet), "--built", str(paths[scope[0]]),
-                "--qc", str(qc), "--out", str(thin)]
+    thin_cmd = [
+        py, "thin_report.py", "--input", str(sheet), "--built", str(paths[scope[0]]),
+        "--qc", str(qc), "--out", str(thin),
+        "--vendor", vendor_key, "--platform", scope[0],
+    ]
 
     stages = [
         (
@@ -560,6 +563,7 @@ def main() -> int:
     ]
     total = len(stages)
     results: list[StageResult] = []
+    results_by_kind: dict[str, StageResult] = {}
     started = time.time()
     blocked = False
     audit_failed = False
@@ -586,6 +590,7 @@ def main() -> int:
                     res.detail = f"{m.group(1)} flagged (advisory)" if m else "advisory"
             finish_line(ui, i, total, res)
             results.append(res)
+            results_by_kind[kind] = res
         total_time = time.time() - started
         log.write(f"\nTotal: {total_time:.1f}s\n")
 
@@ -599,7 +604,7 @@ def main() -> int:
         tail = [ln for ln in r.output.splitlines() if ln.strip()][-18:]
         ui.box(f"{t.bad} STAGE FAILED: {r.name}", [t.paint(ln[: WIDTH - 6], t.red) for ln in tail], t.red)
         ui.write(f"  {t.paint('Full log:', t.grey)} {log_path}")
-        if audit_fails and r is results[2]:
+        if audit_fails and r is results_by_kind.get("audit"):
             ui.write()
             ui.box(f"AUDIT FAILURES  ·  {scope_phrase}",
                    [t.paint(x[: WIDTH - 6], t.red) for x in audit_fails[:15]], t.red)
@@ -635,7 +640,7 @@ def main() -> int:
             f"{t.paint(pad('Source rows', 20), t.grey)} {rows_in:,}",
             *(f"{t.paint(pad(f'{label} rows', 20), t.grey)} {count:,}"
               for label, count in rows_out.items()),
-            f"{t.paint(pad('Audit', 20), t.grey)} {results[2].detail} "
+            f"{t.paint(pad('Audit', 20), t.grey)} {results_by_kind['audit'].detail} "
             f"{t.paint(f'· {scope_phrase}', t.grey)}",
             f"{t.paint(pad('Total run time', 20), t.grey)} {fmt_time(total_time)}",
         ]

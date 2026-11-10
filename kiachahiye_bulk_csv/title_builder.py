@@ -1991,7 +1991,7 @@ def _strip_excluded_tokens(
             flags=re.IGNORECASE,
         )
         cleaned = re.sub(
-            r"\b\d+\s*(?:years?|yrs?|months?)\s+(?:compressor\s+|motor\s+)?warranty\b",
+            r"\b\d+\s*(?:years?|yrs?|months?)\s+(?:(?:compressor|motor|panel|pcb|parts|general|service|official|brand)\s+)?warranty\b",
             "",
             cleaned,
             flags=re.IGNORECASE,
@@ -2015,6 +2015,8 @@ def build_title(
     title_formula: str | TitleFormulaFn = "standard",
     include_inverter: bool = True,
     include_warranty: bool = True,
+    omit_color_categories: set[str] | frozenset[str] | None = None,
+    apply_tv_warranty_table: bool | None = None,
 ) -> TitleResult:
     """Build one Title using our formula.
 
@@ -2037,12 +2039,24 @@ def build_title(
     active_strict_rebuild = getattr(config, "STRICT_TITLE_REBUILD", STRICT_TITLE_REBUILD)
     if strict_rebuild is None:
         strict_rebuild = active_strict_rebuild
-    active_omit_categories = getattr(config, "OMIT_TITLE_COLOR_CATEGORIES", OMIT_TITLE_COLOR_CATEGORIES)
+    active_omit_categories = (
+        getattr(config, "OMIT_TITLE_COLOR_CATEGORIES", OMIT_TITLE_COLOR_CATEGORIES)
+        if omit_color_categories is None
+        else omit_color_categories
+    )
     active_title_max = getattr(config, "TITLE_MAX", TITLE_MAX)
 
     text = f"{source_title}\n{source_description}"
     raw_warranty = (
-        (resolve_main_warranty(text, brand, product_type) or "")
+        (
+            resolve_main_warranty(
+                text,
+                brand,
+                product_type,
+                apply_tv_warranty_table=apply_tv_warranty_table,
+            )
+            or ""
+        )
         if warranty is None
         else warranty
     )
