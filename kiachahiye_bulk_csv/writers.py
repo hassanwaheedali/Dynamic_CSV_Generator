@@ -197,6 +197,10 @@ def build_digi_row(
     """Project one ProductRecord into DigiMall's 66-column schema (section 2A)."""
     vendor = vendor_cfg.digi.vendor_name if vendor_cfg is not None else getattr(config, "VENDOR_DIGI", VENDOR_DIGI)
     values = _record_common(record, vendor)
+    if record.title_digi:
+        values["Title"] = record.title_digi
+    if record.seo_title_digi:
+        values["SEO Title"] = record.seo_title_digi
     values["Description"] = _description_cell(record, vendor_cfg, "digi")
     values["Brands"] = "" if record.brand.digi_id is None else str(record.brand.digi_id)
     values["Category"] = record.category.digi_path or ""
@@ -218,6 +222,10 @@ def build_alfa_row(
     """
     vendor = vendor_cfg.alfa.vendor_name if vendor_cfg is not None else getattr(config, "VENDOR_ALFA", VENDOR_ALFA)
     values = _record_common(record, vendor)
+    if record.title_alfa:
+        values["Title"] = record.title_alfa
+    if record.seo_title_alfa:
+        values["SEO Title"] = record.seo_title_alfa
     values["Description"] = _description_cell(record, vendor_cfg, "alfa")
     values["Brands"] = "" if record.brand.alfa_id is None else str(record.brand.alfa_id)
     # Alfa's Category is the BARE LEAF ID only -- never a joined path.

@@ -740,7 +740,7 @@ _NOT_A_NAME_WORDS: frozenset[str] = (
     | TYPE_WORDS
     | frozenset(BASE_COLORS)
     | {
-        "inverter", "non", "series", "model", "type", "size", "capacity", "brand",
+        "inverter", "non", "non-inverter", "series", "model", "type", "size", "capacity", "brand",
         "google", "android", "qled", "oled", "uhd", "fhd", "hd", "smart", "digital",
         "manual", "semi", "fully", "automatic", "auto", "top", "front", "load",
         "loading", "door", "doors", "glass", "single", "double", "triple", "side",
@@ -1974,6 +1974,32 @@ def _apply_formula(
     )
 
 
+def _strip_excluded_tokens(
+    text: str, *, include_inverter: bool, include_warranty: bool
+) -> str:
+    """Strip excluded inverter and/or warranty phrases from a title or fragment (DRY)."""
+    cleaned = text
+    if not include_inverter:
+        cleaned = NON_INVERTER_RE.sub("", cleaned)
+        cleaned = INVERTER_RE.sub("", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|")
+    if not include_warranty:
+        cleaned = re.sub(
+            r"\s*[-\u2013\u2014|]\s*[^-\u2013\u2014|]*\b(?:warrant\w*|guarantee\w*)\b[^-\u2013\u2014|]*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\b\d+\s*(?:years?|yrs?|months?)\s+(?:compressor\s+|motor\s+)?warranty\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|")
+    return cleaned
+
+
 def build_title(
     brand: str,
     extraction: ModelExtraction,
@@ -1987,6 +2013,8 @@ def build_title(
     capacity: str | None = None,
     identity: str | None = None,
     title_formula: str | TitleFormulaFn = "standard",
+    include_inverter: bool = True,
+    include_warranty: bool = True,
 ) -> TitleResult:
     """Build one Title using our formula.
 
@@ -2013,8 +2041,11 @@ def build_title(
     active_title_max = getattr(config, "TITLE_MAX", TITLE_MAX)
 
     text = f"{source_title}\n{source_description}"
-    if warranty is None:
-        warranty = resolve_main_warranty(text, brand, product_type) or ""
+    raw_warranty = (
+        (resolve_main_warranty(text, brand, product_type) or "")
+        if warranty is None
+        else warranty
+    )
 
     taps = extract_taps(text)
     if capacity is None:
@@ -2030,9 +2061,9 @@ def build_title(
         capacity = taps
 
     color = find_full_color(text, source_title) or ""
-    inverter = ""
-    if product_type in INVERTER_CONCEPT_CATEGORIES:
-        inverter = extract_inverter(text)
+    raw_inverter = (
+        extract_inverter(text) if product_type in INVERTER_CONCEPT_CATEGORIES else ""
+    )
 
     corpus_series: str | None = None
     carried_subtype = ""
@@ -2049,7 +2080,7 @@ def build_title(
             curated = extract_series(
                 text,
                 model=extraction.code,
-                banned=frozenset(word.lower() for word in f"{color} {warranty}".split())
+                banned=frozenset(word.lower() for word in f"{color} {raw_warranty}".split())
                 | colourway_words(source_title, color),
                 product_type=product_type,
             )
@@ -2075,7 +2106,7 @@ def build_title(
     # a row shadowing itself.  Read before the rebuild test, because a row kept from source still
     # has a Title, and he is owed the truth about his line either way.
     said_already = " ".join(
-        (brand, capacity, title_color, color, inverter, product_type, extraction.code, warranty)
+        (brand, capacity, title_color, color, raw_inverter, product_type, extraction.code, raw_warranty)
     )
     kept_words, label_note = subtype_line_words(label_value, said_already, product_type)
     answers, list_overruled, list_conflicts = extract_subtype_groups(
@@ -2153,13 +2184,17 @@ def build_title(
         brand=brand,
         capacity=capacity,
         color=color,
-        inverter=inverter,
+        inverter=raw_inverter,
         model=extraction.code,
         description=source_description,
         series=corpus_series,
         absorbed=absorbed,
-        warranty=warranty,
+        warranty=raw_warranty,
     )
+
+    # Apply platform exclusion rules only after feature/subtype extraction has consumed all raw tokens.
+    inverter = raw_inverter if include_inverter else ""
+    warranty = raw_warranty if include_warranty else ""
 
     # A word the old leftover-word reader sold as a series is a TYPE the platform enumerates, and it
     # has to stay in the Title or DigiMall's Type column falls to empty -- so it moves to the slot
@@ -2243,7 +2278,11 @@ def build_title(
                 identity_printed = identity
         feature_slot = ""
         if feature:
-            clean_feat = clean_inline(feature)
+            clean_feat = _strip_excluded_tokens(
+                clean_inline(feature),
+                include_inverter=include_inverter,
+                include_warranty=include_warranty,
+            )
             # What the Title prints so far, GROWING as words are accepted.  It used to be a snapshot
             # taken before any of the slot's own words went in, so a name slot handed the same phrase
             # by two readers walked straight through it: `... - HMW-30AFR Air Fryer Air Fryer`.
@@ -2396,8 +2435,10 @@ def build_title(
             )
             if piece
         )
-        seo_base = " - ".join(
-            piece for piece in (seo_head, deduped_slots["capacity"]) if piece
+        seo_base = _strip_excluded_tokens(
+            " - ".join(piece for piece in (seo_head, deduped_slots["capacity"]) if piece),
+            include_inverter=include_inverter,
+            include_warranty=include_warranty,
         )
     else:
         usp_tokens_tuple = ()
@@ -2405,6 +2446,11 @@ def build_title(
         if product_type in active_omit_categories and color:
             base_title = re.sub(rf"\b{re.escape(color)}\b", "", base_title, flags=re.IGNORECASE)
             base_title = re.sub(r"\s{2,}", " ", base_title).strip()
+        base_title = _strip_excluded_tokens(
+            base_title,
+            include_inverter=include_inverter,
+            include_warranty=include_warranty,
+        )
         if warranty:
             clean_warr = clean_inline(warranty)
             if clean_warr.lower() not in base_title.lower():
@@ -2435,6 +2481,16 @@ def build_title(
             label_note = "its words were cut by the Title's length limit"
         else:
             label_note = "states only words this Title already prints"
+    accounted_title = " ".join(
+        filter(
+            None,
+            (
+                title,
+                raw_inverter if not include_inverter else "",
+                raw_warranty if not include_warranty else "",
+            ),
+        )
+    )
     return TitleResult(
         title=title,
         strategy=strategy,
@@ -2446,7 +2502,7 @@ def build_title(
         # dedupe swallowed, or a Title kept from source, is not a name the shop read from the vote.
         series_name=corpus_series if name_printed and corpus_series else "",
         series_earned_by=series_earned_by if name_printed else "",
-        dropped_words=dropped_words(source_title, title),
+        dropped_words=dropped_words(source_title, accounted_title),
         identity_token=identity_printed,
         warranty_token=warranty,
         subtype_token=subtype if subtype_printed else "",

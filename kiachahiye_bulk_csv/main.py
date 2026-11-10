@@ -23,7 +23,7 @@ import config as CONFIG
 from attributes import build_attributes
 from brands import resolve_brand
 from categories import resolve_category, resolve_product_type
-from description_builder import build_description_bundle, mentions_subtype
+from description_builder import build_description_bundle, build_seo_title, mentions_subtype
 from models import InputRow, ProductRecord
 from pricing import resolve_prices, resolve_quantity
 from qc_report import (
@@ -369,16 +369,45 @@ def resolve_row(
         model = extraction.code
         used = extraction
 
-    title_formula = vendor_cfg.title_formula if vendor_cfg is not None else "standard"
+    base_formula = vendor_cfg.title_formula if vendor_cfg is not None else "standard"
     strict_rebuild = (
         vendor_cfg.strict_title_rebuild if vendor_cfg is not None else None
     )
-    title_result = build_title(
+
+    digi_cfg = vendor_cfg.digi if vendor_cfg is not None else None
+    alfa_cfg = vendor_cfg.alfa if vendor_cfg is not None else None
+
+    digi_formula = (digi_cfg.title_formula or base_formula) if digi_cfg else base_formula
+    alfa_formula = (alfa_cfg.title_formula or base_formula) if alfa_cfg else base_formula
+    digi_inverter = digi_cfg.include_inverter if digi_cfg is not None else True
+    digi_warranty = digi_cfg.include_warranty if digi_cfg is not None else True
+    alfa_inverter = alfa_cfg.include_inverter if alfa_cfg is not None else True
+    alfa_warranty = alfa_cfg.include_warranty if alfa_cfg is not None else True
+
+    title_result_digi = build_title(
         effective_brand, used, product_type, row.title, row.description,
         strict_rebuild=strict_rebuild,
         analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
-        title_formula=title_formula,
+        title_formula=digi_formula,
+        include_inverter=digi_inverter,
+        include_warranty=digi_warranty,
     )
+    if (alfa_formula, alfa_inverter, alfa_warranty) == (
+        digi_formula,
+        digi_inverter,
+        digi_warranty,
+    ):
+        title_result_alfa = title_result_digi
+    else:
+        title_result_alfa = build_title(
+            effective_brand, used, product_type, row.title, row.description,
+            strict_rebuild=strict_rebuild,
+            analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
+            title_formula=alfa_formula,
+            include_inverter=alfa_inverter,
+            include_warranty=alfa_warranty,
+        )
+    title_result = title_result_digi
     if title_result.strategy == "kept-with-light-cleanup":
         flags.flag(
             row.row_number, row.title, CAT_TITLE_FALLBACK,
@@ -443,6 +472,10 @@ def resolve_row(
             f"`Color: {title_result.color_token}` on the row to settle it.",
         )
 
+    feature_tokens = [
+        title_result_digi.subtype_token,
+        title_result_digi.capacity_token,
+    ]
     description = build_description_bundle(
         brand=effective_brand,
         model=model if used.confidence != "none" else "",
@@ -452,18 +485,14 @@ def resolve_row(
         capacity=title_result.capacity_token,
         warranty_rows=warranty_rows,
         description=row.description,
-        title=title_result.seo_base_title or title_result.title,
+        title=title_result_digi.seo_base_title or title_result_digi.title,
         has_real_model=used.confidence != "none",
-        feature_tokens=[
-            # The search base carries four facts -- brand, code, sub-type, type -- plus the size it is
-            # sold by, and the first four are what a buyer types.  So the sub-type words go first when
-            # the base is over budget, and the size goes after them: the same order the shop Title's
-            # tail rule already proved on 116 rows, where a cut that ate the tail cost `Warranty`.
-            # The colour, the inverter and the name-and-number are no longer in this string at all, so
-            # handing them here would only invite a cut through a word that is not there.
-            title_result.subtype_token,
-            title_result.capacity_token,
-        ],
+        feature_tokens=feature_tokens,
+    )
+    seo_title_digi = description.seo_title
+    seo_title_alfa = build_seo_title(
+        title_result_alfa.seo_base_title or title_result_alfa.title,
+        [title_result_alfa.subtype_token, title_result_alfa.capacity_token],
     )
     if description.thin:
         flags.flag(
@@ -496,7 +525,7 @@ def resolve_row(
         )
 
     attributes, unmatched = build_attributes(
-        title=title_result.title,
+        title=title_result_alfa.title,
         description=row.description,
         product_type=product_type,
         warranty_headline=warranty_headline,
@@ -588,7 +617,11 @@ def resolve_row(
     return ProductRecord(
         row_number=row.row_number,
         source=row,
-        title=title_result.title,
+        title=title_result_digi.title,
+        title_digi=title_result_digi.title,
+        title_alfa=title_result_alfa.title,
+        seo_title_digi=seo_title_digi,
+        seo_title_alfa=seo_title_alfa,
         product_type=product_type,
         product_type_inferred=inferred,
         description=description,
@@ -613,13 +646,13 @@ def resolve_row(
         model_confidence=used.confidence,
         warranty_source=warranty_source,
         variant_suffix=variant_suffix,
-        series_token=title_result.series_token,
-        subtype_from=title_result.subtype_from,
-        title_strategy=title_result.strategy,
-        capacity_token=title_result.capacity_token,
-        color_token=title_result.color_token,
-        inverter_token=title_result.inverter_token,
-        dropped_words=title_result.dropped_words,
+        series_token=title_result_alfa.series_token or title_result_digi.series_token,
+        subtype_from=title_result_digi.subtype_from,
+        title_strategy=title_result_digi.strategy,
+        capacity_token=title_result_digi.capacity_token,
+        color_token=title_result_digi.color_token,
+        inverter_token=title_result_alfa.inverter_token,
+        dropped_words=title_result_digi.dropped_words,
     )
 
 

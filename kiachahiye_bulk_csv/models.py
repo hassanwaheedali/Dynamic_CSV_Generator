@@ -133,6 +133,12 @@ class ProductRecord:
     # --- platform-only values (DigiMall) --------------------------------
     attributes: dict[str, str] = field(default_factory=dict)
 
+    # --- per-platform title & seo overrides (empty falls back to shared title/seo_title) ---
+    title_digi: str = ""
+    title_alfa: str = ""
+    seo_title_digi: str = ""
+    seo_title_alfa: str = ""
+
     # --- provenance used by the QC report --------------------------------
     model: str = ""
     model_source: str = ""

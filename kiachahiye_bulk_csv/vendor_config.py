@@ -45,6 +45,9 @@ class PlatformConfig:
     # One cell's value moves one file: two stores naming the same template share it,
     # and a store that says nothing ships the spec table the shop has always uploaded.
     description_template: str | DescriptionTemplate = "spec_table"
+    title_formula: str | TitleFormula | None = None
+    include_inverter: bool = True
+    include_warranty: bool = True
 
 
 @dataclass(frozen=True)
@@ -205,6 +208,9 @@ KIACHAHIYE = VendorConfig(
     product_type_map=dict(_SHARED_PRODUCT_TYPE_MAP),
     digi=PlatformConfig(
         vendor_name="KiaChahiye PVT LTD",
+        title_formula="standard",
+        include_inverter=False,
+        include_warranty=False,
         brands={
             "gree": 3790,
             "ecostar": 3789,
@@ -322,6 +328,9 @@ AJMER = VendorConfig(
     product_type_map=dict(_SHARED_PRODUCT_TYPE_MAP),
     digi=PlatformConfig(
         vendor_name="Ajmer PVT LTD",  # TODO: confirm exact DigiMall vendor string when ready
+        title_formula="standard",
+        include_inverter=False,
+        include_warranty=False,
         brands={
             # TODO: fill from DigiMall admin panel for Ajmer's seller account
         },
