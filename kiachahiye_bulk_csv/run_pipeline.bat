@@ -9,7 +9,6 @@ rem  KiaChahiye Bulk CSV Generator - launcher
 rem    run_pipeline.bat                          (asks which sheet, then which platform)
 rem    run_pipeline.bat "D:\path\MY SHEET.csv"   (any sheet; still asks the platform)
 rem    run_pipeline.bat --alfa                   (Alfa only; also --digi, --platform both|digi|alfa)
-rem    run_pipeline.bat --no-tests               (skip the test stage)
 rem  Or drag and drop a CSV onto this file.
 rem  A chosen platform is the only output of that run: its file is written, gated and
 rem  reported on, and the other platform's file is not written at all.

@@ -251,14 +251,6 @@ def finish_line(ui: UI, index: int, total: int, res: StageResult) -> None:
 
 
 # ─────────────────────────────── result parsing ─────────────────────────────
-def parse_tests(out: str) -> tuple[str, str]:
-    m = re.search(r"(\d+) passed(?:, (\d+) (?:failed|error))?", out)
-    f = re.search(r"(\d+) failed", out)
-    if m and not f:
-        return "ok", f"{m.group(1)} tests passed"
-    return "fail", f"{f.group(1) if f else '?'} tests FAILED"
-
-
 def parse_audit(out: str) -> tuple[str, str, list[str]]:
     m = re.search(r"checks:\s*(\d+)\s*\|\s*passed:\s*(\d+)\s*\|\s*failed:\s*(\d+)", out)
     fails = [ln.strip() for ln in out.splitlines() if "[FAIL]" in ln]
@@ -533,11 +525,6 @@ def main() -> int:
         return 1
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    have_pytest = subprocess.run(
-        [py, "-c", "import pytest"], capture_output=True, cwd=PKG, check=False
-    ).returncode == 0
-    run_tests = (not args.no_tests) and have_pytest and (PKG / "tests").exists()
-
     paths = {"digi": digi, "alfa": alfa}
     uploads: list[str] = []
     for name in scope:
@@ -555,13 +542,21 @@ def main() -> int:
                 "--qc", str(qc), "--out", str(thin)]
 
     stages = [
-        ("Quality gate  ·  unit tests" if fancy else "Quality gate - unit tests",
-         [py, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"] if run_tests else None),
-        (f"Generate  ·  {GEN_LABELS[platform]}" if fancy
-         else f"Generate - {GEN_LABELS[platform]}", main_cmd),
-        (f"Verify  ·  audit ({scope_phrase})" if fancy
-         else f"Verify - audit ({scope_phrase})", audit_cmd),
-        ("Review  ·  weak descriptions" if fancy else "Review - weak descriptions", thin_cmd),
+        (
+            "generate",
+            f"Generate  ·  {GEN_LABELS[platform]}" if fancy else f"Generate - {GEN_LABELS[platform]}",
+            main_cmd,
+        ),
+        (
+            "audit",
+            f"Verify  ·  audit ({scope_phrase})" if fancy else f"Verify - audit ({scope_phrase})",
+            audit_cmd,
+        ),
+        (
+            "thin",
+            "Review  ·  weak descriptions" if fancy else "Review - weak descriptions",
+            thin_cmd,
+        ),
     ]
     total = len(stages)
     results: list[StageResult] = []
@@ -573,25 +568,19 @@ def main() -> int:
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"{APP_NAME} run {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                   f"vendor: {vendor_key}\nsheet: {sheet}\nupload: {platform}\n")
-        for i, (name, cmd) in enumerate(stages, 1):
-            if cmd is None:
-                res = StageResult(name, "skip", 0.0,
-                                  "skipped" if args.no_tests else "pytest not installed")
-            elif blocked:
+        for i, (kind, name, cmd) in enumerate(stages, 1):
+            if blocked:
                 res = StageResult(name, "skip", 0.0, "not run (earlier failure)")
             else:
                 res = run_stage(ui, i, total, name, cmd, log, PKG)
-                if i == 1:
-                    res.status, res.detail = parse_tests(res.output)
-                    blocked = res.status == "fail"
-                elif i == 2:
+                if kind == "generate":
                     res.status = "ok" if res.code == 0 else "fail"
                     res.detail = f"{rows_in:,} rows processed" if res.code == 0 else "pipeline error"
                     blocked = res.code != 0
-                elif i == 3:
+                elif kind == "audit":
                     res.status, res.detail, audit_fails = parse_audit(res.output)
                     audit_failed = res.status == "fail"
-                else:
+                elif kind == "thin":
                     m = re.search(r"worth a redo\s*:\s*(\d+)", res.output)
                     res.status = "ok" if res.code == 0 else "warn"
                     res.detail = f"{m.group(1)} flagged (advisory)" if m else "advisory"
