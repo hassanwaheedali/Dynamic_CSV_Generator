@@ -55,7 +55,10 @@ def test_ac_breadcrumbs_need_text_inverter_signal() -> None:
     """DigiMall splits Inverter / Non-Invertor; the breadcrumb never says which."""
     breadcrumb = "Electronics / Home appliances / AC / AC's 2026 / Gree AC 2026"
     inverter = resolve_category(breadcrumb, "Gree Zeno DC Inverter Split AC", "")
-    alfa_ac = CATEGORY_ALFA_IDS.get("ac") or CATEGORY_ALFA_IDS.get("air conditioner") or CATEGORY_ALFA_IDS.get("air conditioners alfabnpl")
+    alfa_ac = (
+        CATEGORY_ALFA_IDS.get("ac") or CATEGORY_ALFA_IDS.get("air conditioner")
+        or CATEGORY_ALFA_IDS.get("air conditioners alfabnpl")
+    )
     assert inverter.digi_path == CATEGORY_DIGI_PATHS["ac inverter"]
     assert inverter.alfa_id == alfa_ac
 
@@ -69,7 +72,10 @@ def test_ac_silent_on_inverter_leaves_digi_blank_but_alfa_resolves() -> None:
     breadcrumb = "Electronics / Home appliances / AC"
     resolved = resolve_category(breadcrumb, "Dawlance Infinity Pro Split AC 1 Ton", "")
     assert resolved.digi_path is None
-    alfa_ac = CATEGORY_ALFA_IDS.get("ac") or CATEGORY_ALFA_IDS.get("air conditioner") or CATEGORY_ALFA_IDS.get("air conditioners alfabnpl")
+    alfa_ac = (
+        CATEGORY_ALFA_IDS.get("ac") or CATEGORY_ALFA_IDS.get("air conditioner")
+        or CATEGORY_ALFA_IDS.get("air conditioners alfabnpl")
+    )
     assert resolved.alfa_id == alfa_ac
     assert "inverter" in resolved.reason.lower()
     assert resolve_product_type(resolved, "Dawlance")[0] == "Air Conditioner"

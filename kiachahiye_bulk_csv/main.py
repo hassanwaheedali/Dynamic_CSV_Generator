@@ -23,7 +23,7 @@ import config as CONFIG
 from attributes import build_attributes
 from brands import resolve_brand
 from categories import resolve_category, resolve_product_type
-from description_builder import build_description_bundle, build_seo_title, mentions_subtype
+from description_builder import build_description_bundle, mentions_subtype
 from models import InputRow, ProductRecord
 from pricing import resolve_prices, resolve_quantity
 from qc_report import (
@@ -79,12 +79,13 @@ from textutils import (
     strip_markup_keep_lines,
 )
 from title_builder import (
-    build_title,
     extract_inverter,
+    extract_title_slots,
+    render_title_and_seo_from_slots,
     without_leading_type_words,
     word_identity,
 )
-from vendor_config import VENDOR_REGISTRY, VendorConfig, description_cell_label, get_vendor
+from vendor_config import VENDOR_REGISTRY, VendorConfig, description_cell_label, get_vendor, resolve_cell
 from warranty import TERM_LINES, resolve_warranty
 from writers import (
     ALFA_HEADER,
@@ -375,54 +376,17 @@ def resolve_row(
         model = extraction.code
         used = extraction
 
-    base_formula = vendor_cfg.title_formula if vendor_cfg is not None else "standard"
-    strict_rebuild = (
-        vendor_cfg.strict_title_rebuild if vendor_cfg is not None else None
-    )
-    omit_color_categories = (
-        vendor_cfg.omit_title_color_categories if vendor_cfg is not None else None
-    )
-    apply_tv_warranty_table = (
-        vendor_cfg.apply_tv_warranty_table if vendor_cfg is not None else None
-    )
-
-    digi_cfg = vendor_cfg.digi if vendor_cfg is not None else None
-    alfa_cfg = vendor_cfg.alfa if vendor_cfg is not None else None
-
-    digi_formula = (digi_cfg.title_formula or base_formula) if digi_cfg else base_formula
-    alfa_formula = (alfa_cfg.title_formula or base_formula) if alfa_cfg else base_formula
-    digi_inverter = digi_cfg.include_inverter if digi_cfg is not None else True
-    digi_warranty = digi_cfg.include_warranty if digi_cfg is not None else True
-    alfa_inverter = alfa_cfg.include_inverter if alfa_cfg is not None else True
-    alfa_warranty = alfa_cfg.include_warranty if alfa_cfg is not None else True
-
-    title_result_digi = build_title(
+    digi_cfg = resolve_cell(vendor_cfg, "digi")
+    alfa_cfg = resolve_cell(vendor_cfg, "alfa")
+    apply_tv_warranty_table = digi_cfg.apply_tv_warranty_table
+    alfa_inverter = alfa_cfg.include_inverter
+    slots = extract_title_slots(
         effective_brand, used, product_type, row.title, row.description,
-        strict_rebuild=strict_rebuild,
         analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
-        title_formula=digi_formula,
-        include_inverter=digi_inverter,
-        include_warranty=digi_warranty,
-        omit_color_categories=omit_color_categories,
         apply_tv_warranty_table=apply_tv_warranty_table,
     )
-    if (alfa_formula, alfa_inverter, alfa_warranty) == (
-        digi_formula,
-        digi_inverter,
-        digi_warranty,
-    ):
-        title_result_alfa = title_result_digi
-    else:
-        title_result_alfa = build_title(
-            effective_brand, used, product_type, row.title, row.description,
-            strict_rebuild=strict_rebuild,
-            analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
-            title_formula=alfa_formula,
-            include_inverter=alfa_inverter,
-            include_warranty=alfa_warranty,
-            omit_color_categories=omit_color_categories,
-            apply_tv_warranty_table=apply_tv_warranty_table,
-        )
+    title_result_digi, seo_title_digi = render_title_and_seo_from_slots(slots, digi_cfg)
+    title_result_alfa, seo_title_alfa = render_title_and_seo_from_slots(slots, alfa_cfg)
     title_result = title_result_digi
     if title_result.strategy == "kept-with-light-cleanup":
         flags.flag(
@@ -507,11 +471,7 @@ def resolve_row(
         title=title_result_digi.seo_base_title or title_result_digi.title,
         has_real_model=used.confidence != "none",
         feature_tokens=feature_tokens,
-    )
-    seo_title_digi = description.seo_title
-    seo_title_alfa = build_seo_title(
-        title_result_alfa.seo_base_title or title_result_alfa.title,
-        [title_result_alfa.subtype_token, title_result_alfa.capacity_token],
+        resolved_seo_title=seo_title_digi,
     )
     if description.thin:
         flags.flag(
@@ -570,11 +530,7 @@ def resolve_row(
         )
 
     price, compare_at = resolve_prices(row, flags)
-    default_qty = (
-        vendor_cfg.default_variant_quantity
-        if vendor_cfg is not None
-        else getattr(CONFIG, "DEFAULT_VARIANT_QUANTITY", 20)
-    )
+    default_qty = digi_cfg.default_variant_quantity
     quantity = resolve_quantity(row, flags, default_quantity=default_qty)
 
     weight, weight_unit, _source = resolve_weight(text, row.weight, row.weight_unit)
@@ -600,7 +556,7 @@ def resolve_row(
     )
     variant_suffix = format_variant(variant_tokens)
 
-    sku_prefix = vendor_cfg.sku_prefix if vendor_cfg is not None else None
+    sku_prefix = digi_cfg.sku_prefix
     if not finalise:
         sku_registry.register_base(build_sku_token(model, prefix=sku_prefix))
         handle_registry.register_base(build_handle_token(model, product_type))
@@ -632,11 +588,7 @@ def resolve_row(
                 f"Handle disambiguated with the variant suffix: {handle}",
             )
 
-    color_defaults = (
-        vendor_cfg.default_product_type_colors
-        if vendor_cfg is not None
-        else getattr(CONFIG, "DEFAULT_PRODUCT_TYPE_COLORS", {})
-    )
+    color_defaults = digi_cfg.default_product_type_colors
     option1_color = title_result.color_token or color_defaults.get(product_type, "")
 
     return ProductRecord(

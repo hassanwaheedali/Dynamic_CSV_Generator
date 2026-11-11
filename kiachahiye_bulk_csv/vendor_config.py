@@ -17,14 +17,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import TypedDict, TypeVar
 
+import brands as brand_tables
+import categories as category_tables
+import config
+import sku_handle
 from description_builder import (
     DescriptionTemplate,
     template_for,
     template_problems,
 )
+from title_builder import TITLE_FORMULAS
 
 TitleFormula = Callable[[dict[str, str]], str]
 
@@ -44,10 +51,12 @@ class PlatformConfig:
     # description_builder.DESCRIPTION_TEMPLATES, or a DescriptionTemplate written here.
     # One cell's value moves one file: two stores naming the same template share it,
     # and a store that says nothing ships the spec table the shop has always uploaded.
-    description_template: str | DescriptionTemplate = "spec_table"
+    description_template: str | DescriptionTemplate | None = None
     title_formula: str | TitleFormula | None = None
-    include_inverter: bool = True
-    include_warranty: bool = True
+    include_inverter: bool | None = None
+    include_warranty: bool | None = None
+    omit_title_color_categories: frozenset[str] | None = None
+    strict_title_rebuild: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -64,17 +73,139 @@ class VendorConfig:
     alfa_segment_aliases: dict[str, str] = field(default_factory=dict)
     product_type_map: dict[str, str] = field(default_factory=dict)
     # Optional title-formula override: "standard" | "brand_first_extended" | custom callable
-    title_formula: str | TitleFormula = "standard"
+    title_formula: str | TitleFormula | None = None
     # Numeric and rule defaults
     default_variant_quantity: int = 20
     default_product_type_colors: dict[str, str] = field(
         default_factory=lambda: {"LED TV": "Black"}
     )
-    omit_title_color_categories: frozenset[str] = field(
-        default_factory=lambda: frozenset({"LED TV"})
-    )
-    strict_title_rebuild: bool = True
+    omit_title_color_categories: frozenset[str] | None = None
+    strict_title_rebuild: bool | None = None
     apply_tv_warranty_table: bool = True
+    description_template: str | DescriptionTemplate | None = None
+    include_inverter: bool | None = None
+    include_warranty: bool | None = None
+
+
+class CellDefaults(TypedDict, total=False):
+    """Only presentation settings inherit; marketplace IDs never do."""
+
+    title_formula: str | TitleFormula | None
+    description_template: str | DescriptionTemplate | None
+    include_inverter: bool | None
+    include_warranty: bool | None
+    omit_title_color_categories: frozenset[str] | None
+    strict_title_rebuild: bool | None
+
+
+PLATFORM_DEFAULTS: dict[str, CellDefaults] = {"digi": {}, "alfa": {}}
+
+
+@dataclass(frozen=True)
+class ResolvedCellConfig:
+    """Effective values for one cell, with independent read-only mapping snapshots.
+
+    Raw VendorConfig/PlatformConfig values are declarations: None means inherit.
+    Consumers read this object instead. TV warranty extraction remains vendor-scoped.
+    """
+
+    platform: str
+    vendor_name: str
+    sku_prefix: str
+    title_formula: str | TitleFormula
+    description_template: str | DescriptionTemplate
+    include_inverter: bool
+    include_warranty: bool
+    omit_title_color_categories: frozenset[str]
+    strict_title_rebuild: bool
+    brands: Mapping[str, int]
+    categories: Mapping[str, str]
+    brand_aliases: Mapping[str, str]
+    brand_display_map: Mapping[str, str]
+    category_segment_aliases: Mapping[str, str]
+    product_type_map: Mapping[str, str]
+    default_product_type_colors: Mapping[str, str]
+    default_variant_quantity: int
+    apply_tv_warranty_table: bool
+
+
+_T = TypeVar("_T")
+
+
+def _inherit(cell: _T | None, vendor: _T | None, platform: _T | None, engine: _T) -> _T:
+    for value in (cell, vendor, platform):
+        if value is not None:
+            return value
+    return engine
+
+
+def resolve_cell(vendor_cfg: VendorConfig | None, platform: str) -> ResolvedCellConfig:
+    """Resolve Cell > Vendor > Platform > Engine without truthiness or hidden state.
+
+    Legacy callers with no vendor retain their engine tables. A configured vendor
+    always owns its cell's IDs, including explicit empty maps. No result is cached.
+    """
+    if platform not in ("digi", "alfa"):
+        raise KeyError(platform)
+    defaults = PLATFORM_DEFAULTS[platform] if vendor_cfg is not None else CellDefaults()
+    unknown = set(defaults) - set(CellDefaults.__annotations__)
+    if unknown:
+        raise ConfigError(f"{platform} platform defaults cannot contain: {', '.join(sorted(unknown))}")
+    cell = getattr(vendor_cfg, platform) if vendor_cfg is not None else None
+    return ResolvedCellConfig(
+        platform=platform,
+        vendor_name=cell.vendor_name if cell is not None else getattr(config, f"VENDOR_{platform.upper()}"),
+        sku_prefix=vendor_cfg.sku_prefix if vendor_cfg is not None else sku_handle.SKU_PREFIX,
+        title_formula=_inherit(
+            cell.title_formula if cell else None, vendor_cfg.title_formula if vendor_cfg else None,
+            defaults.get("title_formula"), "standard",
+        ),
+        description_template=_inherit(
+            cell.description_template if cell else None, vendor_cfg.description_template if vendor_cfg else None,
+            defaults.get("description_template"), "spec_table",
+        ),
+        include_inverter=_inherit(
+            cell.include_inverter if cell else None, vendor_cfg.include_inverter if vendor_cfg else None,
+            defaults.get("include_inverter"), True,
+        ),
+        include_warranty=_inherit(
+            cell.include_warranty if cell else None, vendor_cfg.include_warranty if vendor_cfg else None,
+            defaults.get("include_warranty"), True,
+        ),
+        omit_title_color_categories=frozenset(_inherit(
+            cell.omit_title_color_categories if cell else None,
+            vendor_cfg.omit_title_color_categories if vendor_cfg else None,
+            defaults.get("omit_title_color_categories"), frozenset(config.OMIT_TITLE_COLOR_CATEGORIES),
+        )),
+        strict_title_rebuild=_inherit(
+            cell.strict_title_rebuild if cell else None, vendor_cfg.strict_title_rebuild if vendor_cfg else None,
+            defaults.get("strict_title_rebuild"), config.STRICT_TITLE_REBUILD,
+        ),
+        brands=MappingProxyType(dict(
+            cell.brands if cell else (brand_tables.BRANDS_DIGI if platform == "digi" else brand_tables.BRANDS_ALFA)
+        )),
+        categories=MappingProxyType(dict(
+            cell.categories if cell else (
+                category_tables.CATEGORY_DIGI_PATHS if platform == "digi" else category_tables.CATEGORY_ALFA_IDS
+            )
+        )),
+        brand_aliases=MappingProxyType(dict(vendor_cfg.brand_aliases if vendor_cfg else brand_tables.BRAND_ALIASES)),
+        brand_display_map=MappingProxyType(dict(
+            vendor_cfg.brand_display_map if vendor_cfg else brand_tables.BRAND_DISPLAY_MAP
+        )),
+        category_segment_aliases=MappingProxyType(dict(
+            (getattr(vendor_cfg, f"{platform}_segment_aliases") if vendor_cfg else None)
+            or (category_tables.DIGI_SEGMENT_ALIASES if platform == "digi" else category_tables.ALFA_SEGMENT_ALIASES)
+        )),
+        product_type_map=MappingProxyType(dict(
+            (vendor_cfg.product_type_map if vendor_cfg else None) or category_tables.PRODUCT_TYPE_MAP
+        )),
+        default_product_type_colors=MappingProxyType(dict(
+            vendor_cfg.default_product_type_colors if vendor_cfg else config.DEFAULT_PRODUCT_TYPE_COLORS
+        )),
+        default_variant_quantity=vendor_cfg.default_variant_quantity if vendor_cfg else config.DEFAULT_VARIANT_QUANTITY,
+        apply_tv_warranty_table=vendor_cfg.apply_tv_warranty_table if vendor_cfg else config.APPLY_TV_WARRANTY_TABLE,
+    )
 
 
 _SHARED_BRAND_ALIASES: dict[str, str] = {
@@ -208,6 +339,7 @@ KIACHAHIYE = VendorConfig(
     product_type_map=dict(_SHARED_PRODUCT_TYPE_MAP),
     digi=PlatformConfig(
         vendor_name="KiaChahiye PVT LTD",
+        description_template="spec_table",
         title_formula="standard",
         include_inverter=False,
         include_warranty=False,
@@ -255,6 +387,8 @@ KIACHAHIYE = VendorConfig(
     alfa=PlatformConfig(
         vendor_name="Kia Chahiye Pvt Ltd",
         description_template="kiachahiye_alfa_card",
+        include_inverter=True,
+        include_warranty=True,
         brands={
             "super general": 4133,
             "midea": 3821,
@@ -328,6 +462,7 @@ AJMER = VendorConfig(
     product_type_map=dict(_SHARED_PRODUCT_TYPE_MAP),
     digi=PlatformConfig(
         vendor_name="Ajmer PVT LTD",  # TODO: confirm exact DigiMall vendor string when ready
+        description_template="spec_table",
         title_formula="standard",
         include_inverter=False,
         include_warranty=False,
@@ -340,6 +475,9 @@ AJMER = VendorConfig(
     ),
     alfa=PlatformConfig(
         vendor_name="Ajmer Electronics",
+        description_template="spec_table",
+        include_inverter=True,
+        include_warranty=True,
         brands={
             # Ajmer's Alfa brand list, exactly as the platform returns it.  Kept as its own
             # dict rather than shared with KiaChahiye even while the two agree: the day one
@@ -402,11 +540,9 @@ def _description_template_errors(cfg: VendorConfig, platform: str) -> list[str]:
     stop the run at the terminal, naming the exact cell to edit -- not sit unaudited
     in a live listing.
     """
-    cell = getattr(cfg, platform)
     label = description_cell_label(cfg, platform)
-    value = cell.description_template
     try:
-        template = template_for(value)
+        template = template_for(resolve_cell(cfg, platform).description_template)
     except ValueError as error:
         return [f"{label} -- {error}"]
     try:
@@ -440,6 +576,12 @@ def validate_vendor_cfg(cfg: VendorConfig) -> None:
         )
     for platform in ("digi", "alfa"):
         errors.extend(_description_template_errors(cfg, platform))
+        formula = resolve_cell(cfg, platform).title_formula
+        if not callable(formula) and formula not in TITLE_FORMULAS:
+            errors.append(
+                f"{cfg.display_name}.{platform}.title_formula -- unknown formula {formula!r}; "
+                f"TITLE_FORMULAS holds {', '.join(sorted(TITLE_FORMULAS))}"
+            )
     if errors:
         raise ConfigError(
             f"VendorConfig '{cfg.display_name}' is invalid:\n"

@@ -15,7 +15,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import Pipeline
 
 import main
 import thin_report
@@ -40,6 +39,7 @@ from description_builder import (
 )
 from models import DescriptionBundle, SpecRow
 from qc_report import QCFlagCollector
+from tests.conftest import Pipeline
 from textutils import clean_inline
 from vendor_config import KIACHAHIYE
 from writers import _single_line, build_alfa_row, build_digi_row

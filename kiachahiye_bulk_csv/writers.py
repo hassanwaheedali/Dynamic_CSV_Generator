@@ -21,12 +21,12 @@ import csv
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import config
 from config import VENDOR_ALFA as VENDOR_ALFA  # edit in config.py
 from config import VENDOR_DIGI as VENDOR_DIGI
-from description_builder import SPEC_TABLE, DescriptionTemplate, template_for
+from description_builder import DescriptionTemplate, template_for
 from models import AlfaOutputRow, DigiOutputRow, ProductRecord
 from textutils import clean_inline
+from vendor_config import resolve_cell
 
 if TYPE_CHECKING:
     from vendor_config import VendorConfig
@@ -132,11 +132,7 @@ def template_for_cell(vendor_cfg: VendorConfig | None, platform: str) -> Descrip
     test, or a bare ``python main.py`` before a store is picked -- ships SPEC_TABLE, the table
     every cell has always uploaded.
     """
-    if vendor_cfg is None:
-        return SPEC_TABLE
-    # The two cells, named -- a platform spelled wrong here is a KeyError, not a silent fallback.
-    cell = {"digi": vendor_cfg.digi, "alfa": vendor_cfg.alfa}[platform]
-    return template_for(cell.description_template)
+    return template_for(resolve_cell(vendor_cfg, platform).description_template)
 
 
 def _description_cell(record: ProductRecord, vendor_cfg: VendorConfig | None, platform: str) -> str:
@@ -195,7 +191,7 @@ def build_digi_row(
     vendor_cfg: VendorConfig | None = None,
 ) -> DigiOutputRow:
     """Project one ProductRecord into DigiMall's 66-column schema (section 2A)."""
-    vendor = vendor_cfg.digi.vendor_name if vendor_cfg is not None else getattr(config, "VENDOR_DIGI", VENDOR_DIGI)
+    vendor = resolve_cell(vendor_cfg, "digi").vendor_name
     values = _record_common(record, vendor)
     if record.title_digi:
         values["Title"] = record.title_digi
@@ -220,7 +216,7 @@ def build_alfa_row(
     No Short Description, no Commission Percentage, and none of the 36
     Attribute_* columns exist in this file.
     """
-    vendor = vendor_cfg.alfa.vendor_name if vendor_cfg is not None else getattr(config, "VENDOR_ALFA", VENDOR_ALFA)
+    vendor = resolve_cell(vendor_cfg, "alfa").vendor_name
     values = _record_common(record, vendor)
     if record.title_alfa:
         values["Title"] = record.title_alfa

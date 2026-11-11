@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import attributes
 import config
@@ -51,6 +51,9 @@ from textutils import (
     find_full_color,
 )
 from warranty import resolve_main_warranty
+
+if TYPE_CHECKING:
+    from vendor_config import ResolvedCellConfig
 
 # ---------------------------------------------------------------------------
 #  EDIT HERE -- title shaping rules
@@ -1764,36 +1767,8 @@ def _value_parts(label: str, val: str) -> list[str]:
     return [_usp_text(p) for p in parts]
 
 
-def extract_usps(
-    source_title: str,
-    source_description: str,
-    product_type: str,
-    said_already: str,
-    max_usps: int = 3,
-) -> tuple[str, ...]:
-    """Extract up to ``max_usps`` high-converting, non-redundant USP phrases purely dynamically.
-
-    Universal Semantic Feature Discovery (USFD):
-    Zero hardcoding & Zero invention: reads exclusively from ``description_builder.parse_description``:
-      1. Genuine marketing bullet highlights from ``parsed.key_features``.
-         - Drops negative claims ("3D: No", "8K: No", "N/A").
-         - Promotes positive booleans ("Google Assistant: Yes" -> "Google Assistant").
-         - Discards spec parameter questions ("Screen Size: 32"").
-      2. Non-parameter marketing feature rows from ``parsed.labelled``.
-         - Never extracts technical table question labels as USPs.
-         - Promotes non-boolean feature values ("Cooling Technology: No Frost" -> "No Frost").
-         - Splits multi-value feature cells on commas and semicolons.
-
-    Args:
-        source_title: Raw product title from the input sheet.
-        source_description: Raw product description from the input sheet.
-        product_type: Resolved canonical product type (e.g. "Air Conditioner").
-        said_already: Text of tokens already printed in Segment 1 / Model for deduplication.
-        max_usps: Maximum number of USP phrases to return (default 3).
-
-    Returns:
-        A tuple of up to ``max_usps`` clean USP strings. Empty tuple if no valid USPs survive.
-    """
+def _extract_usp_candidates(source_description: str) -> tuple[str, ...]:
+    """Read source-backed USP candidates once, before cell-specific deduplication."""
     if not source_description:
         return ()
 
@@ -1847,6 +1822,13 @@ def extract_usps(
                 candidates.append(sub)
         continue
 
+    return tuple(candidates)
+
+
+def _select_usps(
+    candidates: tuple[str, ...], product_type: str, said_already: str, max_usps: int = 3,
+) -> tuple[str, ...]:
+    """Fit the original ordered candidates against this cell's printed facts."""
     if not candidates:
         return ()
 
@@ -1893,85 +1875,114 @@ def extract_usps(
     return tuple(selected)
 
 
+def extract_usps(
+    source_title: str,
+    source_description: str,
+    product_type: str,
+    said_already: str,
+    max_usps: int = 3,
+) -> tuple[str, ...]:
+    """Compatibility API: discover source-backed USPs and select non-redundant phrases."""
+    return _select_usps(_extract_usp_candidates(source_description), product_type, said_already, max_usps)
+
+
 TitleFormulaFn = Callable[[dict[str, str]], str]
 
 
-def _apply_formula(
-    slots: dict[str, str],
-    formula: str | TitleFormulaFn,
-) -> str:
-    """Apply a vendor-specific formula to the extracted, deduplicated title slots."""
-    if callable(formula):
-        return formula(slots)
-    if formula == "vip_pipe":
-        color_paren = f"({slots['color']})" if slots.get("color") else ""
-        seg1 = " ".join(
+def _formula_vip_pipe(slots: dict[str, str]) -> str:
+    color_paren = f"({slots['color']})" if slots.get("color") else ""
+    seg1 = " ".join(
+        t
+        for t in (
+            slots["brand"],
+            slots["capacity"],
+            slots.get("front_identity", ""),
+            slots["inverter"],
+            slots["subtype"],
+            slots["product_type"],
+            color_paren,
+        )
+        if t
+    ).strip()
+    # The protected-tail path has already budgeted the source's exact USP text.
+    # Splitting it again would turn source pipes into separators and consume the
+    # warranty's reserved space. The unprotected legacy path still normalizes them.
+    if "vip_head" in slots:
+        usp_list = [slots["usps"]] if slots["usps"] else []
+    else:
+        usp_list = [u.strip() for u in slots.get("usps", "").split("|") if u.strip()]
+    pipe_parts = [
+        slots.get("vip_head", seg1),
+        slots.get("back_model", "").strip(),
+        *usp_list,
+        slots["warranty"].strip(),
+    ]
+    return " | ".join(p for p in pipe_parts if p)
+
+
+def _formula_standard(slots: dict[str, str]) -> str:
+    segments = [s for s in (slots["part1"], slots["part2"], slots["part3"]) if s]
+    return " - ".join(segments)
+
+
+def _formula_brand_first_extended(slots: dict[str, str]) -> str:
+    if slots["model"]:
+        model_tok = slots["model"]
+        brand_tok = slots["brand"]
+        if brand_tok:
+            prefix_re = re.compile(
+                rf"^{re.escape(brand_tok)}(?:\s+|\s*-\s*)", re.IGNORECASE
+            )
+            stripped = prefix_re.sub("", model_tok).strip()
+            if stripped:
+                model_tok = stripped
+        head = " ".join(t for t in (brand_tok, model_tok) if t).strip()
+        body = " ".join(
             t
             for t in (
-                slots["brand"],
                 slots["capacity"],
-                slots.get("front_identity", ""),
+                slots["color"],
                 slots["inverter"],
                 slots["subtype"],
                 slots["product_type"],
-                color_paren,
+                slots["feature"],
             )
             if t
         ).strip()
-        usp_list = [u.strip() for u in slots.get("usps", "").split("|") if u.strip()]
-        pipe_parts = [
-            seg1,
-            slots.get("back_model", "").strip(),
-            *usp_list,
-            slots["warranty"].strip(),
-        ]
-        return " | ".join(p for p in pipe_parts if p)
-    if formula == "standard":
-        segments = [s for s in (slots["part1"], slots["part2"], slots["part3"]) if s]
-        return " - ".join(segments)
-    if formula in ("brand_first_extended", "ajmer_variant"):
-        if slots["model"]:
-            model_tok = slots["model"]
-            brand_tok = slots["brand"]
-            if brand_tok:
-                prefix_re = re.compile(
-                    rf"^{re.escape(brand_tok)}(?:\s+|\s*-\s*)", re.IGNORECASE
-                )
-                stripped = prefix_re.sub("", model_tok).strip()
-                if stripped:
-                    model_tok = stripped
-            head = " ".join(t for t in (brand_tok, model_tok) if t).strip()
-            body = " ".join(
-                t
-                for t in (
-                    slots["capacity"],
-                    slots["color"],
-                    slots["inverter"],
-                    slots["subtype"],
-                    slots["product_type"],
-                    slots["feature"],
-                )
-                if t
-            ).strip()
-        else:
-            head = " ".join(
-                t
-                for t in (
-                    slots["brand"],
-                    slots["product_type"],
-                    slots["subtype"],
-                    slots["capacity"],
-                    slots["color"],
-                    slots["inverter"],
-                )
-                if t
-            ).strip()
-            body = slots["feature"].strip()
-        tail = slots["warranty"].strip()
-        return " - ".join(s for s in (head, body, tail) if s)
-    raise ValueError(
-        f"Unknown title_formula {formula!r}. Add it to title_builder._apply_formula."
-    )
+    else:
+        head = " ".join(
+            t
+            for t in (
+                slots["brand"],
+                slots["product_type"],
+                slots["subtype"],
+                slots["capacity"],
+                slots["color"],
+                slots["inverter"],
+            )
+            if t
+        ).strip()
+        body = slots["feature"].strip()
+    tail = slots["warranty"].strip()
+    return " - ".join(s for s in (head, body, tail) if s)
+
+
+TITLE_FORMULAS: dict[str, TitleFormulaFn] = {
+    "standard": _formula_standard,
+    "brand_first_extended": _formula_brand_first_extended,
+    "ajmer_variant": _formula_brand_first_extended,
+    "vip_pipe": _formula_vip_pipe,
+}
+
+
+def _apply_formula(slots: dict[str, str], formula: str | TitleFormulaFn) -> str:
+    if callable(formula):
+        return formula(slots)
+    try:
+        render = TITLE_FORMULAS[formula]
+    except KeyError:
+        raise ValueError(f"Unknown title_formula {formula!r}. Add it to TITLE_FORMULAS.") from None
+    return render(slots)
 
 
 def _strip_excluded_tokens(
@@ -2000,52 +2011,50 @@ def _strip_excluded_tokens(
     return cleaned
 
 
-def build_title(
+@dataclass(frozen=True)
+class TitleSlots:
+    """Extracted facts shared by cell renders; no policy, corpus handles, or mutable state."""
+
+    brand: str
+    extraction: ModelExtraction
+    product_type: str
+    source_title: str
+    capacity: str
+    volume_capacity: str
+    color: str
+    inverter: str
+    warranty: str
+    taps: str
+    corpus_series: str
+    series_earned_by: series_corpus.SeriesProof
+    feature: str
+    label_value: str
+    kept_words: tuple[str, ...]
+    label_note: str
+    answers: tuple[str, ...]
+    conflicts: tuple[tuple[str, str], ...]
+    merged_subtype: str
+    listed_subtype: str
+    carried_subtype: str
+    stranded_subtype: str
+    identity: str
+    usps: tuple[str, ...]
+
+
+def extract_title_slots(
     brand: str,
     extraction: ModelExtraction,
     product_type: str,
     source_title: str,
     source_description: str,
     warranty: str | None = None,
-    strict_rebuild: bool | None = None,
     analysis: RowAnalysis | None = None,
     corpus: Corpus | None = None,
     capacity: str | None = None,
     identity: str | None = None,
-    title_formula: str | TitleFormulaFn = "standard",
-    include_inverter: bool = True,
-    include_warranty: bool = True,
-    omit_color_categories: set[str] | frozenset[str] | None = None,
     apply_tv_warranty_table: bool | None = None,
-) -> TitleResult:
-    """Build one Title using our formula.
-
-    When strict_rebuild is True (configured by STRICT_TITLE_REBUILD in config.py),
-    the Title is always strictly rebuilt from our standard formula:
-    [Brand] [Capacity] [Color] [Inverter/Non-Inverter] [Category Name]
-    - [Model] [Series/Feature Keyword] - [Main Warranty]
-
-    When strict_rebuild is False, Step A rebuilds if a confident model code
-    exists, and Step B keeps the source Title with light cleanup otherwise.
-
-    `analysis` and `corpus` are the row's reading and the run's per-brand verdict, both produced by
-    `series_corpus`; they arrive together or not at all.  A name the corpus proved for this brand
-    fills the series slot in the row's own spelling; a corpus that proved nothing leaves the
-    curated path in charge, so a Title can never be shortened by the vote being silent.
-
-    `capacity` and `identity` are what the row stated -- the pipeline resolves them once, in
-    `main`, and hands them here so a Title and the SKU under it can never disagree.
-    """
-    active_strict_rebuild = getattr(config, "STRICT_TITLE_REBUILD", STRICT_TITLE_REBUILD)
-    if strict_rebuild is None:
-        strict_rebuild = active_strict_rebuild
-    active_omit_categories = (
-        getattr(config, "OMIT_TITLE_COLOR_CATEGORIES", OMIT_TITLE_COLOR_CATEGORIES)
-        if omit_color_categories is None
-        else omit_color_categories
-    )
-    active_title_max = getattr(config, "TITLE_MAX", TITLE_MAX)
-
+) -> TitleSlots:
+    """Extract once using the vendor's warranty policy, independent of cell presentation."""
     text = f"{source_title}\n{source_description}"
     raw_warranty = (
         (
@@ -2105,14 +2114,6 @@ def build_title(
                 # dropping it would empty a platform column.  It belongs in the [Subtype] slot.
                 carried_subtype = curated
 
-    should_rebuild = bool(
-        strict_rebuild or (extraction.confidence in ("high", "medium"))
-    )
-    slot_printed = False
-    identity_printed = ""
-    subtype: str = ""
-    subtype_from: SubtypeSource = ""
-    title_color = "" if product_type in active_omit_categories else color
     label_value = clean_inline(description_builder.subtype_label(source_description))
     # A word the Title prints anyway is not a sub-type word: `SubType: Air Conditioner` states the
     # category, and `Double Door Refrigerator` exactly one word more than `Double Door`.  The model
@@ -2120,7 +2121,7 @@ def build_title(
     # a row shadowing itself.  Read before the rebuild test, because a row kept from source still
     # has a Title, and he is owed the truth about his line either way.
     said_already = " ".join(
-        (brand, capacity, title_color, color, raw_inverter, product_type, extraction.code, raw_warranty)
+        (brand, capacity, color, raw_inverter, product_type, extraction.code, raw_warranty)
     )
     kept_words, label_note = subtype_line_words(label_value, said_already, product_type)
     answers, list_overruled, list_conflicts = extract_subtype_groups(
@@ -2206,10 +2207,6 @@ def build_title(
         warranty=raw_warranty,
     )
 
-    # Apply platform exclusion rules only after feature/subtype extraction has consumed all raw tokens.
-    inverter = raw_inverter if include_inverter else ""
-    warranty = raw_warranty if include_warranty else ""
-
     # A word the old leftover-word reader sold as a series is a TYPE the platform enumerates, and it
     # has to stay in the Title or DigiMall's Type column falls to empty -- so it moves to the slot
     # built for what a machine IS.  Scoped to exactly the words that reader used to pick up, because a
@@ -2234,6 +2231,50 @@ def build_title(
         if phrase:
             stranded_subtype = phrase
 
+    return TitleSlots(
+        brand=brand, extraction=extraction, product_type=product_type, source_title=source_title,
+        capacity=capacity, volume_capacity=volume_capacity, color=color, inverter=raw_inverter,
+        warranty=raw_warranty, taps=taps, corpus_series=corpus_series or "", series_earned_by=series_earned_by,
+        feature=feature, label_value=label_value, kept_words=tuple(kept_words), label_note=label_note,
+        answers=answers, conflicts=tuple(conflicts), merged_subtype=merged_subtype, listed_subtype=listed_subtype,
+        carried_subtype=carried_subtype, stranded_subtype=stranded_subtype,
+        identity=(
+            word_identity(source_title, brand)
+            if identity is None and extraction.confidence == "none" else identity or ""
+        ),
+        usps=_extract_usp_candidates(source_description),
+    )
+
+
+def _render_title(
+    facts: TitleSlots,
+    title_formula: str | TitleFormulaFn,
+    include_inverter: bool,
+    include_warranty: bool,
+    active_omit_categories: frozenset[str],
+    strict_rebuild: bool,
+) -> TitleResult:
+    """Apply presentation policy to facts without re-reading the source."""
+    brand, extraction, product_type = facts.brand, facts.extraction, facts.product_type
+    source_title, capacity, color = facts.source_title, facts.capacity, facts.color
+    volume_capacity, taps = facts.volume_capacity, facts.taps
+    raw_inverter, raw_warranty = facts.inverter, facts.warranty
+    corpus_series, series_earned_by = facts.corpus_series, facts.series_earned_by
+    feature, label_value = facts.feature, facts.label_value
+    kept_words, label_note = facts.kept_words, facts.label_note
+    answers, conflicts = facts.answers, facts.conflicts
+    merged_subtype, listed_subtype = facts.merged_subtype, facts.listed_subtype
+    carried_subtype, stranded_subtype = facts.carried_subtype, facts.stranded_subtype
+    identity = facts.identity
+    active_title_max = getattr(config, "TITLE_MAX", TITLE_MAX)
+    should_rebuild = bool(strict_rebuild or extraction.confidence in ("high", "medium"))
+    slot_printed = False
+    identity_printed = ""
+    subtype: str = ""
+    subtype_from: SubtypeSource = ""
+    title_color = "" if product_type in active_omit_categories else color
+    inverter = raw_inverter if include_inverter else ""
+    warranty = raw_warranty if include_warranty else ""
     if should_rebuild:
         if kept_words:
             subtype, subtype_from = merged_subtype, "label"
@@ -2281,15 +2322,11 @@ def build_title(
             if clean_code and clean_code.lower() not in part1.lower():
                 model_slot = clean_code
                 part2_pieces.append(clean_code)
-        if extraction.confidence == "none":
-            # A row with no model code is sold by the name and number IT wrote, so that pair is
-            # segment 2 -- not a bare word, and not a number the pipeline invented from its size.
-            if identity is None:
-                identity = word_identity(source_title, brand)
-            if identity:
-                model_slot = clean_inline(identity)
-                part2_pieces.append(model_slot)
-                identity_printed = identity
+        # A codeless row's own name-and-number belongs in segment 2 as one fact.
+        if extraction.confidence == "none" and identity:
+            model_slot = clean_inline(identity)
+            part2_pieces.append(model_slot)
+            identity_printed = identity
         feature_slot = ""
         if feature:
             clean_feat = _strip_excluded_tokens(
@@ -2369,13 +2406,7 @@ def build_title(
         ).strip()
 
         if title_formula == "vip_pipe":
-            raw_usps = extract_usps(
-                source_title=source_title,
-                source_description=source_description,
-                product_type=product_type,
-                said_already=f"{seg1} {front_identity} {back_model}",
-                max_usps=3,
-            )
+            raw_usps = _select_usps(facts.usps, product_type, f"{seg1} {front_identity} {back_model}")
         else:
             raw_usps = ()
 
@@ -2413,10 +2444,8 @@ def build_title(
             if len(seg1) + needed_space > active_title_max:
                 allowed_seg1 = max(0, active_title_max - needed_space)
                 seg1 = _trim_to_limit(seg1, allowed_seg1)
-            pipe_parts = [p for p in (seg1, back_model, *valid_usps, part3) if p]
-            combined = " | ".join(pipe_parts)
-        else:
-            combined = _apply_formula(slots, title_formula)
+            slots["vip_head"] = seg1
+        combined = _apply_formula(slots, title_formula)
 
         title = clean_inline(_trim_to_limit(combined, active_title_max))
         strategy = "rebuilt"
@@ -2533,3 +2562,50 @@ def build_title(
     )
 
 
+
+
+def render_title_from_slots(slots: TitleSlots, cell: ResolvedCellConfig) -> TitleResult:
+    """Render one cell from the complete resolved presentation configuration."""
+    return _render_title(
+        slots, cell.title_formula, cell.include_inverter, cell.include_warranty,
+        cell.omit_title_color_categories, cell.strict_title_rebuild,
+    )
+
+
+def render_title_and_seo_from_slots(slots: TitleSlots, cell: ResolvedCellConfig) -> tuple[TitleResult, str]:
+    """Render exactly one TitleResult and derive SEO from that same result."""
+    result = render_title_from_slots(slots, cell)
+    seo = description_builder.build_seo_title(
+        result.seo_base_title or result.title, [result.subtype_token, result.capacity_token],
+    )
+    return result, seo
+
+
+def build_title(
+    brand: str,
+    extraction: ModelExtraction,
+    product_type: str,
+    source_title: str,
+    source_description: str,
+    warranty: str | None = None,
+    strict_rebuild: bool | None = None,
+    analysis: RowAnalysis | None = None,
+    corpus: Corpus | None = None,
+    capacity: str | None = None,
+    identity: str | None = None,
+    title_formula: str | TitleFormulaFn = "standard",
+    include_inverter: bool = True,
+    include_warranty: bool = True,
+    omit_color_categories: set[str] | frozenset[str] | None = None,
+    apply_tv_warranty_table: bool | None = None,
+) -> TitleResult:
+    """Compatibility API: extract facts, then render with the supplied title policy."""
+    slots = extract_title_slots(
+        brand, extraction, product_type, source_title, source_description,
+        warranty, analysis, corpus, capacity, identity, apply_tv_warranty_table,
+    )
+    return _render_title(
+        slots, title_formula, include_inverter, include_warranty,
+        frozenset(config.OMIT_TITLE_COLOR_CATEGORIES if omit_color_categories is None else omit_color_categories),
+        config.STRICT_TITLE_REBUILD if strict_rebuild is None else strict_rebuild,
+    )

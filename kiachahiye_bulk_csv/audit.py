@@ -46,7 +46,7 @@ from textutils import (
     pick_weight_columns,
 )
 from title_builder import INVERTER_CONCEPT_CATEGORIES, without_leading_type_words
-from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor
+from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor, resolve_cell
 from warranty import resolve_warranty
 from writers import ALFA_HEADER, DIGI_HEADER, template_for_cell
 
@@ -209,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     vendor_cfg = get_vendor(args.vendor) if args.vendor is not None else None
+    cell_configs = {platform: resolve_cell(vendor_cfg, platform) for platform in ("digi", "alfa")}
 
     wanted = {"digi", "alfa"} if args.platform == "both" else {args.platform}
 
@@ -353,12 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         for column in ("Title", "Product Type", "Vendor", "Handle", "Variant SKU"):
             empty = sum(1 for r in rows if not r[column].strip())
             check(empty == 0, f"{label}: {column} is never empty", f"{empty} empty")
-    expected_digi_vendor = (
-        vendor_cfg.digi.vendor_name if vendor_cfg is not None else CONFIG.VENDOR_DIGI
-    )
-    expected_alfa_vendor = (
-        vendor_cfg.alfa.vendor_name if vendor_cfg is not None else CONFIG.VENDOR_ALFA
-    )
+    expected_digi_vendor = cell_configs["digi"].vendor_name
+    expected_alfa_vendor = cell_configs["alfa"].vendor_name
     if wants("digi"):
         check(
             all(r["Vendor"] == expected_digi_vendor for r in digi),
@@ -369,11 +366,7 @@ def main(argv: list[str] | None = None) -> int:
             all(r["Vendor"] == expected_alfa_vendor for r in alfa),
             "Alfa Vendor is the exact literal",
         )
-    expected_qty = str(
-        vendor_cfg.default_variant_quantity
-        if vendor_cfg is not None
-        else CONFIG.DEFAULT_VARIANT_QUANTITY
-    )
+    expected_qty = str(cell_configs["digi"].default_variant_quantity)
     check(
         all(
             r["Variant Quantity"] == expected_qty
@@ -407,8 +400,8 @@ def main(argv: list[str] | None = None) -> int:
     # the importer accepts it silently.
     if vendor_cfg is not None:
         platform_specs = [
-            ("digi", "DigiMall", digi, vendor_cfg.digi),
-            ("alfa", "Alfa", alfa, vendor_cfg.alfa),
+            ("digi", "DigiMall", digi, cell_configs["digi"]),
+            ("alfa", "Alfa", alfa, cell_configs["alfa"]),
         ]
         for plat_key, plat_label, plat_rows, plat_cfg in platform_specs:
             if not wants(plat_key):
@@ -619,19 +612,10 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(invented)} invented: {invented[:5]}")
 
     # ----------------------------------- Title tokens must exist in source
-    omit_color_categories: set[str] | frozenset[str] = (
-        vendor_cfg.omit_title_color_categories
-        if vendor_cfg is not None
-        else getattr(CONFIG, "OMIT_TITLE_COLOR_CATEGORIES", frozenset())
-    )
     title_bad: list[str] = []
     for file_label, _header, file_rows, _text in files:
         prefix = f"{file_label} " if len(files) > 1 else ""
-        title_plat_cfg = (
-            (vendor_cfg.digi if file_label == "DigiMall" else vendor_cfg.alfa)
-            if vendor_cfg is not None
-            else None
-        )
+        title_plat_cfg = cell_configs["digi" if file_label == "DigiMall" else "alfa"]
         for row, rec in zip(file_rows, source, strict=True):
             title = row["Title"]
             seo_title = row.get("SEO Title", "")
@@ -648,26 +632,25 @@ def main(argv: list[str] | None = None) -> int:
             model = without_leading_type_words(extract_model(rec["Title"], rec["Description"]))
             if model.code and model.code.replace(" ", "").lower() not in title.replace(" ", "").lower():
                 title_bad.append(f"{prefix}{title[:40]} (model {model.code!r} missing)")
-            if row.get("Product Type", "") in omit_color_categories:
+            if row.get("Product Type", "") in title_plat_cfg.omit_title_color_categories:
                 shipped_color = row.get("Option1 Value", "").strip()
                 if shipped_color and re.search(rf"\b{re.escape(shipped_color)}\b", title, re.IGNORECASE):
                     title_bad.append(
                         f"{prefix}{title[:40]} (color {shipped_color!r} present in omitted category)"
                     )
-            if title_plat_cfg is not None:
-                if not title_plat_cfg.include_warranty:
-                    if re.search(r"\bwarrant(?:y|ies)\b", title, re.IGNORECASE):
-                        title_bad.append(f"{prefix}{title[:40]} (warranty present when excluded)")
-                    if re.search(r"\bwarrant(?:y|ies)\b", seo_title, re.IGNORECASE):
-                        title_bad.append(f"{prefix}{seo_title[:40]} (SEO Title warranty present when excluded)")
-                if (
-                    not title_plat_cfg.include_inverter
-                    and row.get("Product Type", "") in INVERTER_CONCEPT_CATEGORIES
-                ):
-                    if re.search(r"\b(?:non-?)?inverter\b", title, re.IGNORECASE):
-                        title_bad.append(f"{prefix}{title[:40]} (inverter present when excluded)")
-                    if re.search(r"\b(?:non-?)?inverter\b", seo_title, re.IGNORECASE):
-                        title_bad.append(f"{prefix}{seo_title[:40]} (SEO Title inverter present when excluded)")
+            if not title_plat_cfg.include_warranty:
+                if re.search(r"\bwarrant(?:y|ies)\b", title, re.IGNORECASE):
+                    title_bad.append(f"{prefix}{title[:40]} (warranty present when excluded)")
+                if re.search(r"\bwarrant(?:y|ies)\b", seo_title, re.IGNORECASE):
+                    title_bad.append(f"{prefix}{seo_title[:40]} (SEO Title warranty present when excluded)")
+            if (
+                not title_plat_cfg.include_inverter
+                and row.get("Product Type", "") in INVERTER_CONCEPT_CATEGORIES
+            ):
+                if re.search(r"\b(?:non-?)?inverter\b", title, re.IGNORECASE):
+                    title_bad.append(f"{prefix}{title[:40]} (inverter present when excluded)")
+                if re.search(r"\b(?:non-?)?inverter\b", seo_title, re.IGNORECASE):
+                    title_bad.append(f"{prefix}{seo_title[:40]} (SEO Title inverter present when excluded)")
     check(not title_bad, f"every Title is <={CONFIG.TITLE_MAX} chars, single-spaced and carries its model code",
           f"{len(title_bad)}: {title_bad[:4]}")
 
@@ -747,11 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     # `Hairline Black`, `Crimson Red` and `Meadow Green` into one another.  Both rules below read the
     # SOURCE row, not the pipeline: the file may only ship paint the shop wrote, and may only ship
     # as much of it as he wrote.
-    colour_defaults = (
-        vendor_cfg.default_product_type_colors
-        if vendor_cfg is not None
-        else getattr(CONFIG, "DEFAULT_PRODUCT_TYPE_COLORS", {})
-    )
+    colour_defaults = cell_configs["digi"].default_product_type_colors
     colour_invented: list[str] = []
     colour_cut: list[str] = []
     for file_label, _header, file_rows, _text in files:
@@ -819,9 +798,7 @@ def main(argv: list[str] | None = None) -> int:
             text,
             brand,
             product_type,
-            apply_tv_warranty_table=(
-                vendor_cfg.apply_tv_warranty_table if vendor_cfg is not None else None
-            ),
+            apply_tv_warranty_table=cell_configs["digi"].apply_tv_warranty_table,
         )
         if wants("digi"):
             digi_row = digi[row_number - 2]

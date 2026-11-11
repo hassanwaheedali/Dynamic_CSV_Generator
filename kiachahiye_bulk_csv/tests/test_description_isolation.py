@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import run_pipeline
 
 import main
 from description_builder import (
@@ -29,6 +28,7 @@ from description_builder import (
 )
 from models import SpecRow
 from qc_report import QCFlagCollector
+from tests.conftest import run_pipeline
 from vendor_config import VENDOR_REGISTRY
 from writers import build_alfa_row, build_digi_row, template_for_cell
 

@@ -51,7 +51,7 @@ def _write_input_csv(tmp_path: Path, rows: list[dict[str, str]]) -> Path:
     return path
 
 
-def _rows_for_report() -> list[object]:
+def _rows_for_report() -> list[RowAnalysis]:
     return [
         analyze_row(
             "Gree Pular Split Inverter Air Conditioner 1.5 Ton (GS-18PW)",
@@ -82,7 +82,7 @@ def _rows_for_report() -> list[object]:
     ]
 
 
-def _midea_rows() -> list:
+def _midea_rows() -> list[RowAnalysis]:
     return [
         analyze_row(
             ANCHOR_TITLE,
@@ -94,7 +94,7 @@ def _midea_rows() -> list:
     ]
 
 
-def _anchor() -> tuple[object, Corpus]:
+def _anchor() -> tuple[RowAnalysis, Corpus]:
     analysis = analyze_row(
         ANCHOR_TITLE,
         product_type="Air Conditioner",

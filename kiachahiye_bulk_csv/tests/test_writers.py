@@ -33,7 +33,7 @@ from warranty_terms import WARRANTY_TERMS
 from writers import VENDOR_ALFA, VENDOR_DIGI
 
 
-def _row(**overrides: str) -> InputRow:
+def _row(**overrides: str | int) -> InputRow:
     base: dict[str, Any] = {
         "row_number": 1,
         "title": "Dawlance Freezer (9193-WB)-Meadow Green",

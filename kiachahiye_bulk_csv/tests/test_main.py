@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import Pipeline, build_input_csv
 
 import main
 from description_builder import (
@@ -27,6 +26,7 @@ from description_builder import (
     extract_spec_rows,
 )
 from models import SpecRow
+from tests.conftest import Pipeline, build_input_csv
 from vendor_config import VENDOR_REGISTRY, ConfigError, validate_vendor_cfg
 
 ROW = {
@@ -281,8 +281,10 @@ def test_the_summary_names_the_template_that_served_each_file(
     assert len(block) == 2, block
     cfg_kc = VENDOR_REGISTRY["kiachahiye"]
     digi_t = cfg_kc.digi.description_template
+    assert digi_t is not None
     d_name = digi_t if isinstance(digi_t, str) else digi_t.name
     alfa_t = cfg_kc.alfa.description_template
+    assert alfa_t is not None
     a_name = alfa_t if isinstance(alfa_t, str) else alfa_t.name
     assert block[0].startswith(f"  DigiMall {d_name}"), block[0]
     assert f"{cfg_kc.display_name}.digi.description_template in vendor_config.py" in block[0], block[0]
@@ -298,6 +300,7 @@ def test_a_single_platform_run_names_only_the_file_it_wrote(
     assert len(block) == 1, block
     cfg_aj = VENDOR_REGISTRY["ajmer"]
     aj_t = cfg_aj.alfa.description_template
+    assert aj_t is not None
     aj_alfa_name = aj_t if isinstance(aj_t, str) else aj_t.name
     assert block[0].startswith(f"  Alfa     {aj_alfa_name}"), block[0]
     assert f"{cfg_aj.display_name}.alfa.description_template in vendor_config.py" in block[0], block[0]

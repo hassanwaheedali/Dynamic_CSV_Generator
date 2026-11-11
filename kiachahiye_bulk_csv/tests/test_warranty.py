@@ -324,4 +324,5 @@ def test_a_service_rider_does_not_make_a_bare_warranty_line_a_part_line() -> Non
     ]
     assert headline == "10 Years"
     tail = resolve_main_warranty(description, "super asia", "Air Conditioner")
+    assert tail is not None
     assert tail.startswith("10 Year") and "Pcb" not in tail

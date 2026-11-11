@@ -364,9 +364,9 @@ def _all_source_words() -> set[str]:
     ):
         for key, value in table.items():
             words.update(re.findall(r"[a-z]+", f"{key} {value}".lower()))
-    for table in (BRANDS_ALFA, BRANDS_DIGI):
-        for key, value in table.items():
-            words.update(re.findall(r"[a-z]+", f"{key} {value}".lower()))
+    for brand_table in (BRANDS_ALFA, BRANDS_DIGI):
+        for brand_key, brand_id in brand_table.items():
+            words.update(re.findall(r"[a-z]+", f"{brand_key} {brand_id}".lower()))
     for by_type in warranty_terms.WARRANTY_TERMS.values():
         for product_type, clause in by_type.items():
             words.update(re.findall(r"[a-z]+", f"{product_type} {clause}".lower()))
@@ -502,7 +502,7 @@ def test_row_analysis_is_an_immutable_value() -> None:
     assert isinstance(analysis, RowAnalysis)
     assert isinstance(analysis.words, tuple)
     with pytest.raises(TypeError):
-        analysis.claimed["frost"] = "model"  # type: ignore[misc]
+        analysis.claimed["frost"] = "model"  # type: ignore[index]
     with pytest.raises(AttributeError):
         analysis.title = "edited"  # type: ignore[misc]
 

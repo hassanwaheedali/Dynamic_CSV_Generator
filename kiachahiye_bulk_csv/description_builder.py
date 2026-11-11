@@ -36,6 +36,8 @@ from models import DescriptionBundle, SpecRow
 from textutils import (
     clean_inline,
     dedupe_preserve_order,
+)
+from textutils import (
     strip_markup_keep_lines as strip_markup_keep_lines,
 )
 
@@ -1539,8 +1541,13 @@ def build_description_bundle(
     title: str,
     has_real_model: bool,
     feature_tokens: list[str],
+    resolved_seo_title: str | None = None,
 ) -> DescriptionBundle:
-    """Assemble every §8 output for one product."""
+    """Assemble every §8 output, optionally reusing the pipeline's resolved Digi SEO.
+
+    Standalone callers retain the original SEO generation. The pipeline supplies
+    its cell render so that SEO is computed exactly once per cell.
+    """
     parsed = parse_description(description)
     warranty_duration = next(
         (row.value for row in warranty_rows if row.label.lower().startswith("compressor")),
@@ -1628,7 +1635,7 @@ def build_description_bundle(
     tags = build_tags(
         brand, model, product_type, capacity, color, parsed.key_features, breadcrumb_leaf
     )
-    seo_title = build_seo_title(title, feature_tokens)
+    seo_title = build_seo_title(title, feature_tokens) if resolved_seo_title is None else resolved_seo_title
     seo_description = clean_inline(
         build_seo_description(
             brand, model, product_type, product_type, warranty_duration, deduped, tags,

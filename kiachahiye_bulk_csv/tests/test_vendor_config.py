@@ -8,6 +8,7 @@ editing ``sku_prefix``, ``vendor_name``, ``title_formula``, ``brands``, or
 
 from __future__ import annotations
 
+import copy
 import csv
 import dataclasses
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 
 import audit
 import main as pipeline_main
+import sku_handle
 from brands import BRANDS_ALFA, BRANDS_DIGI, resolve_brand
 from categories import (
     CATEGORY_ALFA_IDS,
@@ -37,13 +39,16 @@ from title_builder import build_title
 from vendor_config import (
     AJMER,
     KIACHAHIYE,
+    PLATFORM_DEFAULTS,
     VENDOR_REGISTRY,
     ConfigError,
     PlatformConfig,
     VendorConfig,
     get_vendor,
+    resolve_cell,
     validate_vendor_cfg,
 )
+from writers import template_for_cell
 
 
 def test_all_registered_vendors_pass_validation() -> None:
@@ -396,7 +401,9 @@ def _store(**overrides: Any) -> VendorConfig:
 
 def test_every_cell_defaults_to_todays_template() -> None:
     """A store that says nothing ships the table the shop uses today."""
-    assert PlatformConfig("Vendor", {}, {}).description_template == "spec_table"
+    silent = PlatformConfig("Vendor", {}, {})
+    assert silent.description_template is None
+    assert resolve_cell(_store(digi=silent), "digi").description_template == "spec_table"
     for key, cfg in VENDOR_REGISTRY.items():
         for platform in ("digi", "alfa"):
             cell = getattr(cfg, platform)
@@ -417,6 +424,8 @@ def test_a_template_may_be_shared_by_name_across_stores() -> None:
     ajmer_alfa = dataclasses.replace(
         AJMER.alfa, description_template="kiachahiye_alfa_card"
     )
+    assert ajmer_alfa.description_template is not None
+    assert KIACHAHIYE.alfa.description_template is not None
     assert template_for(ajmer_alfa.description_template) is template_for(
         KIACHAHIYE.alfa.description_template
     )
@@ -867,3 +876,162 @@ def test_cli_requires_explicit_vendor_when_argv_is_none(
     with pytest.raises(SystemExit) as exc_audit:
         audit.main(None)
     assert exc_audit.value.code == 2
+
+
+INHERITABLE_FIELDS = (
+    "title_formula", "description_template", "include_inverter", "include_warranty",
+    "omit_title_color_categories", "strict_title_rebuild",
+)
+
+
+def _silent_vendor() -> VendorConfig:
+    return VendorConfig("Silent", "S", PlatformConfig("Digi", {}, {}), PlatformConfig("Alfa", {}, {}))
+
+
+def test_silent_declarations_and_engine_defaults() -> None:
+    cfg = _silent_vendor()
+    for name in INHERITABLE_FIELDS:
+        assert getattr(cfg, name) is None
+        assert getattr(cfg.digi, name) is None
+    resolved = resolve_cell(cfg, "digi")
+    assert resolved.title_formula == "standard"
+    assert resolved.description_template == "spec_table"
+    assert resolved.include_inverter is True
+    assert resolved.include_warranty is True
+    assert resolved.strict_title_rebuild is True
+    assert resolved.omit_title_color_categories == frozenset({"LED TV"})
+    assert all(set(defaults) <= set(INHERITABLE_FIELDS) for defaults in PLATFORM_DEFAULTS.values())
+
+
+@pytest.mark.parametrize("name,platform_value,vendor_value,cell_value", [
+    ("title_formula", "vip_pipe", "brand_first_extended", "standard"),
+    ("description_template", "kiachahiye_alfa_card", "spec_table", ""),
+    ("include_inverter", False, True, False),
+    ("include_warranty", False, True, False),
+    ("strict_title_rebuild", False, True, False),
+    ("omit_title_color_categories", frozenset({"Refrigerator"}), frozenset({"LED TV"}), frozenset()),
+])
+def test_all_four_levels_and_explicit_falsy_values(
+    monkeypatch: pytest.MonkeyPatch, name: str, platform_value: Any, vendor_value: Any, cell_value: Any,
+) -> None:
+    cfg = _silent_vendor()
+    monkeypatch.setitem(PLATFORM_DEFAULTS, "digi", {name: platform_value})
+    assert getattr(resolve_cell(cfg, "digi"), name) == platform_value
+    assert getattr(resolve_cell(cfg, "alfa"), name) == getattr(resolve_cell(None, "alfa"), name)
+    cfg = dataclasses.replace(cfg, **{name: vendor_value})
+    assert getattr(resolve_cell(cfg, "digi"), name) == vendor_value
+    cfg = dataclasses.replace(cfg, digi=dataclasses.replace(cfg.digi, **{name: cell_value}))
+    assert getattr(resolve_cell(cfg, "digi"), name) == cell_value
+    assert type(getattr(resolve_cell(cfg, "digi"), name)) is type(cell_value)
+    assert resolve_cell(dataclasses.replace(cfg), "digi") == resolve_cell(cfg, "digi")
+    copy_replace = getattr(copy, "replace", dataclasses.replace)
+    assert resolve_cell(copy_replace(cfg), "digi") == resolve_cell(cfg, "digi")
+    reset: dict[str, Any] = {name: None}
+    cfg = dataclasses.replace(cfg, digi=dataclasses.replace(cfg.digi, **reset))
+    assert getattr(resolve_cell(cfg, "digi"), name) == vendor_value
+    cfg = dataclasses.replace(cfg, **reset)
+    assert getattr(resolve_cell(cfg, "digi"), name) == platform_value
+
+
+def test_explicit_engine_formula_beats_platform_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(PLATFORM_DEFAULTS, "digi", {"title_formula": "vip_pipe"})
+    cfg = dataclasses.replace(_silent_vendor(), title_formula="standard")
+    assert resolve_cell(cfg, "digi").title_formula == "standard"
+    assert resolve_cell(dataclasses.replace(cfg, title_formula=None), "digi").title_formula == "vip_pipe"
+
+
+@pytest.mark.parametrize("vendor_key,platform", [
+    (key, platform) for key in VENDOR_REGISTRY for platform in ("digi", "alfa")
+])
+def test_resolved_maps_are_cell_owned_read_only_snapshots(vendor_key: str, platform: str) -> None:
+    original = VENDOR_REGISTRY[vendor_key]
+    cell = dataclasses.replace(getattr(original, platform), brands={"probe": 123}, categories={"probe": "456"})
+    aliases = {"alias": "probe"}
+    cfg = dataclasses.replace(original, **{platform: cell}, brand_aliases=aliases)
+    resolved = resolve_cell(cfg, platform)
+    assert dict(resolved.brands) == {"probe": 123}
+    assert dict(resolved.categories) == {"probe": "456"}
+    cell.brands["late"] = 789
+    cell.categories.clear()
+    aliases.clear()
+    assert dict(resolved.brands) == {"probe": 123}
+    assert dict(resolved.categories) == {"probe": "456"}
+    assert dict(resolved.brand_aliases) == {"alias": "probe"}
+    with pytest.raises(TypeError):
+        resolved.brands["late"] = 789  # type: ignore[index]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        resolved.include_warranty = False  # type: ignore[misc]
+    empty = dataclasses.replace(cfg, **{platform: dataclasses.replace(cell, brands={}, categories={})})
+    assert dict(resolve_cell(empty, platform).brands) == {}
+    assert dict(resolve_cell(empty, platform).categories) == {}
+    other = "alfa" if platform == "digi" else "digi"
+    assert getattr(empty, other) is getattr(original, other)
+
+
+@pytest.mark.parametrize("forbidden", ["brands", "categories"])
+def test_platform_defaults_cannot_own_marketplace_ids(monkeypatch: pytest.MonkeyPatch, forbidden: str) -> None:
+    monkeypatch.setitem(PLATFORM_DEFAULTS, "digi", {forbidden: {"probe": 999}})
+    with pytest.raises(ConfigError, match=forbidden):
+        resolve_cell(_silent_vendor(), "digi")
+
+
+def test_legacy_sku_prefix_is_read_at_resolution_time(monkeypatch: pytest.MonkeyPatch, pipeline: Any) -> None:
+    monkeypatch.setattr(sku_handle, "SKU_PREFIX", "LEGACY")
+    result = pipeline([{
+        "Title": "Haier HSU-18CF Air Conditioner", "Description": "Capacity: 1.5 Ton",
+        "Brand": "Haier", "Categories": "Air Conditioner", "Sell Price": "100", "Original Price": "120", "Image": "",
+    }])
+    assert resolve_cell(None, "digi").sku_prefix == "LEGACY"
+    assert result["digi"][0]["Variant SKU"].startswith("LEGACY-")
+
+
+@pytest.mark.parametrize("platform", ["digi", "alfa"])
+def test_invalid_resolved_formula_names_the_cell(platform: str) -> None:
+    cfg = _silent_vendor()
+    cfg = dataclasses.replace(cfg, **{platform: dataclasses.replace(getattr(cfg, platform), title_formula="missing")})
+    with pytest.raises(ConfigError, match=rf"Silent\.{platform}\.title_formula"):
+        validate_vendor_cfg(cfg)
+
+
+def test_platform_formula_default_reaches_pipeline(monkeypatch: pytest.MonkeyPatch, pipeline: Any) -> None:
+    monkeypatch.setitem(PLATFORM_DEFAULTS, "digi", {"title_formula": "vip_pipe"})
+    row = {
+        "Title": "TCL 55P735 55 Inch LED TV", "Description": "Warranty: 3 Year Panel Warranty",
+        "Categories": "LED TV", "Brand": "TCL", "Sell Price": "100", "Original Price": "120", "Image": "",
+    }
+    cfg = _silent_vendor()
+    output = pipeline([row], vendor_cfg=cfg)
+    assert output["digi"][0]["Title"] == "TCL 55 Inch LED TV | 55P735 | 3 Year Panel Warranty"
+    assert output["alfa"][0]["Title"] == "TCL 55 Inch LED TV - 55P735 - 3 Year Panel Warranty"
+    explicit = pipeline([row], vendor_cfg=dataclasses.replace(cfg, title_formula="standard"))
+    assert explicit["digi"][0]["Title"] == "TCL 55 Inch LED TV - 55P735 - 3 Year Panel Warranty"
+
+
+def test_explicit_zero_quantity_and_empty_vendor_defaults() -> None:
+    cfg = dataclasses.replace(_silent_vendor(), default_variant_quantity=0, default_product_type_colors={})
+    cell = resolve_cell(cfg, "digi")
+    assert cell.default_variant_quantity == 0
+    assert dict(cell.default_product_type_colors) == {}
+
+
+@pytest.mark.parametrize("vendor_key,platform", [
+    (key, platform) for key in VENDOR_REGISTRY for platform in ("digi", "alfa")
+])
+def test_description_inheritance_reaches_validation_and_projection(
+    monkeypatch: pytest.MonkeyPatch, vendor_key: str, platform: str,
+) -> None:
+    original = VENDOR_REGISTRY[vendor_key]
+    cfg = dataclasses.replace(original, **{
+        platform: dataclasses.replace(getattr(original, platform), description_template=None),
+    })
+    monkeypatch.setitem(PLATFORM_DEFAULTS, platform, {"description_template": "kiachahiye_alfa_card"})
+    assert template_for_cell(cfg, platform) is DESCRIPTION_TEMPLATES["kiachahiye_alfa_card"]
+    validate_vendor_cfg(cfg)
+    cfg = dataclasses.replace(cfg, description_template="spec_table")
+    assert template_for_cell(cfg, platform) is SPEC_TABLE
+    validate_vendor_cfg(cfg)
+    explicit = dataclasses.replace(cfg, **{
+        platform: dataclasses.replace(getattr(cfg, platform), description_template="kiachahiye_alfa_card"),
+    })
+    assert template_for_cell(explicit, platform) is DESCRIPTION_TEMPLATES["kiachahiye_alfa_card"]
+    validate_vendor_cfg(explicit)

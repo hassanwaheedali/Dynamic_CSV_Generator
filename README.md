@@ -627,3 +627,58 @@ kiachahiye_bulk_csv/
     └── output/             the two CSVs, the QC report, the Title sample, row_check.csv,
                             thin_descriptions.csv
 ```
+
+## Phase 1: effective cell configuration and Title rendering
+
+`vendor_config.resolve_cell(cfg, "digi" | "alfa")` returns a frozen
+`ResolvedCellConfig`. Presentation settings use **Cell > Vendor > Platform > Engine**:
+`title_formula`, `description_template`, `include_inverter`, `include_warranty`,
+`omit_title_color_categories`, and `strict_title_rebuild`.
+
+Raw `VendorConfig` and `PlatformConfig` attributes are declarations. `None` means
+inherit; explicit `False`, empty strings, and empty sets are never treated as missing.
+Use the resolved object to read effective values. Platform defaults live in
+`PLATFORM_DEFAULTS`; a silent vendor allows them to take effect. Invalid formula or
+template names fail startup validation, including explicit empty names.
+
+```python
+from dataclasses import replace
+from vendor_config import KIACHAHIYE, resolve_cell
+
+cfg = replace(KIACHAHIYE, alfa=replace(KIACHAHIYE.alfa, include_warranty=False))
+assert resolve_cell(cfg, "alfa").include_warranty is False
+cfg = replace(cfg, alfa=replace(cfg.alfa, include_warranty=None))  # inherit again
+```
+
+`dataclasses.replace()` and, on Python 3.13+, `copy.replace()` are supported.
+Marketplace Brand/Category IDs always belong to the specific vendor/platform cell.
+They never inherit from platform defaults, another cell, or legacy global tables.
+Resolved mappings are read-only snapshots. Missing IDs remain blank with existing
+non-blocking QC/UI reporting. The legacy Python API with `vendor_cfg=None` keeps its
+legacy tables; user-facing CLI execution still requires `--vendor`.
+
+`TITLE_FORMULAS` in `title_builder.py` is the authoritative named formula registry;
+custom callables and the `ajmer_variant` alias remain supported. Each `resolve_row()`
+call extracts immutable `TitleSlots` once and renders Title/SEO once for each cell,
+even when both cells select identical policies. The pipeline retains its two existing
+SKU/Handle collision passes. TV warranty fallback remains a vendor extraction policy;
+`include_warranty` controls each cell's presentation.
+
+`ProductRecord` fields are unchanged. Title/SEO are resolution-time outputs: re-run
+`run()`/`resolve_row()` after changing their configuration. Writers only project those
+fields; Description templates are still selected and rendered at write time.
+
+From the repository root, verify with the existing environment:
+
+```powershell
+Push-Location .\kiachahiye_bulk_csv
+python -m pytest -q
+Pop-Location
+$env:MYPYPATH = (Resolve-Path .\kiachahiye_bulk_csv).Path
+python -m mypy --explicit-package-bases kiachahiye_bulk_csv
+python -m ruff check kiachahiye_bulk_csv
+git diff --check
+```
+
+The eight locked output digests and review evidence are recorded in
+`docs/phase1/walkthrough.md`.
