@@ -55,6 +55,7 @@ class PlatformConfig:
     title_formula: str | TitleFormula | None = None
     include_inverter: bool | None = None
     include_warranty: bool | None = None
+    include_color: bool | None = None
     omit_title_color_categories: frozenset[str] | None = None
     strict_title_rebuild: bool | None = None
 
@@ -85,6 +86,7 @@ class VendorConfig:
     description_template: str | DescriptionTemplate | None = None
     include_inverter: bool | None = None
     include_warranty: bool | None = None
+    include_color: bool | None = None
 
 
 class CellDefaults(TypedDict, total=False):
@@ -94,6 +96,7 @@ class CellDefaults(TypedDict, total=False):
     description_template: str | DescriptionTemplate | None
     include_inverter: bool | None
     include_warranty: bool | None
+    include_color: bool | None
     omit_title_color_categories: frozenset[str] | None
     strict_title_rebuild: bool | None
 
@@ -116,6 +119,7 @@ class ResolvedCellConfig:
     description_template: str | DescriptionTemplate
     include_inverter: bool
     include_warranty: bool
+    include_color: bool
     omit_title_color_categories: frozenset[str]
     strict_title_rebuild: bool
     brands: Mapping[str, int]
@@ -171,6 +175,10 @@ def resolve_cell(vendor_cfg: VendorConfig | None, platform: str) -> ResolvedCell
         include_warranty=_inherit(
             cell.include_warranty if cell else None, vendor_cfg.include_warranty if vendor_cfg else None,
             defaults.get("include_warranty"), True,
+        ),
+        include_color=_inherit(
+            cell.include_color if cell else None, vendor_cfg.include_color if vendor_cfg else None,
+            defaults.get("include_color"), True,
         ),
         omit_title_color_categories=frozenset(_inherit(
             cell.omit_title_color_categories if cell else None,
@@ -343,6 +351,7 @@ KIACHAHIYE = VendorConfig(
         title_formula="standard",
         include_inverter=False,
         include_warranty=False,
+        include_color=False,
         brands={
             "gree": 3790,
             "ecostar": 3789,
@@ -466,6 +475,7 @@ AJMER = VendorConfig(
         title_formula="standard",
         include_inverter=False,
         include_warranty=False,
+        include_color=False,
         brands={
             # TODO: fill from DigiMall admin panel for Ajmer's seller account
         },

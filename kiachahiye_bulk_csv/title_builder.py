@@ -1986,9 +1986,14 @@ def _apply_formula(slots: dict[str, str], formula: str | TitleFormulaFn) -> str:
 
 
 def _strip_excluded_tokens(
-    text: str, *, include_inverter: bool, include_warranty: bool
+    text: str,
+    *,
+    include_inverter: bool,
+    include_warranty: bool,
+    include_color: bool = True,
+    color: str = "",
 ) -> str:
-    """Strip excluded inverter and/or warranty phrases from a title or fragment (DRY)."""
+    """Strip excluded inverter, warranty, and/or color phrases from a title or fragment (DRY)."""
     cleaned = text
     if not include_inverter:
         for pattern in (NON_INVERTER_RE, INVERTER_RE):
@@ -2007,6 +2012,9 @@ def _strip_excluded_tokens(
             cleaned,
             flags=re.IGNORECASE,
         )
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|")
+    if not include_color and color:
+        cleaned = re.sub(rf"(?<![\w-])(?:{re.escape(color)})(?![\w-])", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|")
     return cleaned
 
@@ -2265,6 +2273,7 @@ def _render_title(
     include_warranty: bool,
     active_omit_categories: frozenset[str],
     strict_rebuild: bool,
+    include_color: bool = True,
 ) -> TitleResult:
     """Apply presentation policy to facts without re-reading the source."""
     brand, extraction, product_type = facts.brand, facts.extraction, facts.product_type
@@ -2284,7 +2293,7 @@ def _render_title(
     identity_printed = ""
     subtype: str = ""
     subtype_from: SubtypeSource = ""
-    title_color = "" if product_type in active_omit_categories else color
+    title_color = "" if (not include_color or product_type in active_omit_categories) else color
     inverter = raw_inverter if include_inverter else ""
     warranty = raw_warranty if include_warranty else ""
     if should_rebuild:
@@ -2345,6 +2354,8 @@ def _render_title(
                 clean_inline(feature),
                 include_inverter=include_inverter,
                 include_warranty=include_warranty,
+                include_color=include_color,
+                color=color,
             )
             # What the Title prints so far, GROWING as words are accepted.  It used to be a snapshot
             # taken before any of the slot's own words went in, so a name slot handed the same phrase
@@ -2356,7 +2367,11 @@ def _render_title(
             for word in clean_feat.split():
                 if word_printed(word, printed):
                     continue
-                if product_type in active_omit_categories and color and word.lower() == color.lower():
+                if (
+                    (not include_color or product_type in active_omit_categories)
+                    and color
+                    and word.lower() == color.lower()
+                ):
                     continue
                 feat_words.append(word)
                 printed = f"{printed} {word}"
@@ -2398,7 +2413,7 @@ def _render_title(
 
         # Color handling: LED TV category omits color from title
         color_val = deduped_slots.get("color", "")
-        if product_type in active_omit_categories:
+        if not include_color or product_type in active_omit_categories:
             color_val = ""
 
         # Extract USPs with budget protection so back_model and warranty are never truncated
@@ -2494,17 +2509,21 @@ def _render_title(
             " - ".join(piece for piece in (seo_head, deduped_slots["capacity"]) if piece),
             include_inverter=include_inverter,
             include_warranty=include_warranty,
+            include_color=include_color,
+            color=color,
         )
     else:
         usp_tokens_tuple = ()
         base_title = clean_inline(source_title)
-        if product_type in active_omit_categories and color:
+        if (not include_color or product_type in active_omit_categories) and color:
             base_title = re.sub(rf"\b{re.escape(color)}\b", "", base_title, flags=re.IGNORECASE)
             base_title = re.sub(r"\s{2,}", " ", base_title).strip()
         base_title = _strip_excluded_tokens(
             base_title,
             include_inverter=include_inverter,
             include_warranty=include_warranty,
+            include_color=include_color,
+            color=color,
         )
         if warranty:
             clean_warr = clean_inline(warranty)
@@ -2581,6 +2600,7 @@ def render_title_from_slots(slots: TitleSlots, cell: ResolvedCellConfig) -> Titl
     return _render_title(
         slots, cell.title_formula, cell.include_inverter, cell.include_warranty,
         cell.omit_title_color_categories, cell.strict_title_rebuild,
+        cell.include_color,
     )
 
 
@@ -2610,6 +2630,7 @@ def build_title(
     include_warranty: bool = True,
     omit_color_categories: set[str] | frozenset[str] | None = None,
     apply_tv_warranty_table: bool | None = None,
+    include_color: bool = True,
 ) -> TitleResult:
     """Compatibility API: extract facts, then render with the supplied title policy."""
     slots = extract_title_slots(
@@ -2620,4 +2641,5 @@ def build_title(
         slots, title_formula, include_inverter, include_warranty,
         frozenset(config.OMIT_TITLE_COLOR_CATEGORIES if omit_color_categories is None else omit_color_categories),
         config.STRICT_TITLE_REBUILD if strict_rebuild is None else strict_rebuild,
+        include_color=include_color,
     )

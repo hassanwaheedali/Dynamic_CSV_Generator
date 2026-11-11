@@ -633,11 +633,15 @@ def main(argv: list[str] | None = None) -> int:
             display_model = model_text_for_title(model.code, title_plat_cfg.include_inverter)
             if display_model and display_model.replace(" ", "").lower() not in title.replace(" ", "").lower():
                 title_bad.append(f"{prefix}{title[:40]} (model {model.code!r} missing)")
-            if row.get("Product Type", "") in title_plat_cfg.omit_title_color_categories:
+            if (
+                not title_plat_cfg.include_color
+                or row.get("Product Type", "") in title_plat_cfg.omit_title_color_categories
+            ):
                 shipped_color = row.get("Option1 Value", "").strip()
                 if shipped_color and re.search(rf"\b{re.escape(shipped_color)}\b", title, re.IGNORECASE):
+                    reason = "when excluded" if not title_plat_cfg.include_color else "in omitted category"
                     title_bad.append(
-                        f"{prefix}{title[:40]} (color {shipped_color!r} present in omitted category)"
+                        f"{prefix}{title[:40]} (color {shipped_color!r} present {reason})"
                     )
             if not title_plat_cfg.include_warranty:
                 if re.search(r"\bwarrant(?:y|ies)\b", title, re.IGNORECASE):

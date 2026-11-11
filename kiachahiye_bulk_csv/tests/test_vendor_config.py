@@ -626,7 +626,9 @@ def test_omit_title_color_categories_wired_end_to_end(
         KIACHAHIYE, omit_title_color_categories=frozenset({"LED TV"})
     )
     cfg_keep = dataclasses.replace(
-        KIACHAHIYE, omit_title_color_categories=frozenset()
+        KIACHAHIYE,
+        omit_title_color_categories=frozenset(),
+        digi=dataclasses.replace(KIACHAHIYE.digi, include_color=True),
     )
 
     flags_omit = pipeline_main.QCFlagCollector()
@@ -880,7 +882,7 @@ def test_cli_requires_explicit_vendor_when_argv_is_none(
 
 INHERITABLE_FIELDS = (
     "title_formula", "description_template", "include_inverter", "include_warranty",
-    "omit_title_color_categories", "strict_title_rebuild",
+    "include_color", "omit_title_color_categories", "strict_title_rebuild",
 )
 
 
@@ -898,6 +900,7 @@ def test_silent_declarations_and_engine_defaults() -> None:
     assert resolved.description_template == "spec_table"
     assert resolved.include_inverter is True
     assert resolved.include_warranty is True
+    assert resolved.include_color is True
     assert resolved.strict_title_rebuild is True
     assert resolved.omit_title_color_categories == frozenset({"LED TV"})
     assert all(set(defaults) <= set(INHERITABLE_FIELDS) for defaults in PLATFORM_DEFAULTS.values())
@@ -908,6 +911,7 @@ def test_silent_declarations_and_engine_defaults() -> None:
     ("description_template", "kiachahiye_alfa_card", "spec_table", ""),
     ("include_inverter", False, True, False),
     ("include_warranty", False, True, False),
+    ("include_color", False, True, False),
     ("strict_title_rebuild", False, True, False),
     ("omit_title_color_categories", frozenset({"Refrigerator"}), frozenset({"LED TV"}), frozenset()),
 ])

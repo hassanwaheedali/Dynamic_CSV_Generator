@@ -68,6 +68,8 @@ def _assert_platform_title_compliance(
     include_warranty: bool | None,
     formula: str | TitleFormula | None,
     expected_inverter_word: str = "Inverter",
+    include_color: bool | None = None,
+    expected_color: str = "White",
 ) -> None:
     """Dynamically assert that title and seo_title conform to the platform's configuration."""
     assert isinstance(include_inverter, bool)
@@ -83,6 +85,13 @@ def _assert_platform_title_compliance(
         assert "Warranty" not in seo_title, f"'Warranty' found in seo_title: {seo_title}"
     else:
         assert "Warranty" in title, f"'Warranty' expected in title: {title}"
+
+    if include_color is not None:
+        assert isinstance(include_color, bool)
+        if not include_color:
+            assert expected_color not in title, f"{expected_color!r} found in title: {title}"
+        else:
+            assert expected_color in title, f"{expected_color!r} expected in title: {title}"
 
     if formula == "standard":
         assert "|" not in title, f"Pipes found in standard formula title: {title}"
@@ -110,6 +119,7 @@ def test_all_registered_vendors_dynamically_adhere_to_platform_config(
         include_warranty=vendor_cfg.digi.include_warranty,
         formula=vendor_cfg.digi.title_formula or vendor_cfg.title_formula,
         expected_inverter_word="Inverter",
+        include_color=vendor_cfg.digi.include_color,
     )
 
     # Validate Alfa platform dynamically against vendor_cfg.alfa
@@ -120,6 +130,7 @@ def test_all_registered_vendors_dynamically_adhere_to_platform_config(
         include_warranty=vendor_cfg.alfa.include_warranty,
         formula=vendor_cfg.alfa.title_formula or vendor_cfg.title_formula,
         expected_inverter_word="Inverter",
+        include_color=vendor_cfg.alfa.include_color if vendor_cfg.alfa.include_color is not None else True,
     )
 
 
@@ -220,6 +231,7 @@ def test_digimall_titles_match_across_vendors_with_same_platform_config(
     # Both vendors have identical digi platform settings:
     assert v1.digi.include_inverter == v2.digi.include_inverter
     assert v1.digi.include_warranty == v2.digi.include_warranty
+    assert v1.digi.include_color == v2.digi.include_color
     assert (v1.digi.title_formula or v1.title_formula) == (v2.digi.title_formula or v2.title_formula)
 
     # Generated titles match identically
@@ -500,6 +512,7 @@ def test_model_display_obeys_inverter_policy_without_changing_identity(
 @pytest.mark.parametrize("vendor_key,platform", _CELLS)
 @pytest.mark.parametrize("field,value", [
     ("title_formula", "vip_pipe"), ("include_inverter", False), ("include_warranty", False),
+    ("include_color", False),
     ("omit_title_color_categories", frozenset()), ("strict_title_rebuild", False),
 ])
 def test_title_settings_are_isolated_and_never_stale(
@@ -522,6 +535,7 @@ def test_title_settings_are_isolated_and_never_stale(
         key: dataclasses.replace(cfg, **{
             p: dataclasses.replace(
                 getattr(cfg, p), title_formula="standard", include_inverter=True, include_warranty=True,
+                include_color=True,
                 strict_title_rebuild=True, omit_title_color_categories=frozenset({"LED TV"}),
             ) for p in ("digi", "alfa")
         }) for key, cfg in VENDOR_REGISTRY.items()
@@ -552,6 +566,8 @@ def test_title_settings_are_isolated_and_never_stale(
         assert "Inverter" not in changed_title
     elif field == "include_warranty":
         assert "Warranty" not in changed_title
+    elif field == "include_color":
+        assert "White" not in changed_title
     elif field == "omit_title_color_categories":
         assert "Black" in changed_title
     elif field == "strict_title_rebuild":
