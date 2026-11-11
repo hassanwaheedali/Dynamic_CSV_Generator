@@ -8,21 +8,102 @@ Everything is plain, deterministic Python: **no LLM calls, no network calls, no
 external APIs**. Every business rule is a lookup table, a regex or a
 keyword-to-enum dictionary that you can read, edit and audit.
 
+For the current multi-store configuration and completed Phase 0/1 work, see
+[The New Way](#the-new-way). The operating guide and historical sheet measurements
+below are retained; dataset-specific counts describe those measured runs.
+
 ---
 
 ## Quick start
+
+### Easiest way on Windows: double-click run_pipeline.bat
+
+**Put your CSV in the input folder, double-click the launcher, select the store,
+platform, and file, and collect the generated upload CSVs.** The launcher runs
+generation, audit, and the advisory report together; no separate commands are needed.
+Python 3.10+ must already be installed and available on PATH.
+
+1. **Prepare the input sheet.** Keep these column headers spelled exactly as shown:
+
+   ```csv
+   Title,Description,Sell Price,Original Price,Categories,Brand,Image
+   ```
+
+   Put one product on each row. In Excel, use **Save As -> CSV UTF-8 (Comma delimited)**,
+   for example `MY_PRODUCTS.csv`. A price or Description containing commas/newlines
+   must remain a properly quoted CSV cell; Excel handles that when exporting.
+   See [The input sheet](#the-input-sheet) for optional weight columns and details.
+
+2. **Copy the CSV directly into this folder:**
+
+   ```text
+   D:\Dynamic_CSV_Generator\kiachahiye_bulk_csv\data\input\
+   ```
+
+   Example: `data/input/MY_PRODUCTS.csv`. The file menu lists `.csv` files directly
+   in this folder; it does not search subfolders or list Excel `.xlsx` files.
+
+3. **Double-click this launcher in File Explorer:**
+
+   ```text
+   D:\Dynamic_CSV_Generator\kiachahiye_bulk_csv\run_pipeline.bat
+   ```
+
+4. **Answer the three menus in order.** Type the displayed option number and press Enter:
+
+   | Menu | What to choose |
+   | --- | --- |
+   | **VENDOR** | The store whose account you are preparing: Kiachahiye or Ajmer. |
+   | **UPLOAD** | Both platforms, DigiMall only, or Alfa only. |
+   | **SHEET** | Your input filename, for example `MY_PRODUCTS.csv`. |
+
+5. **Wait for the result.** The tool generates the selected upload(s), audits them,
+   and prepares QC and weak-description reports. The final screen shows
+   **READY TO UPLOAD** when the audit passes. If it shows **DO NOT UPLOAD / AUDIT FAILED**,
+   read the failure details and `run.log`, correct the problem, and run again.
+   Review any QC findings even when the audit passes.
+
+6. **Press Enter or O at the final prompt to open the output folder.** For
+   Kiachahiye and `MY_PRODUCTS.csv`, the files are under:
+
+   ```text
+   kiachahiye_bulk_csv/data/output/kiachahiye/MY_PRODUCTS/
+   ├── digi/digimall_bulk_import.csv    # upload this to DigiMall
+   ├── alfa/alfa_bulk_import.csv        # upload this to Alfa
+   ├── qc_report.csv
+   ├── title_review_sample.csv
+   ├── row_check.csv
+   ├── thin_descriptions.csv
+   └── run.log
+   ```
+
+   Ajmer runs use `data/output/ajmer/<input-filename-without-extension>/`.
+   A single-platform run regenerates only that platform's upload. Files left by an
+   earlier run for the other platform are marked **STALE** in the final file list.
+
+**Another easy input option:** drag your CSV from any folder onto `run_pipeline.bat`.
+That supplies the input path directly, so you only select the vendor and platform.
+You do not have to copy that file into `data/input/`.
+
+If the launcher reports **Python was not found**, install Python 3.10+ with
+**Add Python to PATH** enabled, then reopen the launcher.
+
+### Direct CLI (advanced)
+
+For scripts or manual generation/audit steps, use the commands below. These direct
+CLI defaults differ from the launcher's vendor/sheet-specific output folders.
 
 ```bash
 cd kiachahiye_bulk_csv
 pip install pytest mypy ruff openpyxl   # only for tests / type-checking / linting / .xlsx input
 
-python main.py                        # uses the paths in CONFIG at the top of main.py
+python main.py --vendor kiachahiye    # paths default to config.py; choose the store explicitly
 ```
 
 That writes:
 
 ```
-kiachahiye_bulk_csv/data/output/
+kiachahiye_bulk_csv/data/output/Products/
 ├── digi/digimall_bulk_import.csv      # 66 columns, Vendor = KiaChahiye PVT LTD
 ├── alfa/alfa_bulk_import.csv          # 28 columns, Vendor = Kia Chahiye Pvt Ltd
 ├── qc_report.csv                      # every flagged row, per file
@@ -35,19 +116,18 @@ files it is given and prints its checklist as it runs -- every rule is a
 `check(...)` line in `audit.py`, and the screen shows each one as `[PASS]` or `[FAIL]`:
 
 ```bash
-python3 audit.py --evidence data/output/row_check.csv     # exit 0 only if every check passes
-python3 -m pytest tests/ -q                               # 485 tests
+python audit.py --vendor kiachahiye --evidence data/output/Products/row_check.csv
+python -m pytest tests/ -q                               # 760 tests at Phase 1 verification
 ```
 
 `--platform digi` / `--platform alfa` runs one upload from end to end: `main.py`
 writes only that file, `qc_report.csv` carries only its findings, and `audit.py`
 opens only it. A rule about a column the other platform holds is not a rule this
 upload can break, so an Alfa run never produces a DigiMall CSV and never blocks on
-a DigiMall cell (34 checks for DigiMall, 35 for Alfa, 48 for both). Under `both` the
-shared rules are read from the DigiMall file, because it carries Alfa's 28 shared
-columns and more; the Alfa file is then proved by its own schema, Vendor, Category
-shape and the cross-file checks (same SKUs, same Handles, same weights, shared
-column prefix).
+a DigiMall-only column. Under `both`, the audit checks both requested files,
+including their cell-specific Title/SEO rules, Description rows, Vendor, IDs,
+weights, and shared identity contracts. The Phase 0/1 baseline runs pass 56/56
+checks; the checklist depends on which platforms are requested.
 
 ### Optional weight column
 
@@ -66,25 +146,25 @@ cells empty and flags the row rather than guessing.
 ### Pointing it at a new sheet
 
 ```bash
-python main.py \
+python main.py --vendor kiachahiye \
   --input "data/input/NEW SHEET.csv" \
   --digi  "data/output/digi/digimall_bulk_import_2026-01-15.csv" \
   --alfa  "data/output/alfa/alfa_bulk_import_2026-01-15.csv" \
   --qc    "data/output/qc_report_2026-01-15.csv"
 ```
 
-Or just edit the `CONFIG` block at the top of `main.py`. Nothing else needs to
-change — the folder names, file names and input path all live there.
+Or edit the path defaults in `config.py`. For the interactive vendor/sheet/platform
+workflow, run `python run_ui.py`; it uses vendor/sheet-specific output folders.
 
 ### Re-running the 100-product stress test
 
 ```bash
-python main.py --input data/input/test100/TEST_100_PRODUCTS.csv \
+python main.py --vendor kiachahiye --input data/input/test100/TEST_100_PRODUCTS.csv \
                --digi   data/output/test100/digi/digimall_bulk_import.csv \
                --alfa   data/output/test100/alfa/alfa_bulk_import.csv \
                --qc     data/output/test100/qc_report.csv \
                --sample-titles data/output/test100/title_review_sample.csv
-python audit.py --input data/input/test100/TEST_100_PRODUCTS.csv \
+python audit.py --vendor kiachahiye --input data/input/test100/TEST_100_PRODUCTS.csv \
                 --digi   data/output/test100/digi/digimall_bulk_import.csv \
                 --alfa   data/output/test100/alfa/alfa_bulk_import.csv \
                 --qc     data/output/test100/qc_report.csv \
@@ -96,11 +176,13 @@ the default path and replaces the real sheet's review file.
 
 ### Checks
 
-```bash
-python -m pytest tests/ -q                       # 485 tests, incl. both acceptance cases
-python -m mypy --strict --ignore-missing-imports $(ls *.py)   # production code
-python -m mypy --strict --ignore-missing-imports --explicit-package-bases $(ls *.py) tests/*.py
-ruff check .                                     # lint, policy in ruff.toml
+Run from `kiachahiye_bulk_csv/` (PowerShell):
+
+```powershell
+python -m pytest tests/ -q                       # includes the real-sheet tests
+$env:MYPYPATH = (Get-Location).Path
+python -m mypy --explicit-package-bases .         # production modules and tests
+python -m ruff check .
 ```
 
 ---
@@ -109,8 +191,8 @@ ruff check .                                     # lint, policy in ruff.toml
 
 The sheet must supply `Title`, `Description`, `Sell Price`, `Original Price`,
 `Categories`, `Brand` and `Image`.  `Vendor` is **not** required: neither file's
-Vendor is ever taken from the sheet -- those two literals are fixed in
-`config.py` (`VENDOR_DIGI` / `VENDOR_ALFA`), so a sheet without a Vendor column
+Vendor is ever taken from the sheet -- each selected store/platform cell supplies
+its own literal from `vendor_config.py`, so a sheet without a Vendor column
 runs normally, and a sheet that has one has its value read and ignored.
 `Weight`, `Weight Unit` (and any other weight-worded column) are optional; when
 absent, the Description is searched instead.
@@ -126,8 +208,8 @@ plus, optionally: `Vendor` (ignored) and any weight column (`Weight`,
 * Descriptions may span many lines — they are read with a real CSV parser.
 * Prices may carry thousands commas (`"36,375"`).
 * `Vendor` is read and then **ignored on purpose**: each output file uses its
-  own fixed constant (the two strings are genuinely different, and neither comes
-  from the sheet).
+  configured store/platform literal. Legacy `vendor_cfg=None` Python callers
+  retain the constants in `config.py`.
 
 ---
 
@@ -142,15 +224,13 @@ plus, optionally: `Vendor` (ignored) and any weight column (`Weight`,
 | `Description` shape | that cell's `description_template` | that cell's `description_template` |
 | `Short Description`, `Commission Percentage`, 36 × `Attribute_*` | yes | **none of these columns exist** |
 
-Both files are projected from **one** internal `ProductRecord` per row, so a
-shared fact (Title, SKU, price, images, Handle…) can never drift between the two
-files.
+Both files are projected from **one** internal `ProductRecord` per row. SKU, price,
+images, Handle, and other shared facts retain their common contracts. Title/SEO,
+Vendor, marketplace IDs, and Description presentation follow each cell’s settings.
 
-`Description` is the single column allowed to differ, and only in **shape**, never in
-content: the record carries the spec rows once, and each of the four cells
-(store × platform) renders them in the template its own `description_template` names
-(`vendor_config.py`). The rows are the same facts either way — restyling Alfa cannot
-move a fact in DigiMall's file. See
+For `Description`, the record carries the spec rows once, and each of the four
+cells renders those facts in its selected template. Restyling Alfa does not move
+a fact in DigiMall's file. See
 [Restyling one file's Description](#restyling-one-files-description-the-template).
 
 ---
@@ -252,7 +332,7 @@ rebuilt from the advisory report for the cleaned sheet:
 
 ```bash
 python3 thin_report.py --input "data/output/cleaned/READY_FIRST_STEP_1_CLEANED.csv" \
-  --digi data/output/cleaned/digi/digimall_bulk_import.csv \
+  --vendor kiachahiye --platform digi --built data/output/cleaned/digi/digimall_bulk_import.csv \
   --qc data/output/cleaned/qc_report.csv \
   --out data/output/cleaned/thin_descriptions_cleaned.csv   # then keep Short_Desc_Bullets < 3
 ```
@@ -275,7 +355,7 @@ python3 thin_report.py --input X.csv --built Y.csv --qc Z.csv --out W.csv
 | `Issues` | every reason that row was listed, e.g. `one-line Description; very short source (43 chars)` |
 | `One_Line` | `yes` when the source Description is a single line — filter this column for exactly that list |
 | `Description_Chars` / `Description_Lines` | what the sheet itself contains |
-| `Spec_Rows_In_Listing` / `Short_Desc_Bullets` | what the file named by `--built` really shows — on a one-platform run that is that platform's own upload (`run_ui.py` grades the first file in scope, so an Alfa-only run reads the Alfa CSV, not a DigiMall one). This report counts the built file's own rows (`<tr><td`), so it follows whichever Description template served that file |
+| `Spec_Rows_In_Listing` / `Short_Desc_Bullets` | what the file named by `--built` really shows — on a one-platform run that is that platform's own upload (`run_ui.py` grades the first file in scope, so an Alfa-only run reads the Alfa CSV, not a DigiMall one). This report counts rows through the selected Description template's `extract()` function |
 | `Why_It_May_Matter` | the same reasons in plain English |
 | `QC_Flags` | the row's flags from the QC report, for context |
 
@@ -301,19 +381,19 @@ The terminal summary prints, at the end of every run:
 
 | To change… | Open | Constant |
 |---|---|---|
-| **The two vendor strings** | `config.py` | `VENDOR_DIGI`, `VENDOR_ALFA` |
+| **Vendor strings** | `vendor_config.py` | `<store>.<platform>.vendor_name`; config.py constants are legacy API defaults |
 | Input / output file paths | `config.py` | `INPUT_FILE`, `DIGI_OUTPUT`, `ALFA_OUTPUT`, … |
 | Default quantity, SEO length windows, Title cap | `config.py` | `DEFAULT_VARIANT_QUANTITY`, `SEO_*`, `TITLE_MAX` |
 | What counts as a thin Description in the worklist | `config.py` | `THIN_*` |
 | **One file's `Description` shape** | `vendor_config.py` | `<store>.<platform>.description_template` — the screen spells it `Kiachahiye.alfa.description_template` (see [Restyling one file's Description](#restyling-one-files-description-the-template)) |
 | **A new `Description` shape** | `description_builder.py` | `DESCRIPTION_TEMPLATES` — paste a live listing's HTML and register it |
 | **Warranty terms** | `warranty_terms.py` | `WARRANTY_TERMS` — brand → category → parts |
-| LED TV warranty on/off | `config.py` | `APPLY_TV_WARRANTY_TABLE` |
-| DigiMall brand ids | `brands.py` | `BRANDS_DIGI` |
-| Alfa brand ids | `brands.py` | `BRANDS_ALFA` |
-| Brand spelling variants | `brands.py` | `BRAND_ALIASES` |
-| DigiMall category paths | `categories.py` | `CATEGORY_DIGI_PATHS` |
-| Alfa category leaf ids | `categories.py` | `CATEGORY_ALFA_IDS` |
+| LED TV warranty on/off | `vendor_config.py` | `<store>.apply_tv_warranty_table`; config.py retains the legacy default |
+| DigiMall brand ids | `vendor_config.py` | `<store>.digi.brands` |
+| Alfa brand ids | `vendor_config.py` | `<store>.alfa.brands` |
+| Brand spelling variants | `vendor_config.py` | `<store>.brand_aliases` / `brand_display_map` |
+| DigiMall category paths | `vendor_config.py` | `<store>.digi.categories` |
+| Alfa category leaf ids | `vendor_config.py` | `<store>.alfa.categories` |
 | Breadcrumb wording → table key | `categories.py` | `DIGI_SEGMENT_ALIASES`, `ALFA_SEGMENT_ALIASES` |
 | Breadcrumbs that are outside the catalogue | `categories.py` | `STOP_SEGMENTS` |
 | Plain-text `Product Type` | `categories.py` | `PRODUCT_TYPE_MAP` |
@@ -322,7 +402,7 @@ The terminal summary prints, at the end of every run:
 | Which attributes apply to which Product Type | `attributes.py` | `SCOPE` |
 | Warranty terms, brand by brand | `warranty_terms.py` | `WARRANTY_TERMS` |
 | Series words kept in rebuilt Titles | `sku_handle.py` | `SERIES_WORDS` |
-| Filenames / folders | `main.py` | `CONFIG` block |
+| Filenames / folders | `config.py` | CLI path defaults; run_ui.py selects vendor/sheet folders |
 
 Every one of those blocks is marked with a banner comment:
 
@@ -382,13 +462,25 @@ This is how a new shape gets made -- copy the Description of a listing you like:
 3. Register it in `DESCRIPTION_TEMPLATES` under a short name.
 4. Name it on **one** cell in `vendor_config.py`, e.g.
    `description_template="wide_table"` inside `Kiachahiye`'s `alfa=PlatformConfig(...)`.
-5. Run `python main.py`. The screen and the summary tell you which shape served which
+5. Run `python main.py --vendor kiachahiye` (or the store you edited). The summary names the shape for each
    file before you upload anything.
 
 Step 4 is the whole deployment; steps 2-3 only *offer* a shape that no file uses yet,
 which is why they are safe to leave half-finished.
 
 ### The promises a new shape has to keep
+
+**Current status:** startup validation checks template round trips, escaping,
+nesting, and warranty markers. Since Phase 0, audit.py and thin_report.py read
+rows through the selected template’s `extract()` function on the requested
+platform files. Remaining table-specific conformance restrictions are future
+Phase 2 work.
+
+**Historical compatibility notes:** the detailed notes below describe the earlier
+markup-reader contract and the audit gaps that motivated Phase 0. They are kept
+as project history; statements below that an extractor-based audit is still
+pending were resolved in Phase 0.
+
 
 `audit.py` (the upload gate) and `thin_report.py` (the weak-Description worklist) both
 read the **built file** with markup-shaped patterns, and this change deliberately left
@@ -555,13 +647,19 @@ the only 35 without it are rows whose own text says `Warranty: N/A` (33) or
 `Compressor Warranty: Lifetime` (2) — a stated term always beats the table, and
 those are kept exactly as the sheet wrote them.
 
-The LED TV switch from the original spec's Test Case 2 is now **on**, in
-`config.py`: `APPLY_TV_WARRANTY_TABLE = True`. Set it to `False` to go back to
-showing no warranty row for a TV.
+The LED TV fallback switch is `VendorConfig.apply_tv_warranty_table` for configured
+store runs; set it to `False` to disable TV reference fallback for that vendor.
+The source’s own stated terms retain their established precedence. The global
+`config.py` switch remains the default for legacy Python callers.
 
 ## Known gaps you can close by supplying data
 
-These are reported by every run until filled in:
+The counts below are the historical 1,800-row sheet snapshot, not current
+per-store totals. Current runs report their own gaps. Fill marketplace IDs in
+the exact vendor/platform cell in `vendor_config.py`; the older legacy-table
+names in this snapshot describe the original configuration.
+
+These gaps were reported until the corresponding data was supplied:
 
 1. **Brands with no id** — `Homage` (78 rows) and `Hisense` (4) are missing from
    **both** lists; `Orient` (83) is missing from Alfa's only. Add the real ids to
@@ -599,7 +697,9 @@ These are reported by every run until filled in:
 
 ```
 kiachahiye_bulk_csv/
-├── config.py               every path, the two vendors, length windows, thresholds
+├── config.py               path defaults, legacy values, length windows, thresholds
+├── vendor_config.py        vendor/platform cells, maps, four-level resolved settings
+├── series_corpus.py        vendor-aware whole-sheet series analysis
 ├── main.py                 entrypoint, CLI, terminal summary
 ├── models.py               dataclasses; one ProductRecord, two projections
 ├── textutils.py            string/colour/weight helpers
@@ -614,21 +714,45 @@ kiachahiye_bulk_csv/
 ├── attributes.py           §11  the 36 DigiMall-only attributes
 ├── writers.py              §2  the two schemas and the two CSVs
 ├── qc_report.py            flag collection and the combined report
-├── audit.py                the 45 machine checks (run after every run)
+├── audit.py                independent checks on requested platform files
 ├── thin_report.py          the weak-Description worklist (advisory, below)
 ├── clean_descriptions.py   rewrite a messy Description column into clean bullets (pre-step)
 ├── ruff.toml               lint policy, every ignore commented
 ├── README.md               this file
 ├── OUTPUTS_GUIDE.md        Roman-Urdu guide: kaunsi file kis kaam ki hai
 ├── WHAT_CHANGED.md         code + CSV change log, verified on two products
-├── tests/                  485 tests, including both acceptance cases
+├── tests/                  760 tests at completed Phase 1 verification
 └── data/
     ├── input/              the source sheet
     └── output/             the two CSVs, the QC report, the Title sample, row_check.csv,
                             thin_descriptions.csv
 ```
 
-## Phase 1: effective cell configuration and Title rendering
+## The New Way
+
+This section records the project’s completed architecture improvements alongside
+the full operating guide above. The layered hybrid approach keeps deterministic
+Python extraction reusable while explicit vendor/platform configuration controls
+presentation. Destination adapters and external data packs remain future work.
+
+Design background: [master architecture research](<tasks/implementation_plan (3).md>).
+Phase 1 follows the later approved Rev 4 refinements: strict cell-owned IDs,
+local TitleSlots, unchanged ProductRecord fields, and rendering during row resolution.
+
+### Phase 0: stabilization and compatibility
+
+Phase 0, committed as `8499268`, established the verified foundation:
+
+- Require an explicit CLI vendor while preserving legacy Python API callers.
+- Wire vendor title-colour and TV warranty settings and configured SEO bounds.
+- Use vendor-aware series vocabularies without cross-store leakage.
+- Audit both requested outputs and read Description rows through each template’s extractor.
+- Correct terminal UI audit-stage handling and thin-report vendor/platform selection.
+- Preserve blank missing IDs, QC/UI reporting, HTML escaping, and CSV serialization.
+
+All eight baseline outputs stayed byte-identical; baseline audits passed 56/56 checks.
+
+### Phase 1: effective cell configuration and Title rendering
 
 `vendor_config.resolve_cell(cfg, "digi" | "alfa")` returns a frozen
 `ResolvedCellConfig`. Presentation settings use **Cell > Vendor > Platform > Engine**:
@@ -668,6 +792,18 @@ SKU/Handle collision passes. TV warranty fallback remains a vendor extraction po
 `run()`/`resolve_row()` after changing their configuration. Writers only project those
 fields; Description templates are still selected and rendered at write time.
 
+### Verification and future changes
+
+The completed implementation passed 760 tests with zero skips, mypy across 47
+source files, Ruff, Description conformance, and all eight locked output comparisons.
+Fresh-context adversarial reviews found and resolved legacy SKU-prefix and VIP
+source-pipe compatibility issues; 4,322 complete TitleResult comparisons matched Phase 0.
+
+Registry-driven tests adapt to registered vendors and settings. Fixed algorithm
+regression cases remain independent oracles, and some older assertions still
+assume particular configuration values. Intentional future changes may require
+reviewing those assertions and the separate CSV baselines.
+
 From the repository root, verify with the existing environment:
 
 ```powershell
@@ -682,3 +818,13 @@ git diff --check
 
 The eight locked output digests and review evidence are recorded in
 `docs/phase1/walkthrough.md`.
+
+### Roadmap beyond Phase 1
+
+| Phase | Status | Scope |
+| --- | --- | --- |
+| 0 | Complete | Stabilization, vendor wiring, template-aware readers, multi-file audit, UI fixes. |
+| 1 | Complete | Resolved configuration, immutable Title facts, independent cell rendering, dynamic contracts. |
+| 2 | Future | Generalize remaining table-specific template conformance restrictions. |
+| 3 | Future | Platform adapters and additional formats, including Shopify/WooCommerce multi-row output. |
+| 4 | Future, on demand | Stateless job API and external configuration packs. |
