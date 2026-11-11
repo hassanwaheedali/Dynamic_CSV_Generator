@@ -17,7 +17,8 @@ Model extraction order (spec section 7, tightened against the real sheet):
 1. an explicit ``Model:`` / ``Model Name:`` label in the Description  -> high
 2. the last parenthetical group in the Title that contains a digit    -> high
 3. an alphanumeric code token that mixes letters and digits           -> medium
-4. nothing found                                                      -> fallback
+4. one unambiguous, unmeasured numeric token in the Title             -> medium
+5. nothing found                                                      -> fallback
 
 A parenthetical group with no digit is never a model code: the sheet contains
 ``(Cool Only)``, which is a feature, not a code.
@@ -208,7 +209,10 @@ def _usable_code(candidate: str) -> bool:
         return False
     if not re.search(r"[A-Za-z]", value) or not re.search(r"\d", value):
         return False
-    return not (CAPACITY_ONLY_RE.match(value) or _UNIT_GLUED_RE.match(value))
+    return not (
+        CAPACITY_ONLY_RE.match(value) or _UNIT_GLUED_RE.match(value)
+        or re.fullmatch(r"\d+(?:[.,]\d+)?(?:\s*[x×]\s*\d+(?:[.,]\d+)?)+", value)
+    )
 
 
 #: The unit vocabulary the sheet itself uses for a size -- the same words `_UNIT_GLUED_RE` is built
@@ -221,22 +225,15 @@ def _stated_as_a_size(digits: str, text: str) -> bool:
     return re.search(rf"(?i)\b{re.escape(digits)}[\s.\-]*(?:{_SIZE_WORD_RE})\b", text) is not None
 
 
-def _paren_digit_code(value: str, text: str) -> bool:
-    """A last paren of pure digits is the part number these sheets hang there -- unless it is a size.
+def _numeric_model_code(value: str, text: str, minimum_digits: int = 4) -> bool:
+    """A numeric identifier must not be stated as a measurement anywhere in the row.
 
-    `_usable_code` demands a letter, because a bare number in a Title is usually a measure: `(32)`
-    on a `32 Inch` panel, `(12)` on a `12 Cu Ft` fridge.  Dawlance writes its refrigerator numbers
-    with no letter at all -- `(9173)`, `(9106)`, `(91999)`, ten rows of them -- and refusing those
-    left the rows with no code in the Title and a fallback SKU built out of title words, so four
-    different machines all shipped as `Dawlance Coral Red Freezer-On-Top Refrigerator - Acce`.
-
-    The row settles the question itself, which is why no list of codes is kept: digits the sheet
-    states next to a unit are a size, and digits it states with no unit anywhere are the part
-    number.  Three digits or fewer stay refused -- every digit-only code on this sheet is four or
-    five digits, while a one- or two-digit paren is a count or a size.
+    Unlabelled numbers need at least four digits, as in the existing parenthetical
+    rule. An explicit Model label supplies enough context to accept shorter codes.
+    Every extraction path uses the same unit vocabulary and measurement check.
     """
     return (
-        len(value) >= 4
+        minimum_digits <= len(value) <= 40
         and value.isdigit()
         and not _stated_as_a_size(value, text)
     )
@@ -244,10 +241,11 @@ def _paren_digit_code(value: str, text: str) -> bool:
 
 def extract_model(title: str, description: str) -> ModelExtraction:
     """Resolve one row's model code, most trustworthy source first."""
+    text = f"{title}\n{description}"
     match = MODEL_LABEL_RE.search(description)
     if match:
         value = clean_model_code(match.group("value"))
-        if _usable_code(value):
+        if _usable_code(value) or _numeric_model_code(value, text, minimum_digits=1):
             return ModelExtraction(value, "description-model-line", "high")
 
     group = _last_paren_group(title)
@@ -255,7 +253,7 @@ def extract_model(title: str, description: str) -> ModelExtraction:
         value = clean_model_code(group)
         if _usable_code(value):
             return ModelExtraction(value, "title-parenthetical", "high")
-        if _paren_digit_code(value, f"{title}\n{description}"):
+        if _numeric_model_code(value, text):
             return ModelExtraction(value, "title-parenthetical", "high")
 
     if " - " in title:
@@ -275,6 +273,13 @@ def extract_model(title: str, description: str) -> ModelExtraction:
         if _usable_code(cleaned) and re.search(r"[A-Za-z]", cleaned) and re.search(r"\d", cleaned):
             return ModelExtraction(cleaned, "title-code-token", "medium")
 
+    # Unlabelled numbers need stronger evidence: one distinct standalone candidate,
+    # at least four digits, and no unit attached anywhere in the row. Never guess
+    # between competing numbers or read part of a decimal, dimension, or formatted price.
+    numeric = set(re.findall(r"(?<![\w.,/+%\-])\d{4,40}(?![\w.,/+%\-])", title))
+    numeric = {value for value in numeric if _numeric_model_code(value, text)}
+    if len(numeric) == 1:
+        return ModelExtraction(numeric.pop(), "title-code-token", "medium")
     return ModelExtraction("", "fallback", "none")
 
 

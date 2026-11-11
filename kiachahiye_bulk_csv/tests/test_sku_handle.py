@@ -4,6 +4,8 @@
 it owns are pinned here directly, at the reader, and not only through a Title.
 """
 
+import pytest
+
 from sku_handle import (
     ModelExtraction,
     extract_model,
@@ -11,6 +13,54 @@ from sku_handle import (
     resolve_capacity,
     tonnage_from_model_code,
 )
+from tests.conftest import Pipeline
+
+
+@pytest.mark.parametrize("code", ["9101", "538", "12345"])
+def test_explicit_numeric_model_is_authoritative(code: str) -> None:
+    result = extract_model("Example Refrigerator 4 Cu Ft", f"• Model: {code}")
+    assert result == ModelExtraction(code, "description-model-line", "high")
+
+
+@pytest.mark.parametrize("description", ["", "Model: N/A", "Model: 4 Cu Ft"])
+def test_unique_unmeasured_numeric_title_model_is_used(description: str) -> None:
+    result = extract_model(
+        "Dawlance 9101 4 Cu Ft Non-Inverter Single Door Refrigerator", description
+    )
+    assert result == ModelExtraction("9101", "title-code-token", "medium")
+
+
+@pytest.mark.parametrize("title, description", [
+    ("Example 18000 BTU Air Conditioner", ""),
+    ("Example 1500 Watt Heater", "Model: 1500"),
+    ("Example Refrigerator 9101 9191", ""),
+    ("Example Refrigerator 4 Cu Ft", "Model: N/A"),
+    ("Example TV 1920x1080", ""),
+    ("Example Heater 1500.5 Watts", ""),
+])
+def test_measurements_and_ambiguous_numeric_title_models_are_skipped(
+    title: str, description: str
+) -> None:
+    assert extract_model(title, description).confidence == "none"
+
+
+@pytest.mark.parametrize("model_line", ["• Model: 9101\n", ""])
+def test_numeric_model_reaches_upload_titles_and_sku(
+    pipeline: Pipeline, model_line: str
+) -> None:
+    result = pipeline([{
+        "Title": "Dawlance 9101 4 Cu Ft White Single Door Refrigerator",
+        "Description": model_line + "Capacity: 4 Cu Ft\nColor: White",
+        "Brand": "Dawlance",
+        "Categories": "Refrigerator",
+    }])
+    record = result["records"][0]
+    assert record.model == "9101"
+    assert record.model_source != "fallback"
+    assert record.sku.endswith("-9101")
+    assert "9101" in record.title_digi
+    assert "9101" in record.title_alfa
+    assert not any(flag.category == "fallback_sku" for flag in result["flags"].flags)
 
 
 def test_an_air_conditioner_reads_its_own_tonnage_not_a_prose_weight_bullet() -> None:

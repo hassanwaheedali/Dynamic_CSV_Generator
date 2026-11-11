@@ -1,6 +1,11 @@
 ﻿# Changelog
 
 ## [Unreleased]
+### Fixed
+- Numeric `Model:` values now reach upload titles and SKUs. When no usable model
+  label exists, extraction accepts a single standalone title number of at least
+  four digits, excluding stated measurements; ambiguous numbers remain unresolved.
+
 ### Added
 - The file menu in `run_pipeline.bat` and `run_ui.py` lists CSVs from all
   `data/input` subfolders, with folder paths to distinguish matching filenames.
