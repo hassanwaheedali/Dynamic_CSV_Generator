@@ -45,7 +45,7 @@ from textutils import (
     parse_weight_unit,
     pick_weight_columns,
 )
-from title_builder import INVERTER_CONCEPT_CATEGORIES, without_leading_type_words
+from title_builder import INVERTER_CONCEPT_CATEGORIES, model_text_for_title, without_leading_type_words
 from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor, resolve_cell
 from warranty import resolve_warranty
 from writers import ALFA_HEADER, DIGI_HEADER, template_for_cell
@@ -630,7 +630,8 @@ def main(argv: list[str] | None = None) -> int:
             # HRF-538TIFBU` is the shop's sentence about his machine, and `HRF-538TIFBU` is its code.
             # Re-deriving the raw line here demanded words the formula spends on other slots.
             model = without_leading_type_words(extract_model(rec["Title"], rec["Description"]))
-            if model.code and model.code.replace(" ", "").lower() not in title.replace(" ", "").lower():
+            display_model = model_text_for_title(model.code, title_plat_cfg.include_inverter)
+            if display_model and display_model.replace(" ", "").lower() not in title.replace(" ", "").lower():
                 title_bad.append(f"{prefix}{title[:40]} (model {model.code!r} missing)")
             if row.get("Product Type", "") in title_plat_cfg.omit_title_color_categories:
                 shipped_color = row.get("Option1 Value", "").strip()
@@ -647,9 +648,9 @@ def main(argv: list[str] | None = None) -> int:
                 not title_plat_cfg.include_inverter
                 and row.get("Product Type", "") in INVERTER_CONCEPT_CATEGORIES
             ):
-                if re.search(r"\b(?:non-?)?inverter\b", title, re.IGNORECASE):
+                if re.search(r"(?<![\w-])(?:non[\s-]?)?inverter(?![\w-])", title, re.IGNORECASE):
                     title_bad.append(f"{prefix}{title[:40]} (inverter present when excluded)")
-                if re.search(r"\b(?:non-?)?inverter\b", seo_title, re.IGNORECASE):
+                if re.search(r"(?<![\w-])(?:non[\s-]?)?inverter(?![\w-])", seo_title, re.IGNORECASE):
                     title_bad.append(f"{prefix}{seo_title[:40]} (SEO Title inverter present when excluded)")
     check(not title_bad, f"every Title is <={CONFIG.TITLE_MAX} chars, single-spaced and carries its model code",
           f"{len(title_bad)}: {title_bad[:4]}")

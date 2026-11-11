@@ -790,6 +790,12 @@ even when both cells select identical policies. The pipeline retains its two exi
 SKU/Handle collision passes. TV warranty fallback remains a vendor extraction policy;
 `include_warranty` controls each cell's presentation.
 
+`include_inverter=False` also filters standalone technology words in a readable
+model display name (for example, `Frost Inverter 20` becomes `Frost 20`). The raw
+model, SKU, and Description facts stay intact; setting the flag to `True` keeps
+the wording. Embedded identifier components are not rewritten. Audit checks the
+policy-adjusted display identity and still rejects a missing or changed model.
+
 `ProductRecord` fields are unchanged. Title/SEO are resolution-time outputs: re-run
 `run()`/`resolve_row()` after changing their configuration. Writers only project those
 fields; Description templates are still selected and rendered at write time.

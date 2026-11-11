@@ -1991,8 +1991,8 @@ def _strip_excluded_tokens(
     """Strip excluded inverter and/or warranty phrases from a title or fragment (DRY)."""
     cleaned = text
     if not include_inverter:
-        cleaned = NON_INVERTER_RE.sub("", cleaned)
-        cleaned = INVERTER_RE.sub("", cleaned)
+        for pattern in (NON_INVERTER_RE, INVERTER_RE):
+            cleaned = re.sub(rf"(?<![\w-])(?:{pattern.pattern})(?![\w-])", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|")
     if not include_warranty:
         cleaned = re.sub(
@@ -2009,6 +2009,18 @@ def _strip_excluded_tokens(
         )
         cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|")
     return cleaned
+
+
+def model_text_for_title(model: str, include_inverter: bool) -> str:
+    """Apply display policy to name words, preserving embedded code components.
+
+    The stored model and SKU stay untouched. Whitespace boundaries distinguish a
+    name such as 'Frost Inverter 20' from an identifier such as 'ZX-INVERTER-20'.
+    """
+    if include_inverter:
+        return clean_inline(model)
+    pattern = rf"(?<!\S)(?:{NON_INVERTER_RE.pattern}|{INVERTER_RE.pattern})(?!\S)"
+    return clean_inline(re.sub(pattern, "", model, flags=re.IGNORECASE))
 
 
 @dataclass(frozen=True)
@@ -2312,10 +2324,10 @@ def _render_title(
         part2_pieces: list[str] = []
         model_slot = ""
         if extraction.confidence in ("high", "medium") and extraction.code:
-            model_slot = clean_inline(extraction.code)
+            model_slot = model_text_for_title(extraction.code, include_inverter)
             part2_pieces.append(model_slot)
         elif extraction.code and extraction.source != "fallback":
-            clean_code = clean_inline(extraction.code)
+            clean_code = model_text_for_title(extraction.code, include_inverter)
             brand_token = re.sub(r"[^A-Za-z0-9]", "", brand).upper()
             if brand_token and clean_code.upper().startswith(f"{brand_token}-"):
                 clean_code = clean_code[len(brand_token) + 1:].strip()
@@ -2324,9 +2336,9 @@ def _render_title(
                 part2_pieces.append(clean_code)
         # A codeless row's own name-and-number belongs in segment 2 as one fact.
         if extraction.confidence == "none" and identity:
-            model_slot = clean_inline(identity)
+            model_slot = model_text_for_title(identity, include_inverter)
             part2_pieces.append(model_slot)
-            identity_printed = identity
+            identity_printed = model_slot
         feature_slot = ""
         if feature:
             clean_feat = _strip_excluded_tokens(

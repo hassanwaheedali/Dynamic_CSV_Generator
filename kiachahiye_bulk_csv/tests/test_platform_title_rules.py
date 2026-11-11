@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import audit
 import description_builder
 import main as pipeline_main
 import title_builder
@@ -22,7 +24,7 @@ from models import InputRow, ProductRecord
 from qc_report import QCFlagCollector
 from sku_handle import ModelExtraction, UniqueRegistry
 from vendor_config import KIACHAHIYE, VENDOR_REGISTRY, TitleFormula, resolve_cell
-from writers import build_alfa_row, build_digi_row
+from writers import DIGI_HEADER, build_alfa_row, build_digi_row, write_csv
 
 Pipeline = Callable[..., dict[str, Any]]
 
@@ -409,6 +411,90 @@ def test_resolve_row_extracts_once_and_renders_each_cell_once(
 
 
 _CELLS = [(key, platform) for key in VENDOR_REGISTRY for platform in ("digi", "alfa")]
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("Nova Inverter 15", "Nova 15"),
+    ("Nova Non-Inverter 15", "Nova 15"),
+    ("Nova Non Inverter 15", "Nova 15"),
+    ("Nova DC Inverter 15", "Nova 15"),
+    ("ZX-INVERTER-20", "ZX-INVERTER-20"),
+])
+def test_model_display_policy_is_generic_and_reversible(name: str, expected: str) -> None:
+    assert title_builder.model_text_for_title(name, False) == expected
+    assert title_builder.model_text_for_title(name, True) == name
+
+
+def test_vip_codeless_identity_does_not_restore_excluded_words() -> None:
+    result = title_builder.build_title(
+        "Nova", ModelExtraction("", "fallback", "none"), "Fan", "Nova Brushless 20 Ceiling Fan", "",
+        strict_rebuild=True, title_formula="vip_pipe", include_inverter=False,
+    )
+    assert "Brushless" not in result.title
+    assert "Brushless" not in result.identity_token
+
+
+def test_embedded_model_component_survives_title_and_seo(pipeline: Pipeline, tmp_path: Path) -> None:
+    output = pipeline([{
+        "Title": "Dawlance Inverter Air Conditioner ZX-INVERTER-20", "Description": "Model: ZX-INVERTER-20",
+        "Brand": "Dawlance", "Categories": "Air Conditioner", "Sell Price": "100",
+        "Original Price": "120", "Image": "",
+    }], vendor_cfg=KIACHAHIYE)
+    assert "ZX-INVERTER-20" in output["digi"][0]["Title"]
+    assert "ZX-INVERTER-20" in output["digi"][0]["SEO Title"]
+    assert audit.main([
+        "--input", str(tmp_path / "input.csv"), "--vendor", "kiachahiye", "--platform", "digi",
+        "--digi", str(output["digi_path"]), "--qc", str(output["qc_path"]),
+    ]) == 0
+
+
+def test_audit_still_rejects_missing_model_after_display_filtering(pipeline: Pipeline, tmp_path: Path) -> None:
+    output = pipeline([{
+        "Title": "Dawlance Frost Inverter 20 1.25 Ton Inverter Air Conditioner",
+        "Description": "Model: Frost Inverter 20\nCapacity: 1.25 Ton\nWarranty: 1 Year",
+        "Brand": "Dawlance", "Categories": "Air Conditioner", "Sell Price": "100",
+        "Original Price": "120", "Image": "",
+    }], vendor_cfg=KIACHAHIYE)
+    # Independent negative oracle: a well-formed title naming a different model.
+    output["digi"][0]["Title"] = "Dawlance 1.25 Ton Air Conditioner - Frost 21"
+    write_csv(output["digi_path"], DIGI_HEADER, output["digi"])
+    assert audit.main([
+        "--input", str(tmp_path / "input.csv"), "--vendor", "kiachahiye", "--platform", "digi",
+        "--digi", str(output["digi_path"]), "--qc", str(output["qc_path"]),
+    ]) == 1
+    assert any(not ok and "model 'Frost Inverter 20' missing" in detail for ok, _, detail in audit.RESULTS)
+
+
+@pytest.mark.parametrize("vendor_key,platform", _CELLS)
+@pytest.mark.parametrize("formula", list(title_builder.TITLE_FORMULAS))
+@pytest.mark.parametrize("enabled", [False, True])
+def test_model_display_obeys_inverter_policy_without_changing_identity(
+    pipeline: Pipeline, vendor_key: str, platform: str, formula: str, enabled: bool,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    row = {
+        "Title": "Dawlance Frost Inverter 20 1.25 Ton Inverter Air Conditioner",
+        "Description": "Model: Frost Inverter 20\nCapacity: 1.25 Ton\nWarranty: 1 Year",
+        "Brand": "Dawlance", "Categories": "Air Conditioner", "Sell Price": "100",
+        "Original Price": "120", "Image": "",
+    }
+    original = VENDOR_REGISTRY[vendor_key]
+    cfg = dataclasses.replace(original, **{
+        platform: dataclasses.replace(getattr(original, platform), title_formula=formula, include_inverter=enabled),
+    })
+    output = pipeline([row], vendor_cfg=cfg)
+    title = output[platform][0]["Title"]
+    assert ("Inverter" in title) is enabled
+    assert ("Frost Inverter 20" if enabled else "Frost 20") in title
+    assert output["records"][0].model == "Frost Inverter 20"
+    assert output[platform][0]["Variant SKU"].endswith("FROSTINVERTER20")
+    assert "Inverter" in output[platform][0]["Description"]
+    monkeypatch.setitem(VENDOR_REGISTRY, vendor_key, cfg)
+    assert audit.main([
+        "--input", str(tmp_path / "input.csv"), "--vendor", vendor_key,
+        "--digi", str(output["digi_path"]), "--alfa", str(output["alfa_path"]),
+        "--qc", str(output["qc_path"]),
+    ]) == 0
 
 
 @pytest.mark.parametrize("vendor_key,platform", _CELLS)
