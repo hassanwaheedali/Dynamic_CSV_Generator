@@ -1,0 +1,933 @@
+{
+    "count": 116,
+    "results": [
+        {
+            "parent": null,
+            "handle": "electronics",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11639",
+            "category_name": "Electronics"
+        },
+        {
+            "parent": null,
+            "handle": "home-life-style",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11640",
+            "category_name": "Home & Life Style"
+        },
+        {
+            "parent": 11640,
+            "handle": "life-style/home-living",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11641",
+            "category_name": "Home & Living"
+        },
+        {
+            "parent": 11639,
+            "handle": "electronics/smart-phones",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11642",
+            "category_name": "Phones"
+        },
+        {
+            "parent": 11639,
+            "handle": "electronics/home-appliances",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11643",
+            "category_name": "Home Appliances"
+        },
+        {
+            "parent": 11639,
+            "handle": "electronics/led-tvs-audio-cameras",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11644",
+            "category_name": "LED TVs, Audio & Cameras"
+        },
+        {
+            "parent": 11639,
+            "handle": "electronics/computing-gaming",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11645",
+            "category_name": "Computing & Gaming"
+        },
+        {
+            "parent": 11642,
+            "handle": "electronics/smart-phones/smartphones",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11646",
+            "category_name": "Smartphones"
+        },
+        {
+            "parent": 11642,
+            "handle": "electronics/smart-phones/tablets-ipads",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11647",
+            "category_name": "Tablets & Ipads"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/home-appliances/cooling-heating",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11653",
+            "category_name": "Cooling & Heating"
+        },
+        {
+            "parent": 11653,
+            "handle": "electronics/appliances/air-treatment/room-coolers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11654",
+            "category_name": "Air Coolers"
+        },
+        {
+            "parent": 11653,
+            "handle": "electronics/appliances/air-treatment/air-purifiers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11655",
+            "category_name": "Air Purifiers"
+        },
+        {
+            "parent": 11653,
+            "handle": "electronics/appliances/air-treatment/humidifier-dehumidifier",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11656",
+            "category_name": "Humidifier"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/appliances/kitchen-appliances",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11661",
+            "category_name": "Kitchen Appliances"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/microwave-ovens",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11666",
+            "category_name": "Microwaves"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/water-dispensers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11669",
+            "category_name": "Water Dispensers & Purifiers"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/appliances/generator-ups-solar-power-generation",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11670",
+            "category_name": "Generator, UPS, Solar & Power Generation"
+        },
+        {
+            "parent": 11670,
+            "handle": "electronics/appliances/generator-ups-solar-power-generation/ups",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11671",
+            "category_name": "UPS"
+        },
+        {
+            "parent": 11670,
+            "handle": "electronics/appliances/generator-ups-solar-power-generation/solar-panel",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11672",
+            "category_name": "Solar Panel"
+        },
+        {
+            "parent": 11670,
+            "handle": "electronics/appliances/generator-ups-solar-power-generation/batteries",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11673",
+            "category_name": "Batteries"
+        },
+        {
+            "parent": 11644,
+            "handle": "electronics/led-tvs-audio-cameras/smart-tv",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11675",
+            "category_name": "Smart TV"
+        },
+        {
+            "parent": 11644,
+            "handle": "electronics/led-tvs-audio-cameras/basic-tv",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11676",
+            "category_name": "Basic TV"
+        },
+        {
+            "parent": 11644,
+            "handle": "electronics/led-tvs-audio-cameras/projectors",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11677",
+            "category_name": "Projectors"
+        },
+        {
+            "parent": 11644,
+            "handle": "electronics/led-tvs-audio-cameras/camera-accessories",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11678",
+            "category_name": "Camera & Accessories"
+        },
+        {
+            "parent": 11644,
+            "handle": "electronics/led-tvs-audio-cameras/sound-home-theaters",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11679",
+            "category_name": "Sound & Home Theaters"
+        },
+        {
+            "parent": 11679,
+            "handle": "electronics/led-tvs-audio-cameras/sound-home-theaters/audio",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11680",
+            "category_name": "Audio"
+        },
+        {
+            "parent": 11679,
+            "handle": "electronics/led-tvs-audio-cameras/sound-home-theaters/home-audio",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11681",
+            "category_name": "Home Audio"
+        },
+        {
+            "parent": 11644,
+            "handle": "electronics/led-tvs-audio-cameras/audio-video-accessories",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11682",
+            "category_name": "Audio Video Accessories"
+        },
+        {
+            "parent": 11645,
+            "handle": "electronics/computing-gaming/laptop",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11683",
+            "category_name": "Laptop"
+        },
+        {
+            "parent": 11645,
+            "handle": "electronics/computing-gaming/desktops-pc",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11685",
+            "category_name": "Desktops & Pc"
+        },
+        {
+            "parent": 11645,
+            "handle": "electronics/computing-gaming/gaming-chair",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11686",
+            "category_name": "Gaming Chair"
+        },
+        {
+            "parent": 11645,
+            "handle": "electronics/computing-gaming/printers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11687",
+            "category_name": "Printers"
+        },
+        {
+            "parent": 11645,
+            "handle": "electronics/computing-gaming/computer-accessories",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11689",
+            "category_name": "Computer Accessories"
+        },
+        {
+            "parent": 11645,
+            "handle": "electronics/computing-gaming/monitors-accessories",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11691",
+            "category_name": "Monitors & Accessories"
+        },
+        {
+            "parent": null,
+            "handle": "fashion",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11696",
+            "category_name": "Fashion"
+        },
+        {
+            "parent": null,
+            "handle": "automative",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11714",
+            "category_name": "Automotive"
+        },
+        {
+            "parent": null,
+            "handle": "campaigns",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11735",
+            "category_name": "Campaigns"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/dishwasher",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11747",
+            "category_name": "Dishwashers"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/appliances/garment-care",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11748",
+            "category_name": "Irons & Garment Steamers"
+        },
+        {
+            "parent": 11748,
+            "handle": "electronics/appliances/garment-care/irons",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11749",
+            "category_name": "Irons"
+        },
+        {
+            "parent": 11748,
+            "handle": "electronics/appliances/garment-care/garment-steamer",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11750",
+            "category_name": "Garment Steamer"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/home-appliances/vacuum-floor-care",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11751",
+            "category_name": "Vacuum & Floor Care"
+        },
+        {
+            "parent": 11653,
+            "handle": "electronics/appliances/air-treatment/dehumidifier",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11763",
+            "category_name": "Dehumidifier"
+        },
+        {
+            "parent": 11653,
+            "handle": "electronics/appliances/air-treatment/water-heaters",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11764",
+            "category_name": "Water Heaters"
+        },
+        {
+            "parent": 11749,
+            "handle": "electronics/appliances/garment-care/irons/steam-iron",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11766",
+            "category_name": "Steam Iron"
+        },
+        {
+            "parent": 11749,
+            "handle": "electronics/appliances/garment-care/irons/dry-iron",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11767",
+            "category_name": "Dry Iron"
+        },
+        {
+            "parent": null,
+            "handle": "health-beauty",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11773",
+            "category_name": "Health & Beauty"
+        },
+        {
+            "parent": 11773,
+            "handle": "health-beauty/hair-care",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11777",
+            "category_name": "Hair Care"
+        },
+        {
+            "parent": 11773,
+            "handle": "health-beauty/makeup",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11778",
+            "category_name": "Makeup "
+        },
+        {
+            "parent": 11653,
+            "handle": "electronics/appliances/air-treatment/air-conditioners",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11782",
+            "category_name": "Air Conditioners"
+        },
+        {
+            "parent": 11782,
+            "handle": "electronics/appliances/air-treatment/air-conditioners/inverters",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11783",
+            "category_name": "Inverters"
+        },
+        {
+            "parent": 11782,
+            "handle": "electronics/appliances/air-treatment/air-conditioners/non-invertors",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11784",
+            "category_name": "Non-Invertors"
+        },
+        {
+            "parent": 11782,
+            "handle": "electronics/appliances/air-treatment/air-conditioners/floor-standing",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11785",
+            "category_name": "Floor Standing"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/refrigerators",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11787",
+            "category_name": "Refrigerators"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/freezers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11788",
+            "category_name": "Freezers"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/ovens",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11789",
+            "category_name": "Ovens"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/water-generators",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11790",
+            "category_name": "Water Generators"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/appliances/washer-dryers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11791",
+            "category_name": "Washer & Dryers"
+        },
+        {
+            "parent": 11791,
+            "handle": "electronics/appliances/washer-dryers/washing-machines",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11792",
+            "category_name": "Washing Machines"
+        },
+        {
+            "parent": 11791,
+            "handle": "electronics/appliances/washer-dryers/clothing-dryers",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11793",
+            "category_name": "Clothing & Dryers"
+        },
+        {
+            "parent": 11791,
+            "handle": "electronics/appliances/washer-dryers/combo-washer-dryers",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11794",
+            "category_name": "Combo Washer Dryers"
+        },
+        {
+            "parent": 11751,
+            "handle": "electronics/appliances/vaccum-cleaner/vaccum-cleaners",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11795",
+            "category_name": "Vaccum Cleaners"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/appliances/small-appliances",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11802",
+            "category_name": "Small Kitchen Appliances"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/electric-kettles",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11803",
+            "category_name": "Electric Kettles"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/juicer-fruit-extractors",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11804",
+            "category_name": "Juicer & Fruit Extractors"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/mixers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11805",
+            "category_name": "Mixers"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/blenders",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11806",
+            "category_name": "Blenders"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/food-processors",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11807",
+            "category_name": "Food Processors"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/air-fryers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11808",
+            "category_name": "Air Fryers"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/grinders",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11809",
+            "category_name": "Grinders"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/sandwich-maker",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11814",
+            "category_name": "Sandwich Maker"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/toaster",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11815",
+            "category_name": "Toaster"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/coffee-machine",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11816",
+            "category_name": "Coffee Machine"
+        },
+        {
+            "parent": null,
+            "handle": "mother-baby-1",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11818",
+            "category_name": "Mother & Baby"
+        },
+        {
+            "parent": 11773,
+            "handle": "health-beauty/bath-body-2",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11819",
+            "category_name": "Bath & Body"
+        },
+        {
+            "parent": 11773,
+            "handle": "health-beauty/men-s-care",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11820",
+            "category_name": "Men's Care"
+        },
+        {
+            "parent": 11820,
+            "handle": "health-beauty/men-s-care/shaving-grooming",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11822",
+            "category_name": "Shaving & Grooming"
+        },
+        {
+            "parent": 11777,
+            "handle": "health-beauty/hair-care/straightening-combs-brushes",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11823",
+            "category_name": "Straightening Combs & Brushes"
+        },
+        {
+            "parent": 11777,
+            "handle": "health-beauty/hair-care/hair-curlers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11824",
+            "category_name": "Hair Curlers"
+        },
+        {
+            "parent": 11777,
+            "handle": "health-beauty/hair-care/hair-dryers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11825",
+            "category_name": "Hair Dryers"
+        },
+        {
+            "parent": 11778,
+            "handle": "health-beauty/makeup/lips",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11827",
+            "category_name": "Lips"
+        },
+        {
+            "parent": 11778,
+            "handle": "health-beauty/makeup/makeup-accessories",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11829",
+            "category_name": "Makeup Accessories"
+        },
+        {
+            "parent": 11827,
+            "handle": "health-beauty/makeup/lips/lipstick",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11832",
+            "category_name": "Lipstick"
+        },
+        {
+            "parent": 11827,
+            "handle": "health-beauty/makeup/lips/lip-gloss",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11833",
+            "category_name": "Lip Gloss"
+        },
+        {
+            "parent": 11819,
+            "handle": "health-beauty/bath-body-2/body-soaps-shower-gels",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11842",
+            "category_name": "Body Soaps & Shower Gels"
+        },
+        {
+            "parent": 11773,
+            "handle": "health-beauty/beauty-tools",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11847",
+            "category_name": "Beauty Tools"
+        },
+        {
+            "parent": 11822,
+            "handle": "health-beauty/men-s-care/shaving-grooming/trimmers-groomers-clippers",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11849",
+            "category_name": "Trimmers, Groomers & Clippers"
+        },
+        {
+            "parent": 11819,
+            "handle": "health-beauty/bath-body-2/hair-removal-appliances-1",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11850",
+            "category_name": "Hair Removal Appliances"
+        },
+        {
+            "parent": 11847,
+            "handle": "health-beauty/beauty-tools/skin-care-tools",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11851",
+            "category_name": "Skin Care Tools"
+        },
+        {
+            "parent": 11847,
+            "handle": "health-beauty/beauty-tools/massager",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11853",
+            "category_name": "Massager"
+        },
+        {
+            "parent": 11640,
+            "handle": "life-style/bedding-bath",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11854",
+            "category_name": "Bedding & Bath"
+        },
+        {
+            "parent": 11854,
+            "handle": "life-style/bedding-bath/bath",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11855",
+            "category_name": "Bath"
+        },
+        {
+            "parent": 11855,
+            "handle": "life-style/bedding-bath/bath/bathroom-scale",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11856",
+            "category_name": "Bathroom Scale"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/cooktops-ranges",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11861",
+            "category_name": "Cooktops & Ranges"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/bread-makers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11863",
+            "category_name": "Bread Makers"
+        },
+        {
+            "parent": 11773,
+            "handle": "health-beauty/health-care",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11879",
+            "category_name": "Health Care"
+        },
+        {
+            "parent": 11879,
+            "handle": "health-beauty/health-care/medical-supplies-equipments",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11880",
+            "category_name": " Medical Supplies & Equipments"
+        },
+        {
+            "parent": 11661,
+            "handle": "electronics/appliances/kitchen-appliances/range-hoods",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11885",
+            "category_name": "Range Hoods"
+        },
+        {
+            "parent": 11645,
+            "handle": "electronics/computing-gaming/consoles-1",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11888",
+            "category_name": "Consoles"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/home-appliances/sewing-machines",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11892",
+            "category_name": "Sewing Machines"
+        },
+        {
+            "parent": null,
+            "handle": "sports-outdoor",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11894",
+            "category_name": "Sports & Outdoor"
+        },
+        {
+            "parent": 11894,
+            "handle": "sports-outdoor/outdoor-1",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11895",
+            "category_name": "Outdoor"
+        },
+        {
+            "parent": 11895,
+            "handle": "sports-outdoor/outdoor-1/camping-hiking-1",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11896",
+            "category_name": "Camping & Hiking"
+        },
+        {
+            "parent": 11896,
+            "handle": "sports-outdoor/outdoor-1/camping-hiking-1/camp-kitchen",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11897",
+            "category_name": "Camp Kitchen"
+        },
+        {
+            "parent": 11689,
+            "handle": "electronics/computing-gaming/computer-accessories/paper-shredder",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11903",
+            "category_name": "Paper Shredder"
+        },
+        {
+            "parent": 11689,
+            "handle": "electronics/computing-gaming/computer-accessories/scanner",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11904",
+            "category_name": "Scanner"
+        },
+        {
+            "parent": 11689,
+            "handle": "electronics/computing-gaming/computer-accessories/attendence-machine",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11905",
+            "category_name": "Attendence Machine"
+        },
+        {
+            "parent": 11642,
+            "handle": "electronics/smart-phones/like-new-mobiles",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11909",
+            "category_name": "Like New Mobiles"
+        },
+        {
+            "parent": 11888,
+            "handle": "electronics/computing-gaming/consoles-1/game",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11913",
+            "category_name": "Game"
+        },
+        {
+            "parent": 11888,
+            "handle": "electronics/computing-gaming/consoles-1/accessories",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11914",
+            "category_name": "Accessories"
+        },
+        {
+            "parent": 11643,
+            "handle": "electronics/home-appliances/bulk-deals",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11924",
+            "category_name": "Bulk Deals"
+        },
+        {
+            "parent": 11689,
+            "handle": "electronics/computing-gaming/computer-accessories/keyboards",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11925",
+            "category_name": "Keyboards"
+        },
+        {
+            "parent": 11689,
+            "handle": "electronics/computing-gaming/computer-accessories/mouse",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11926",
+            "category_name": "Mouse"
+        },
+        {
+            "parent": 11689,
+            "handle": "electronics/computing-gaming/computer-accessories/mice-keyboard-combos",
+            "level": 0,
+            "is_active": false,
+            "category_id": "11927",
+            "category_name": "Mice & Keyboard Combos"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/waffle-makers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11928",
+            "category_name": "Waffle Makers"
+        },
+        {
+            "parent": 11802,
+            "handle": "electronics/appliances/small-appliances/egg-boilers",
+            "level": 0,
+            "is_active": true,
+            "category_id": "11929",
+            "category_name": "Egg Boilers"
+        }
+    ]
+}

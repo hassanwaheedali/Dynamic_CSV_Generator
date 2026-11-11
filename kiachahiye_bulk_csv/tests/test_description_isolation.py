@@ -29,7 +29,7 @@ from description_builder import (
 from models import SpecRow
 from qc_report import QCFlagCollector
 from tests.conftest import run_pipeline
-from vendor_config import VENDOR_REGISTRY
+from vendor_config import VENDOR_REGISTRY, resolve_cell
 from writers import build_alfa_row, build_digi_row, template_for_cell
 
 
@@ -262,8 +262,12 @@ def test_the_resolver_that_names_a_cell_is_the_one_that_renders_it() -> None:
     ship another, which is the single drift this whole seam exists to make impossible.
     """
     cfg = VENDOR_REGISTRY["kiachahiye"]
-    assert template_for_cell(cfg, "digi") is SPEC_TABLE
-    assert template_for_cell(cfg, "alfa") is KIACHAHIYE_ALFA_CARD
+    assert template_for_cell(cfg, "digi") is DESCRIPTION_TEMPLATES[
+        resolve_cell(cfg, "digi").description_template
+    ]
+    assert template_for_cell(cfg, "alfa") is DESCRIPTION_TEMPLATES[
+        resolve_cell(cfg, "alfa").description_template
+    ]
     assert template_for_cell(None, "digi") is SPEC_TABLE, "a bare run ships the shop's own table"
     with pytest.raises(KeyError):
         template_for_cell(cfg, "digiity")

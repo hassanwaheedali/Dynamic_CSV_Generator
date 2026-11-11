@@ -58,6 +58,10 @@ class PlatformConfig:
     include_color: bool | None = None
     omit_title_color_categories: frozenset[str] | None = None
     strict_title_rebuild: bool | None = None
+    raw_taxonomy_path: str | None = None
+    category_id_format: str | None = None
+    category_segment_aliases: dict[str, str] | None = None
+    product_type_map: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,8 @@ class ResolvedCellConfig:
     default_product_type_colors: Mapping[str, str]
     default_variant_quantity: int
     apply_tv_warranty_table: bool
+    raw_taxonomy_path: str | None = None
+    category_id_format: str = "ancestor_chain"
 
 
 _T = TypeVar("_T")
@@ -202,17 +208,32 @@ def resolve_cell(vendor_cfg: VendorConfig | None, platform: str) -> ResolvedCell
             vendor_cfg.brand_display_map if vendor_cfg else brand_tables.BRAND_DISPLAY_MAP
         )),
         category_segment_aliases=MappingProxyType(dict(
-            (getattr(vendor_cfg, f"{platform}_segment_aliases") if vendor_cfg else None)
-            or (category_tables.DIGI_SEGMENT_ALIASES if platform == "digi" else category_tables.ALFA_SEGMENT_ALIASES)
+            _inherit(
+                cell.category_segment_aliases if cell else None,
+                getattr(vendor_cfg, f"{platform}_segment_aliases") if vendor_cfg else None,
+                None,
+                category_tables.DIGI_SEGMENT_ALIASES if platform == "digi" else category_tables.ALFA_SEGMENT_ALIASES,
+            )
         )),
         product_type_map=MappingProxyType(dict(
-            (vendor_cfg.product_type_map if vendor_cfg else None) or category_tables.PRODUCT_TYPE_MAP
+            _inherit(
+                cell.product_type_map if cell else None,
+                vendor_cfg.product_type_map if vendor_cfg else None,
+                None,
+                category_tables.PRODUCT_TYPE_MAP,
+            )
         )),
         default_product_type_colors=MappingProxyType(dict(
             vendor_cfg.default_product_type_colors if vendor_cfg else config.DEFAULT_PRODUCT_TYPE_COLORS
         )),
         default_variant_quantity=vendor_cfg.default_variant_quantity if vendor_cfg else config.DEFAULT_VARIANT_QUANTITY,
         apply_tv_warranty_table=vendor_cfg.apply_tv_warranty_table if vendor_cfg else config.APPLY_TV_WARRANTY_TABLE,
+        raw_taxonomy_path=cell.raw_taxonomy_path if cell else None,
+        category_id_format=(
+            cell.category_id_format
+            if cell and cell.category_id_format is not None
+            else ("ancestor_chain" if platform == "digi" else "leaf_only")
+        ),
     )
 
 
@@ -437,7 +458,8 @@ KIACHAHIYE = VendorConfig(
 )
 
 # ---------------------------------------------------------------------------
-# AJMER  (Store 2 -- Alfa populated with the platform's 14 brands & its 8 active leaves; Digi left empty)
+# AJMER  (Store 2 -- Alfa populated with the platform's 14 brands & its 10 active leaves;
+#         Digi (Data Electronics) loaded from raw DigiMall seller taxonomy JSON)
 # ---------------------------------------------------------------------------
 AJMER = VendorConfig(
     display_name="Ajmer",
@@ -445,43 +467,22 @@ AJMER = VendorConfig(
     title_formula="standard",
     brand_aliases=dict(_SHARED_BRAND_ALIASES),
     brand_display_map=dict(_SHARED_BRAND_DISPLAY_MAP),
-    digi_segment_aliases={
-        "deep freezer": "freezers",
-        "freezers": "freezers",
-        "washing machine": "washing machines",
-        "air purifier & humdifier": "air purifiers",
-        "air purifier": "air purifiers",
-        "air humidifier": "air purifiers",
-        "iron": "irons",
-        "irons": "irons",
-        "iron & garment steamer": "irons",
-        "garment steamer": "irons",
-        "microwave oven": "microwaves",
-        "microwave ovens": "microwaves",
-    },
-    alfa_segment_aliases={
-        "iron": "iron & garment steamer",
-        "irons": "iron & garment steamer",
-        "iron & garment steamer": "iron & garment steamer",
-        "garment steamer": "iron & garment steamer",
-        "cooking range": "cooking range",
-        "microwave oven": "microwaves",
-        "microwave ovens": "microwaves",
-    },
+    digi_segment_aliases={},
+    alfa_segment_aliases={},
     product_type_map=dict(_SHARED_PRODUCT_TYPE_MAP),
     digi=PlatformConfig(
-        vendor_name="Ajmer PVT LTD",  # TODO: confirm exact DigiMall vendor string when ready
+        vendor_name="Data Electronics",
         description_template="spec_table",
         title_formula="standard",
         include_inverter=False,
         include_warranty=False,
         include_color=False,
+        raw_taxonomy_path="data/digimall_taxonomy.json",
+        category_id_format="underscore_path",
         brands={
             # TODO: fill from DigiMall admin panel for Ajmer's seller account
         },
-        categories={
-            # TODO: fill from DigiMall admin panel for Ajmer's category tree
-        },
+        categories=category_tables.load_raw_taxonomy_leaf_map("data/digimall_taxonomy.json"),
     ),
     alfa=PlatformConfig(
         vendor_name="Ajmer Electronics",

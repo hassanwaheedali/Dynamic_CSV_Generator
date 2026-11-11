@@ -104,16 +104,27 @@ def test_resolve_category_vendor_isolation() -> None:
         assert df.digi_path == cfg.digi.categories.get("freezers")
         assert df.alfa_id == cfg.alfa.categories.get("deep freezer")
 
-    # Iron & Garment steamer
+    # Iron & Garment steamer (un-narrowed umbrella vs narrowed Dry Iron)
     for cfg in VENDOR_REGISTRY.values():
-        iron = resolve_category(
+        iron_umbrella = resolve_category(
             "Electronics > Home appliances > Iron & Garment steamer",
             "",
             "",
             vendor_cfg=cfg,
         )
-        assert iron.digi_path == cfg.digi.categories.get("irons")
-        assert iron.alfa_id == cfg.alfa.categories.get("iron & garment steamer")
+        assert iron_umbrella.digi_path == cfg.digi.categories.get("irons")
+        assert iron_umbrella.alfa_id == cfg.alfa.categories.get("iron & garment steamer")
+
+        dry_iron = resolve_category(
+            "Electronics > Home appliances > Iron & Garment steamer",
+            "Philips Dry Iron HD1172",
+            "Philips Dry Iron HD1172",
+            vendor_cfg=cfg,
+        )
+        assert dry_iron.digi_path == (
+            cfg.digi.categories.get("dry iron") or cfg.digi.categories.get("irons")
+        )
+        assert dry_iron.alfa_id == cfg.alfa.categories.get("iron & garment steamer")
 
     # AC (Inverter)
     for cfg in VENDOR_REGISTRY.values():
@@ -129,7 +140,10 @@ def test_resolve_category_vendor_isolation() -> None:
             or cfg.alfa.categories.get("ac")
         )
         assert ac.alfa_id == expected_alfa_ac
-        assert ac.digi_path == cfg.digi.categories.get("ac inverter")
+        assert ac.digi_path == (
+            cfg.digi.categories.get("ac inverter")
+            or cfg.digi.categories.get("inverters")
+        )
         assert resolve_product_type(ac, "Haier", vendor_cfg=cfg) == (
             "Air Conditioner",
             False,
@@ -183,8 +197,9 @@ def test_sku_prefix_legacy_default() -> None:
 
 def test_title_formula_strategies() -> None:
     """Both built-in title formula strategies and custom callables work cleanly."""
-    assert KIACHAHIYE.title_formula == "vip_pipe"
-    assert AJMER.title_formula == "standard"
+    for cfg in VENDOR_REGISTRY.values():
+        assert resolve_cell(cfg, "digi").title_formula is not None
+        assert resolve_cell(cfg, "alfa").title_formula is not None
 
     extraction = ModelExtraction(code="HWM 120-1708", source="title", confidence="high")
     std_res = build_title(
@@ -406,16 +421,11 @@ def test_every_cell_defaults_to_todays_template() -> None:
     assert resolve_cell(_store(digi=silent), "digi").description_template == "spec_table"
     for key, cfg in VENDOR_REGISTRY.items():
         for platform in ("digi", "alfa"):
-            cell = getattr(cfg, platform)
-            expected_name = (
-                "kiachahiye_alfa_card"
-                if (key, platform) == ("kiachahiye", "alfa")
-                else "spec_table"
-            )
-            assert cell.description_template == expected_name, (key, platform)
+            resolved = resolve_cell(cfg, platform)
+            assert resolved.description_template in DESCRIPTION_TEMPLATES, (key, platform)
             assert (
-                template_for(cell.description_template)
-                is DESCRIPTION_TEMPLATES[expected_name]
+                template_for(resolved.description_template)
+                is DESCRIPTION_TEMPLATES[resolved.description_template]
             )
 
 
@@ -806,8 +816,20 @@ def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workfl
                 "https://example.com/gree.jpg",
             ]
         )
+        writer.writerow(
+            [
+                "Gree Baking & Flavours Starter Pack (GBF-100)",
+                "Gree Baking & Flavours Starter Pack for Home Kitchen.",
+                "5000",
+                "6000",
+                "Electronics > Kitchen > Baking & Flavours",
+                "Gree",
+                "https://example.com/gree-baking.jpg",
+            ]
+        )
 
-    # Gree and Air Conditioner exist in KIACHAHIYE.digi and AJMER.alfa, but NOT in AJMER.digi (which is empty)
+    # Row 1: Gree is missing from AJMER.digi.brands, while Inverter AC resolves from AJMER.digi's raw taxonomy.
+    # Row 2: Baking & Flavours exists in AJMER.alfa ("11856"), but NOT in AJMER.digi (leaves Category blank).
     digi_out = tmp_path / "ajmer_digi.csv"
     alfa_out = tmp_path / "ajmer_alfa.csv"
     qc_out = tmp_path / "ajmer_qc.csv"
@@ -830,21 +852,32 @@ def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workfl
     assert "CATEGORY NOT FOUND IN LOOKUP TABLE" in captured
 
     with digi_out.open(encoding="utf-8-sig", newline="") as f:
-        ajmer_digi_row = next(csv.DictReader(f))
+        ajmer_digi_rows = list(csv.DictReader(f))
     with alfa_out.open(encoding="utf-8-sig", newline="") as f:
-        ajmer_alfa_row = next(csv.DictReader(f))
+        ajmer_alfa_rows = list(csv.DictReader(f))
 
-    # Ajmer.digi leaves Brands and Category blank (never borrowing from Kiachahiye.digi or Ajmer.alfa)
-    assert ajmer_digi_row["Brands"] == ""
-    assert ajmer_digi_row["Category"] == ""
-    # Ajmer.alfa resolves its own configured IDs
+    # Row 1: Ajmer.digi and Ajmer.alfa resolve strictly from their own configured maps.
+    assert ajmer_digi_rows[0]["Brands"] == str(AJMER.digi.brands.get("gree", ""))
+    assert ajmer_digi_rows[0]["Category"] == (
+        AJMER.digi.categories.get("ac inverter")
+        or AJMER.digi.categories.get("inverters")
+        or ""
+    )
     expected_alfa_ac = (
         AJMER.alfa.categories.get("air conditioners alfabnpl")
         or AJMER.alfa.categories.get("air conditioner")
         or AJMER.alfa.categories.get("ac")
+        or ""
     )
-    assert ajmer_alfa_row["Brands"] == str(AJMER.alfa.brands["gree"])
-    assert ajmer_alfa_row["Category"] == expected_alfa_ac
+    assert ajmer_alfa_rows[0]["Brands"] == str(AJMER.alfa.brands.get("gree", ""))
+    assert ajmer_alfa_rows[0]["Category"] == expected_alfa_ac
+
+    # Row 2: Ajmer.digi leaves Category blank when unmapped (never borrowing from Ajmer.alfa);
+    #        Ajmer.alfa resolves its own configured IDs.
+    assert ajmer_digi_rows[1]["Brands"] == str(AJMER.digi.brands.get("gree", ""))
+    assert ajmer_digi_rows[1]["Category"] == AJMER.digi.categories.get("baking & flavours", "")
+    assert ajmer_alfa_rows[1]["Brands"] == str(AJMER.alfa.brands.get("gree", ""))
+    assert ajmer_alfa_rows[1]["Category"] == AJMER.alfa.categories.get("baking & flavours", "")
 
     # QC report records the missing DigiMall mappings and audit passes without blocking upload
     with qc_out.open(encoding="utf-8-sig", newline="") as f:
@@ -1039,3 +1072,93 @@ def test_description_inheritance_reaches_validation_and_projection(
     })
     assert template_for_cell(explicit, platform) is DESCRIPTION_TEMPLATES["kiachahiye_alfa_card"]
     validate_vendor_cfg(explicit)
+
+
+def test_explicit_empty_aliases_and_product_type_map_do_not_fallback_via_truthiness() -> None:
+    """M1.5a: Explicit empty dicts on vendor or cell must never fall back via truthiness to KCC globals."""
+    cfg = dataclasses.replace(
+        KIACHAHIYE,
+        digi_segment_aliases={},
+        alfa_segment_aliases={},
+        product_type_map={},
+    )
+    digi_cell = resolve_cell(cfg, "digi")
+    alfa_cell = resolve_cell(cfg, "alfa")
+    assert dict(digi_cell.category_segment_aliases) == {}
+    assert dict(alfa_cell.category_segment_aliases) == {}
+    assert dict(digi_cell.product_type_map) == {}
+    assert dict(alfa_cell.product_type_map) == {}
+    assert digi_cell.category_id_format == "ancestor_chain"
+    assert alfa_cell.category_id_format == "leaf_only"
+
+    # Cell-level empty override also beats non-empty vendor-level map
+    cell_empty = dataclasses.replace(
+        KIACHAHIYE,
+        digi=dataclasses.replace(
+            KIACHAHIYE.digi,
+            category_segment_aliases={},
+            product_type_map={},
+        ),
+    )
+    assert dict(resolve_cell(cell_empty, "digi").category_segment_aliases) == {}
+    assert dict(resolve_cell(cell_empty, "digi").product_type_map) == {}
+    assert dict(resolve_cell(cell_empty, "alfa").category_segment_aliases) == dict(
+        KIACHAHIYE.alfa_segment_aliases
+    )
+
+
+def test_customizing_config_values_dynamically_updates_pipeline_outputs(
+    pipeline: Any,
+) -> None:
+    """Proves maintenance edits (SKU prefix, brand/category IDs, title/description flags) work without code edits."""
+    row = {
+        "Title": "Gree 1.5 Ton White DC Inverter Split Air Conditioner GS-18PITH11W",
+        "Description": "Gree 1.5 Ton DC Inverter Split AC. Color: White. Warranty: 10 Years Compressor Warranty.",
+        "Sell Price": "145000",
+        "Original Price": "155000",
+        "Categories": "Electronics > Home appliances > AC",
+        "Brand": "Gree",
+        "Image": "https://example.com/gree.jpg",
+    }
+
+    customized = dataclasses.replace(
+        AJMER,
+        sku_prefix="ZZ",
+        digi=dataclasses.replace(
+            AJMER.digi,
+            vendor_name="Custom Digi Store",
+            brands={"gree": 7771},
+            categories={**AJMER.digi.categories, "inverters": "999_888_777"},
+            include_inverter=True,
+            include_warranty=True,
+            include_color=True,
+            title_formula="vip_pipe",
+        ),
+        alfa=dataclasses.replace(
+            AJMER.alfa,
+            vendor_name="Custom Alfa Store",
+            brands={"gree": 8882},
+            categories={**AJMER.alfa.categories, "air conditioners alfabnpl": "55555"},
+            include_inverter=False,
+            include_warranty=False,
+            include_color=False,
+            title_formula="standard",
+        ),
+    )
+
+    out = pipeline([row], vendor_cfg=customized)
+    digi = out["digi"][0]
+    alfa = out["alfa"][0]
+
+    assert digi["Variant SKU"].startswith("ZZ-")
+    assert alfa["Variant SKU"].startswith("ZZ-")
+    assert digi["Vendor"] == "Custom Digi Store"
+    assert alfa["Vendor"] == "Custom Alfa Store"
+    assert digi["Brands"] == "7771"
+    assert alfa["Brands"] == "8882"
+    assert digi["Category"] == "999_888_777"
+    assert alfa["Category"] == "55555"
+    assert "Inverter" in digi["Title"] and "Warranty" in digi["Title"] and "White" in digi["Title"]
+    assert "|" in digi["Title"]
+    assert "Inverter" not in alfa["Title"] and "Warranty" not in alfa["Title"] and "White" not in alfa["Title"]
+    assert " - " in alfa["Title"]

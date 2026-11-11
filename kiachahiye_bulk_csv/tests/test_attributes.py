@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import main as pipeline_main
 from attributes import ALLOWED, SCOPE, build_attributes
+from models import InputRow
+from qc_report import QCFlagCollector
 from sku_handle import clean_model_code
+from vendor_config import KIACHAHIYE
 
 
 def attributes_for(
@@ -204,3 +208,98 @@ def test_removing_a_colour_from_a_model_leaves_no_debris() -> None:
     )
     assert clean_model_code("WD-1051 HC White") == "WD-1051 HC"
     assert clean_model_code("GS-185 White") == "GS-185"
+
+
+def test_newly_mapped_small_appliances_extract_scoped_attributes() -> None:
+    """M1.5d: Newly mapped appliance Product Types extract Watts, Capacity, Volt, and Warranty."""
+    for pt in (
+        "Iron",
+        "Garment Steamer",
+        "Oven",
+        "Electric Kettle",
+        "Blender",
+        "Juicer",
+        "Mixer",
+        "Food Processor",
+        "Grinder",
+        "Toaster",
+        "Sandwich Maker",
+        "Coffee Maker",
+    ):
+        values, unmatched = attributes_for(
+            f"Philips {pt} 1000W",
+            "Power: 1000W\nVoltage: 220V",
+            pt,
+            warranty="2 Years",
+        )
+        assert values.get("Attribute_Watts") == "1000W", pt
+        assert values.get("Attribute_Volt") == "220V", pt
+        assert values.get("Attribute_Warranty") == "2 Years", pt
+        assert not unmatched, pt
+
+    kettle_vals, _ = attributes_for(
+        "Anex Deluxe Electric Kettle 1.8 Litter",
+        "Capacity: 1.8 Litter\nPower: 1500W",
+        "Electric Kettle",
+    )
+    assert kettle_vals.get("Attribute_Capacity") == "1.8 Litter"
+    assert kettle_vals.get("Attribute_Watts") == "1500W"
+
+
+def test_run_executes_heavy_builders_once_per_row(monkeypatch) -> None:
+    """M1.5d: run() executes title/description/attribute/warranty builders once per row, not twice."""
+    counts = {"slots": 0, "desc": 0, "attr": 0, "warranty": 0}
+    orig_slots = pipeline_main.extract_title_slots
+    orig_desc = pipeline_main.build_description_bundle
+    orig_attr = pipeline_main.build_attributes
+    orig_warranty = pipeline_main.resolve_warranty
+
+    def spy_slots(*args, **kwargs):
+        counts["slots"] += 1
+        return orig_slots(*args, **kwargs)
+
+    def spy_desc(*args, **kwargs):
+        counts["desc"] += 1
+        return orig_desc(*args, **kwargs)
+
+    def spy_attr(*args, **kwargs):
+        counts["attr"] += 1
+        return orig_attr(*args, **kwargs)
+
+    def spy_warranty(*args, **kwargs):
+        counts["warranty"] += 1
+        return orig_warranty(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_main, "extract_title_slots", spy_slots)
+    monkeypatch.setattr(pipeline_main, "build_description_bundle", spy_desc)
+    monkeypatch.setattr(pipeline_main, "build_attributes", spy_attr)
+    monkeypatch.setattr(pipeline_main, "resolve_warranty", spy_warranty)
+
+    rows = [
+        InputRow(
+            2,
+            "Gree 1.5 Ton Inverter Split AC (GS-18PITH11W)",
+            "10 Years Compressor Warranty",
+            "145000",
+            "155000",
+            "Electronics / Home appliances / AC",
+            "Gree",
+            "https://example.com/1.jpg",
+            "",
+        ),
+        InputRow(
+            3,
+            "Dawlance 12 Cu Ft Double Door Refrigerator (9178LF)",
+            "12 Years Compressor Warranty",
+            "85000",
+            "95000",
+            "Electronics / Home appliances / Refrigerators",
+            "Dawlance",
+            "https://example.com/2.jpg",
+            "",
+        ),
+    ]
+    records = pipeline_main.run(rows, QCFlagCollector(), vendor_cfg=KIACHAHIYE)
+    assert len(records) == 2
+    assert counts == {"slots": 2, "desc": 2, "attr": 2, "warranty": 2}
+

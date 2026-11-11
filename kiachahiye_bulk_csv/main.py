@@ -16,6 +16,7 @@ import argparse
 import csv
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,7 +25,7 @@ from attributes import build_attributes
 from brands import resolve_brand
 from categories import resolve_category, resolve_product_type
 from description_builder import build_description_bundle, mentions_subtype
-from models import InputRow, ProductRecord
+from models import CategoryStatus, InputRow, ProductRecord, ResolvedBrand, ResolvedCategory
 from pricing import resolve_prices, resolve_quantity
 from qc_report import (
     CAT_AC_INVERTER_UNKNOWN,
@@ -79,7 +80,6 @@ from textutils import (
     strip_markup_keep_lines,
 )
 from title_builder import (
-    extract_inverter,
     extract_title_slots,
     render_title_and_seo_from_slots,
     without_leading_type_words,
@@ -251,6 +251,8 @@ def read_rows(
             resolve_category(row.categories, text, text, vendor_cfg=vendor_cfg),
             brand,
             vendor_cfg=vendor_cfg,
+            title=row.title,
+            description=row.description,
         )[0]
         analyses.append(
             analyze_row(
@@ -265,6 +267,67 @@ def read_rows(
     return analyses, build_corpus(analyses)
 
 
+@dataclass(frozen=True)
+class _RowCore:
+    """Canonical per-row identity facts extracted once and shared across Pass 1 and Pass 2."""
+
+    brand: ResolvedBrand
+    effective_brand: str
+    category: ResolvedCategory
+    product_type: str
+    inferred: bool
+    extraction: ModelExtraction
+    capacity: str
+    identity: str
+    model: str
+    used: ModelExtraction
+
+
+def _extract_row_core(
+    row: InputRow,
+    vendor_cfg: VendorConfig | None = None,
+) -> _RowCore:
+    """Extract canonical brand, category, product_type, capacity, and model once for ``row``."""
+    text = f"{row.title}\n{row.description}"
+    brand = resolve_brand(row.brand, row.title, vendor_cfg=vendor_cfg)
+    effective_brand = brand.raw
+    category = resolve_category(row.categories, text, text, vendor_cfg=vendor_cfg)
+    product_type, inferred = resolve_product_type(
+        category,
+        effective_brand,
+        vendor_cfg=vendor_cfg,
+        title=row.title,
+        description=row.description,
+    )
+    extraction = without_leading_type_words(extract_model(row.title, row.description))
+    capacity = resolve_capacity(text, product_type, brand.normalized, extraction)
+    identity = word_identity(row.title, effective_brand) if extraction.confidence == "none" else ""
+    if extraction.confidence == "none":
+        model = build_fallback_model(
+            effective_brand,
+            find_series_token(text),
+            capacity,
+            row.title,
+            identity,
+        )
+        used = ModelExtraction(model, "fallback", "none")
+    else:
+        model = extraction.code
+        used = extraction
+    return _RowCore(
+        brand=brand,
+        effective_brand=effective_brand,
+        category=category,
+        product_type=product_type,
+        inferred=inferred,
+        extraction=extraction,
+        capacity=capacity,
+        identity=identity,
+        model=model,
+        used=used,
+    )
+
+
 def resolve_row(
     row: InputRow,
     flags: QCFlagCollector,
@@ -274,6 +337,7 @@ def resolve_row(
     analysis: RowAnalysis | None = None,
     corpus: Corpus | None = None,
     vendor_cfg: VendorConfig | None = None,
+    _precomputed_core: _RowCore | None = None,
 ) -> ProductRecord:
     """Resolve one input row into a single shared ProductRecord.
 
@@ -294,8 +358,18 @@ def resolve_row(
             f"row {row.row_number}: analysis does not belong to this row"
         )
 
-    brand = resolve_brand(row.brand, row.title, vendor_cfg=vendor_cfg)
-    effective_brand = brand.raw
+    core = _precomputed_core or _extract_row_core(row, vendor_cfg=vendor_cfg)
+    brand = core.brand
+    effective_brand = core.effective_brand
+    category = core.category
+    product_type = core.product_type
+    inferred = core.inferred
+    extraction = core.extraction
+    capacity = core.capacity
+    identity = core.identity
+    model = core.model
+    used = core.used
+
     # Name the table that actually served this run, so a hole gets filled where it is read from
     # rather than in brands.py's legacy list.
     brand_tables = (
@@ -319,10 +393,12 @@ def resolve_row(
             platform="alfa",
         )
 
-    category = resolve_category(row.categories, text, text, vendor_cfg=vendor_cfg)
     if category.digi_path is None:
         digi_reason = category.digi_reason or category.reason
-        is_ac_silent = "inverter/non-inverter signal" in digi_reason
+        is_ac_silent = (
+            category.digi_status == CategoryStatus.SIBLING_AMBIGUOUS
+            and category.product_type == "Air Conditioner"
+        )
         flags.flag(
             row.row_number,
             row.title,
@@ -338,9 +414,6 @@ def resolve_row(
             platform="alfa",
         )
 
-    product_type, inferred = resolve_product_type(
-        category, effective_brand, vendor_cfg=vendor_cfg
-    )
     if inferred:
         flags.flag(
             row.row_number, row.title, CAT_PRODUCT_TYPE_INFERRED,
@@ -355,31 +428,16 @@ def resolve_row(
             "SKU follows the Title; please confirm which is correct in the source.",
         )
 
-    extraction = without_leading_type_words(extract_model(row.title, row.description))
-    capacity = resolve_capacity(text, product_type, brand.normalized, extraction)
-    identity = word_identity(row.title, effective_brand) if extraction.confidence == "none" else ""
     if extraction.confidence == "none":
-        model = build_fallback_model(
-            effective_brand,
-            find_series_token(text),
-            capacity,
-            row.title,
-            identity,
-        )
-        used = ModelExtraction(model, "fallback", "none")
         flags.flag(
             row.row_number, row.title, CAT_FALLBACK_SKU,
             "No formal model code found -- fallback SKU built from title words, "
             "please verify manually before upload.",
         )
-    else:
-        model = extraction.code
-        used = extraction
 
     digi_cfg = resolve_cell(vendor_cfg, "digi")
     alfa_cfg = resolve_cell(vendor_cfg, "alfa")
     apply_tv_warranty_table = digi_cfg.apply_tv_warranty_table
-    alfa_inverter = alfa_cfg.include_inverter
     slots = extract_title_slots(
         effective_brand, used, product_type, row.title, row.description,
         analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
@@ -486,16 +544,23 @@ def resolve_row(
             f"the required {CONFIG.SEO_DESC_MIN}-{CONFIG.SEO_DESC_MAX} -- the source had too little product-specific "
             "material to pad with honestly.",
         )
-    if not (CONFIG.SEO_TITLE_MIN <= len(description.seo_title) <= CONFIG.SEO_TITLE_MAX):
+    digi_seo_bad = not (CONFIG.SEO_TITLE_MIN <= len(seo_title_digi) <= CONFIG.SEO_TITLE_MAX)
+    alfa_seo_bad = not (CONFIG.SEO_TITLE_MIN <= len(seo_title_alfa) <= CONFIG.SEO_TITLE_MAX)
+    if digi_seo_bad or alfa_seo_bad:
         # The search title is this row's own words and the one anchored phrase, so a length the
         # window cannot hold is a gap in the sheet, not a cut to hide: a model code or a stated size
         # is what carries a short row into 65-90 (measured: `Haier UPS`, 9 words' worth of row).
+        bad_seo = seo_title_digi if digi_seo_bad else seo_title_alfa
+        seo_platform = (
+            "both" if (digi_seo_bad and alfa_seo_bad) else ("digi" if digi_seo_bad else "alfa")
+        )
         flags.flag(
             row.row_number, row.title, CAT_SEO_TITLE_LENGTH,
-            f"SEO Title is {len(description.seo_title)} characters, outside the "
+            f"SEO Title is {len(bad_seo)} characters, outside the "
             f"{CONFIG.SEO_TITLE_MIN}-{CONFIG.SEO_TITLE_MAX} the search "
             "window asks for -- the row states too little to build a longer title from its own "
             "words; a Model code or a Capacity on this row would carry it.",
+            platform=seo_platform,
         )
     if description.short_description_bullets < 3:
         flags.flag(
@@ -504,11 +569,7 @@ def resolve_row(
             "bullet(s) -- fewer than 3 standout facts existed in the source.",
         )
 
-    attribute_title = (
-        title_result_alfa.title
-        if alfa_inverter
-        else f"{title_result_digi.title} {extract_inverter(text)}".strip()
-    )
+    attribute_title = f"{title_result_digi.title} {slots.inverter}".strip()
     attributes, unmatched = build_attributes(
         title=attribute_title,
         description=row.description,
@@ -729,17 +790,17 @@ def run(
             f"run() was handed a reading for {corpus.rows} rows / {len(analyses)} analyses "
             f"but got {len(rows)} rows -- read the sheet and vote it in one call"
         )
-    # The counting pass exists only so pass two can see which models collide.
-    # It runs the same row code, so it must NOT report: a scratch collector
-    # swallows those flags and the QC report keeps exactly one row per real
-    # finding.  SKU/Handle dedupe flags are raised in pass two only, so nothing
-    # is lost by the swap.
-    scratch = QCFlagCollector()
-    for index, row in enumerate(rows):
-        resolve_row(
-            row, scratch, sku_registry, handle_registry, finalise=False,
-            analysis=analyses[index], corpus=corpus, vendor_cfg=vendor_cfg,
-        )
+    # Pass 1: Extract canonical row identity once per row and register SKU/Handle base tokens
+    # so Pass 2 can see which models collide without redundantly running title, description,
+    # warranty, or attribute builders twice per row.
+    sku_prefix = resolve_cell(vendor_cfg, "digi").sku_prefix
+    row_cores: list[_RowCore] = []
+    for row in rows:
+        core = _extract_row_core(row, vendor_cfg=vendor_cfg)
+        row_cores.append(core)
+        sku_registry.register_base(build_sku_token(core.model, prefix=sku_prefix))
+        handle_registry.register_base(build_handle_token(core.model, core.product_type))
+
     records: list[ProductRecord] = []
     for index, row in enumerate(rows, start=1):
         if index % 100 == 0 or index == len(rows):
@@ -748,6 +809,7 @@ def run(
             resolve_row(
                 row, flags, sku_registry, handle_registry, finalise=True,
                 analysis=analyses[index - 1], corpus=corpus, vendor_cfg=vendor_cfg,
+                _precomputed_core=row_cores[index - 1],
             )
         )
     return records

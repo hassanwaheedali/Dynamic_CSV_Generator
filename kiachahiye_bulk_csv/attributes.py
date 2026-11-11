@@ -294,14 +294,24 @@ SCOPE: dict[str, frozenset[str] | None] = {
     "Attribute_Capacity": frozenset(
         {
             "Refrigerator", "Deep Freezer", "Water Dispenser", "Microwave Oven",
-            "Air Cooler", "Air Conditioner", "LED TV",
+            "Air Cooler", "Air Conditioner", "LED TV", "Oven", "Air Fryer",
+            "Electric Kettle", "Blender", "Juicer", "Food Processor", "Coffee Maker",
+            "Dishwasher",
         }
     ),
-    "Attribute_Display Size": frozenset({"LED TV"}),
+    "Attribute_Display Size": frozenset({"LED TV", "Monitor", "Laptop", "Tablet", "Smartphone"}),
     "Attribute_Watts": frozenset(
-        {"Microwave Oven", "Air Fryer", "LED TV", "Air Cooler", "Refrigerator", "Washing Machine"}
+        {
+            "Microwave Oven", "Air Fryer", "LED TV", "Air Cooler", "Refrigerator",
+            "Washing Machine", "Iron", "Garment Steamer", "Oven", "Electric Kettle",
+            "Blender", "Juicer", "Mixer", "Food Processor", "Grinder", "Toaster",
+            "Sandwich Maker", "Coffee Maker", "Vacuum Cleaner", "Hair Dryer",
+            "Hair Straightener", "Hair Curler", "Waffle Maker", "Bread Maker",
+            "Egg Boiler",
+        }
     ),
     "Attribute_Product Type": frozenset({"Deep Freezer", "Refrigerator"}),
+    "Attribute_UPS Inverter Type": frozenset({"UPS"}),
 }
 
 # Numeric attributes: (regex, units already baked in).  The range form is

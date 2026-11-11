@@ -16,6 +16,17 @@ restyled platform from moving a fact in another's listings.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class CategoryStatus(str, Enum):
+    """Structured outcome of category resolution for one platform cell."""
+
+    MAPPED = "mapped"
+    UNMAPPED = "unmapped"
+    SIBLING_AMBIGUOUS = "sibling_ambiguous"
+    INACTIVE_TARGET = "inactive_target"
+    CONFLICT = "conflict"
 
 
 @dataclass(frozen=True)
@@ -62,6 +73,16 @@ class ResolvedCategory:
     reason: str = ""
     digi_reason: str = ""
     alfa_reason: str = ""
+    digi_status: CategoryStatus = CategoryStatus.UNMAPPED
+    alfa_status: CategoryStatus = CategoryStatus.UNMAPPED
+    product_type: str = ""
+    product_type_inferred: bool = False
+
+    def __post_init__(self) -> None:
+        if self.digi_path is not None and self.digi_status == CategoryStatus.UNMAPPED:
+            object.__setattr__(self, "digi_status", CategoryStatus.MAPPED)
+        if self.alfa_id is not None and self.alfa_status == CategoryStatus.UNMAPPED:
+            object.__setattr__(self, "alfa_status", CategoryStatus.MAPPED)
 
 
 @dataclass(frozen=True)

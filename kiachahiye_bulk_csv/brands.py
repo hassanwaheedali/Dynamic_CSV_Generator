@@ -174,12 +174,14 @@ def resolve_brand(
     If title is supplied and starts with a known brand (e.g. Nasgas, iFFalcon, Jackpot),
     that brand takes precedence over raw_brand.
     """
-    brands_digi = vendor_cfg.digi.brands if vendor_cfg is not None else BRANDS_DIGI
-    brands_alfa = vendor_cfg.alfa.brands if vendor_cfg is not None else BRANDS_ALFA
-    aliases = vendor_cfg.brand_aliases if vendor_cfg is not None else BRAND_ALIASES
-    display_map = (
-        vendor_cfg.brand_display_map if vendor_cfg is not None else BRAND_DISPLAY_MAP
-    )
+    from vendor_config import resolve_cell  # noqa: PLC0415
+
+    digi_cell = resolve_cell(vendor_cfg, "digi")
+    alfa_cell = resolve_cell(vendor_cfg, "alfa")
+    brands_digi = digi_cell.brands
+    brands_alfa = alfa_cell.brands
+    aliases = dict(digi_cell.brand_aliases)
+    display_map = dict(digi_cell.brand_display_map)
     effective = extract_brand(
         title, raw_brand, display_map=display_map, aliases=aliases
     )
