@@ -34,14 +34,16 @@ Python 3.10+ must already be installed and available on PATH.
    must remain a properly quoted CSV cell; Excel handles that when exporting.
    See [The input sheet](#the-input-sheet) for optional weight columns and details.
 
-2. **Copy the CSV directly into this folder:**
+2. **Copy the CSV into this folder or any subfolder inside it:**
 
    ```text
    D:\Dynamic_CSV_Generator\kiachahiye_bulk_csv\data\input\
    ```
 
-   Example: `data/input/MY_PRODUCTS.csv`. The file menu lists `.csv` files directly
-   in this folder; it does not search subfolders or list Excel `.xlsx` files.
+   Examples: `data/input/MY_PRODUCTS.csv` or
+   `data/input/100_Products/step1_batch_01.csv`. The file menu searches all subfolders
+   and shows each CSV's path relative to `data/input`, such as
+   `100_Products/step1_batch_01.csv`. Excel `.xlsx` files are not listed.
 
 3. **Double-click this launcher in File Explorer:**
 

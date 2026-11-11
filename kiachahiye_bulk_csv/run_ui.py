@@ -436,9 +436,12 @@ def ask_upload(ui: UI) -> str:
 
 
 def ask_sheet(ui: UI) -> Path | None:
-    """Which sheet in data/input to run, or None to keep the configured default."""
+    """Which sheet in data/input or its subfolders to run, or None for the default."""
     folder = PKG / "data" / "input"
-    sheets = sorted(folder.glob("*.csv"), key=lambda p: p.name.lower())
+    sheets = sorted(
+        (path for path in folder.rglob("*.csv") if path.is_file()),
+        key=lambda path: path.relative_to(folder).as_posix().lower(),
+    )
     if not sheets:
         return None
 
@@ -448,7 +451,7 @@ def ask_sheet(ui: UI) -> Path | None:
         except Exception as exc:  # a sheet the reader cannot open is still a name he can pick
             return f"cannot be read ({type(exc).__name__})"
 
-    entries = [(path.name, shape(path)) for path in sheets]
+    entries = [(path.relative_to(folder).as_posix(), shape(path)) for path in sheets]
     default = next(
         (i for i, path in enumerate(sheets) if path.resolve() == CONFIG.INPUT_FILE.resolve()), 0
     )

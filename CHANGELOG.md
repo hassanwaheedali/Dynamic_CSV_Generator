@@ -1,5 +1,10 @@
 ﻿# Changelog
 
+## [Unreleased]
+### Added
+- The file menu in `run_pipeline.bat` and `run_ui.py` lists CSVs from all
+  `data/input` subfolders, with folder paths to distinguish matching filenames.
+
 ## [1.0.0] - 2026-10-06
 ### Added
 - Bulk CSV pipeline generating alfa and digi store imports from raw catalog rows.

@@ -162,6 +162,51 @@ def test_ask_vendor_lists_registered_vendors_dynamically(
         )
 
 
+@pytest.mark.parametrize("choice", [1, 2, 3])
+def test_sheet_menu_selects_csvs_from_input_and_nested_folders(
+    typing: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, choice: int
+) -> None:
+    folder = tmp_path / "data" / "input"
+    names = [
+        "100_Products/step1_batch_01.csv",
+        "Products.csv",
+        "test100/archive/step1_batch_01.csv",
+    ]
+    for name in names:
+        path = folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("Title\nTest product\n", encoding="utf-8")
+    (folder / "ignored.xlsx").write_text("not a CSV", encoding="utf-8")
+    (folder / "empty.csv").mkdir()  # A folder with a CSV extension is not a sheet.
+    monkeypatch.setattr(run_ui, "PKG", tmp_path)
+    _answers(monkeypatch, [str(choice)])
+    ui = Captured()
+
+    picked = run_ui.ask_sheet(ui)
+
+    assert picked == folder / names[choice - 1]
+    lines = ui.boxes[0][1]
+    assert len(lines) == len(names)
+    for name, line in zip(names, lines, strict=True):
+        assert name in line and "1 rows" in line
+    assert all(len(line) <= run_ui.WIDTH - 4 for line in lines)
+
+
+def test_sheet_menu_enter_keeps_the_configured_nested_default(
+    typing: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    folder = tmp_path / "data" / "input"
+    configured = folder / "100_Products" / "step1_batch_01.csv"
+    configured.parent.mkdir(parents=True)
+    configured.write_text("Title\nTest product\n", encoding="utf-8")
+    (folder / "000_first.csv").write_text("Title\nOther product\n", encoding="utf-8")
+    monkeypatch.setattr(run_ui, "PKG", tmp_path)
+    monkeypatch.setattr(run_ui.CONFIG, "INPUT_FILE", configured)
+    _answers(monkeypatch, [""])
+
+    assert run_ui.ask_sheet(Captured()) == configured
+
+
 # ─────────────────── the shape each written file will take ───────────────────
 def _shape(name: str) -> DescriptionTemplate:
     """SPEC_TABLE wearing another name -- a cell's own shape, without the gate's objection."""
