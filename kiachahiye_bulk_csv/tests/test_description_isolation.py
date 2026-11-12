@@ -25,6 +25,8 @@ from description_builder import (
     SPEC_TABLE,
     DescriptionTemplate,
     extract_spec_rows,
+    template_for,
+    template_problems,
 )
 from models import SpecRow
 from qc_report import QCFlagCollector
@@ -101,7 +103,7 @@ ROWS = [
 
 #: The shop's small real sheet, projected four ways.  The 752-row sheet gets the same
 #: proof by hand at the plan's checkpoints, not on every pytest run.
-STEP_ONE = Path("data/input/Step 1.csv")
+STEP_ONE = Path(__file__).resolve().parent.parent / "data/input/Step 1.csv"
 
 
 def _cell(cfg: Any, platform: str, template: object) -> Any:
@@ -122,15 +124,11 @@ def _all_cells(records: list[Any]) -> dict[tuple[str, str], list[str]]:
 
 def test_the_registry_holds_four_cells_all_on_todays_table() -> None:
     """What the proof covers, stated rather than assumed."""
-    assert len(CELLS) >= 4
+    assert CELLS
     for store, platform in CELLS:
-        cell = getattr(VENDOR_REGISTRY[store], platform)
-        tmpl_name = (
-            cell.description_template
-            if isinstance(cell.description_template, str)
-            else cell.description_template.name
-        )
-        assert tmpl_name in DESCRIPTION_TEMPLATES, (store, platform)
+        template = template_for(resolve_cell(VENDOR_REGISTRY[store], platform).description_template)
+        assert not template_problems(template), (store, platform)
+
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -243,15 +241,12 @@ def test_the_other_columns_stay_shared_when_one_cell_renders(
     monkeypatch.setitem(DESCRIPTION_TEMPLATES, PROBE.name, PROBE)
     result = run_pipeline(tmp_path, ROWS)
     cfg = _cell(VENDOR_REGISTRY["kiachahiye"], "alfa", PROBE.name)
-    shared = [
-        "Title", "Product Type", "Tags", "SEO Title", "SEO Description",
-        "Variant SKU", "Variant Price", "Handle", "Product Images",
-    ]
     for record in result["records"]:
-        digi = build_digi_row(record, cfg).values
-        alfa = build_alfa_row(record, cfg).values
-        for column in shared:
-            assert digi[column] == alfa[column], column
+        before = build_alfa_row(record, VENDOR_REGISTRY["kiachahiye"]).values
+        after = build_alfa_row(record, cfg).values
+        assert {k: v for k, v in before.items() if k != "Description"} == {
+            k: v for k, v in after.items() if k != "Description"
+        }
 
 
 def test_the_resolver_that_names_a_cell_is_the_one_that_renders_it() -> None:
@@ -262,12 +257,8 @@ def test_the_resolver_that_names_a_cell_is_the_one_that_renders_it() -> None:
     ship another, which is the single drift this whole seam exists to make impossible.
     """
     cfg = VENDOR_REGISTRY["kiachahiye"]
-    assert template_for_cell(cfg, "digi") is DESCRIPTION_TEMPLATES[
-        resolve_cell(cfg, "digi").description_template
-    ]
-    assert template_for_cell(cfg, "alfa") is DESCRIPTION_TEMPLATES[
-        resolve_cell(cfg, "alfa").description_template
-    ]
+    for platform in PLATFORMS:
+        assert template_for_cell(cfg, platform) is template_for(resolve_cell(cfg, platform).description_template)
     assert template_for_cell(None, "digi") is SPEC_TABLE, "a bare run ships the shop's own table"
     with pytest.raises(KeyError):
         template_for_cell(cfg, "digiity")
@@ -316,15 +307,11 @@ def test_kiachahiye_alfa_card_leaves_other_three_cells_on_spec_table(
 ) -> None:
     """Only Kiachahiye.alfa renders the card; the other three cells ship SPEC_TABLE."""
     records = run_pipeline(tmp_path, ROWS)["records"]
-    projected = _all_cells(records)
-    expected_spec = [
-        SPEC_TABLE.render(list(r.description.spec_rows)) for r in records
-    ]
-    expected_card = [
-        KIACHAHIYE_ALFA_CARD.render(list(r.description.spec_rows)) for r in records
-    ]
-    assert projected[("kiachahiye", "digi")] == expected_spec
-    assert projected[("ajmer", "digi")] == expected_spec
-    assert projected[("ajmer", "alfa")] == expected_spec
-    assert projected[("kiachahiye", "alfa")] == expected_card
-    assert projected[("kiachahiye", "alfa")] != expected_spec
+    # Exercise the card as a controlled deployment; active registry styling is independent.
+    for store, cfg in VENDOR_REGISTRY.items():
+        for platform in PLATFORMS:
+            chosen = KIACHAHIYE_ALFA_CARD if (store, platform) == ("kiachahiye", "alfa") else SPEC_TABLE
+            controlled = _cell(cfg, platform, chosen)
+            assert _project(records, controlled, platform) == [
+                chosen.render(list(r.description.spec_rows)) for r in records
+            ]

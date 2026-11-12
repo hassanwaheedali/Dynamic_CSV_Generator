@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import re
 
+from textutils import NEGATIVE_SPEC_ANSWER_RE, POSITIVE_SPEC_ANSWER_RE, primary_feature_evidence
+
 # ===========================================================================
 #  EDIT HERE -- the closed vocabulary for every Attribute_* column
 # ===========================================================================
@@ -416,10 +418,28 @@ def _match_alias(text: str, column: str) -> tuple[str | None, str | None]:
     aliases = ALIASES.get(column)
     if not aliases:
         return None, None
-    lowered = text.lower()
+    lowered = primary_feature_evidence(text.lower())
+    # Bind boolean fields before matching the positive words in their labels.
+    for phrase in sorted(aliases, key=len, reverse=True):
+        pattern = re.compile(
+            rf"(?<![a-z0-9]){re.escape(phrase)}(?:\s+(?:function|technology|support))?"
+            r"[ \t]*[:=\t][ \t]*(?P<answer>[^\n\r]*)",
+        )
+        for field in pattern.finditer(lowered):
+            answer = field.group("answer").strip()
+            if NEGATIVE_SPEC_ANSWER_RE.match(answer):
+                for inverse in (f"non-{phrase}", f"non {phrase}", f"without {phrase}"):
+                    value = aliases.get(inverse)
+                    if value is not None:
+                        return (value if value in ALLOWED[column] else None), field.group(0)
+                return None, field.group(0)
+            if POSITIVE_SPEC_ANSWER_RE.match(answer):
+                value = aliases[phrase]
+                return (value if value in ALLOWED[column] else None), field.group(0)
+        lowered = pattern.sub(lambda field: field.group("answer"), lowered)
     for phrase, value in aliases.items():
         if re.search(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])", lowered):
-            return value, phrase
+            return (value if value in ALLOWED[column] else None), phrase
     return None, None
 
 
@@ -472,7 +492,7 @@ def build_attributes(
             if value is None and signal is None and description:
                 value, signal = _match_alias(description, column)
 
-        if value is not None:
+        if value is not None and value in allowed_values:
             values[column] = value
         elif signal is not None:
             unmatched.append((column, signal))

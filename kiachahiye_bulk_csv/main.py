@@ -16,6 +16,7 @@ import argparse
 import csv
 import sys
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,7 +29,6 @@ from description_builder import build_description_bundle, mentions_subtype
 from models import CategoryStatus, InputRow, ProductRecord, ResolvedBrand, ResolvedCategory
 from pricing import resolve_prices, resolve_quantity
 from qc_report import (
-    CAT_AC_INVERTER_UNKNOWN,
     CAT_ATTRIBUTE_EMPTY,
     CAT_BRAND_ALFA,
     CAT_BRAND_DIGI,
@@ -37,6 +37,7 @@ from qc_report import (
     CAT_COMPARE_AT_DERIVED,
     CAT_FALLBACK_SKU,
     CAT_HANDLE_DEDUPED,
+    CAT_INACTIVE_TARGET,
     CAT_PRICE_INVERSION,
     CAT_PRODUCT_TYPE_INFERRED,
     CAT_QTY_DEFAULTED,
@@ -44,6 +45,7 @@ from qc_report import (
     CAT_SEO_TITLE_LENGTH,
     CAT_SERIES_SINGLE_ROW,
     CAT_SHORT_DESCRIPTION_THIN,
+    CAT_SIBLING_AMBIGUOUS,
     CAT_SKU_DEDUPED,
     CAT_SUBTYPE_LINE_UNUSED,
     CAT_THIN_DESCRIPTION,
@@ -86,7 +88,7 @@ from title_builder import (
     word_identity,
 )
 from vendor_config import VENDOR_REGISTRY, VendorConfig, description_cell_label, get_vendor, resolve_cell
-from warranty import TERM_LINES, resolve_warranty
+from warranty import TERM_LINES, extract_warranty
 from writers import (
     ALFA_HEADER,
     DIGI_HEADER,
@@ -230,41 +232,27 @@ def resolve_weight(
 def read_rows(
     rows: list[InputRow],
     vendor_cfg: VendorConfig | None = None,
-) -> tuple[list[RowAnalysis], Corpus]:
+) -> PreparedRows:
     """Read the whole sheet once and vote which words name a product line, for which brand.
 
     The vote is a property of the RUN, not of a row: `ECO` is a name because Midea rows stand it
     clear of a part number, and no single row can see that across the sheet.  So every row is read
     here, before any Title is built, and the verdict is handed down to each row.
 
-    Only brand and Product Type are resolved first, because the vote is keyed by both -- and both
-    resolvers are pure, so this pre-pass raises no QC flag and cannot double-count one.  Model,
-    capacity, colour and inverter are deliberately NOT resolved here: the corpus the measurements
-    were made against is the sheet's own columns, and a name must earn its place from what the shop
-    wrote, not from what a later rule guessed.
+    Canonical identity is extracted here and retained for rendering. The corpus still votes from
+    the sheet's own columns: the extracted model and capacity do not claim additional words in
+    its vocabulary. No QC flags are raised until rendering, so preparation cannot double-count one.
     """
-    analyses: list[RowAnalysis] = []
-    for row in rows:
-        brand = resolve_brand(row.brand, row.title, vendor_cfg=vendor_cfg).raw
-        text = f"{row.title}\n{row.description}"
-        product_type = resolve_product_type(
-            resolve_category(row.categories, text, text, vendor_cfg=vendor_cfg),
-            brand,
-            vendor_cfg=vendor_cfg,
-            title=row.title,
-            description=row.description,
-        )[0]
-        analyses.append(
-            analyze_row(
-                row.title.strip(),
-                brand=brand,
-                product_type=product_type,
-                breadcrumb=row.categories.strip(),
-                description=row.description.strip(),
-                vendor_cfg=vendor_cfg,
-            )
+    cores = tuple(_extract_row_core(row, vendor_cfg) for row in rows)
+    analyses = [
+        analyze_row(
+            row.title.strip(), brand=core.effective_brand, product_type=core.product_type,
+            breadcrumb=row.categories.strip(), description=row.description.strip(),
+            vendor_cfg=vendor_cfg, resolved_brand=core.brand,
         )
-    return analyses, build_corpus(analyses)
+        for row, core in zip(rows, cores, strict=True)
+    ]
+    return PreparedRows(analyses, build_corpus(analyses), cores, tuple(rows), vendor_cfg)
 
 
 @dataclass(frozen=True)
@@ -283,6 +271,21 @@ class _RowCore:
     used: ModelExtraction
 
 
+@dataclass(frozen=True)
+class PreparedRows:
+    """Run-owned canonical facts and corpus, retaining the two-value reading interface."""
+
+    analyses: list[RowAnalysis]
+    corpus: Corpus
+    cores: tuple[_RowCore, ...]
+    rows: tuple[InputRow, ...]
+    vendor_cfg: VendorConfig | None
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.analyses
+        yield self.corpus
+
+
 def _extract_row_core(
     row: InputRow,
     vendor_cfg: VendorConfig | None = None,
@@ -296,8 +299,6 @@ def _extract_row_core(
         category,
         effective_brand,
         vendor_cfg=vendor_cfg,
-        title=row.title,
-        description=row.description,
     )
     extraction = without_leading_type_words(extract_model(row.title, row.description))
     capacity = resolve_capacity(text, product_type, brand.normalized, extraction)
@@ -341,11 +342,9 @@ def resolve_row(
 ) -> ProductRecord:
     """Resolve one input row into a single shared ProductRecord.
 
-    Runs twice: first pass counts SKU/Handle collisions, second pass assigns the
-    final unique values.  The two passes share every other rule, so nothing is
-    resolved twice differently.  `analysis` and `corpus` are this row's reading and the run's
-    verdict, both built once by :func:`read_rows` and handed to both passes, so the passes can
-    never print two different series for one row.
+    ``run`` renders once after registering base SKU/Handle collisions. ``analysis``, ``corpus``
+    and the prepared core share the same source reading. The ``finalise=False`` path remains
+    available for standalone legacy callers; the run itself registers bases without rendering.
     """
     text = f"{row.title}\n{row.description}"
 
@@ -393,26 +392,18 @@ def resolve_row(
             platform="alfa",
         )
 
-    if category.digi_path is None:
-        digi_reason = category.digi_reason or category.reason
-        is_ac_silent = (
-            category.digi_status == CategoryStatus.SIBLING_AMBIGUOUS
-            and category.product_type == "Air Conditioner"
-        )
-        flags.flag(
-            row.row_number,
-            row.title,
-            CAT_AC_INVERTER_UNKNOWN if is_ac_silent else CAT_CATEGORY_DIGI,
-            f"{digi_reason} -- DigiMall Category left empty",
-            platform="digi",
-        )
-    if category.alfa_id is None:
-        alfa_reason = category.alfa_reason or category.reason
-        flags.flag(
-            row.row_number, row.title, CAT_CATEGORY_ALFA,
-            f"{alfa_reason} -- Alfa Category left empty",
-            platform="alfa",
-        )
+    for platform, category_id, status, reason, missing_flag in (
+        ("digi", category.digi_path, category.digi_status, category.digi_reason, CAT_CATEGORY_DIGI),
+        ("alfa", category.alfa_id, category.alfa_status, category.alfa_reason, CAT_CATEGORY_ALFA),
+    ):
+        if category_id is None:
+            label = "DigiMall" if platform == "digi" else "Alfa"
+            flags.flag(
+                row.row_number, row.title,
+                {CategoryStatus.SIBLING_AMBIGUOUS: CAT_SIBLING_AMBIGUOUS,
+                 CategoryStatus.INACTIVE_TARGET: CAT_INACTIVE_TARGET}.get(status, missing_flag),
+                f"{reason or category.reason} -- {label} Category left empty", platform=platform,
+            )
 
     if inferred:
         flags.flag(
@@ -438,9 +429,11 @@ def resolve_row(
     digi_cfg = resolve_cell(vendor_cfg, "digi")
     alfa_cfg = resolve_cell(vendor_cfg, "alfa")
     apply_tv_warranty_table = digi_cfg.apply_tv_warranty_table
+    warranty = extract_warranty(text, brand.normalized, product_type, apply_tv_warranty_table)
+    warranty_rows, warranty_headline, warranty_source = list(warranty.rows), warranty.headline, warranty.source
     slots = extract_title_slots(
         effective_brand, used, product_type, row.title, row.description,
-        analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
+        warranty=warranty.title or "", analysis=analysis, corpus=corpus, capacity=capacity, identity=identity,
         apply_tv_warranty_table=apply_tv_warranty_table,
     )
     title_result_digi, seo_title_digi = render_title_and_seo_from_slots(slots, digi_cfg)
@@ -491,12 +484,7 @@ def resolve_row(
             f"{title_value}` (or the other value) on the row to settle it.",
         )
 
-    warranty_rows, warranty_headline, warranty_source = resolve_warranty(
-        text,
-        brand.normalized,
-        product_type,
-        apply_tv_warranty_table=apply_tv_warranty_table,
-    )
+
 
     other_colors = colour_disagreements(text, row.title)
     if other_colors and title_result.color_token:
@@ -569,9 +557,8 @@ def resolve_row(
             "bullet(s) -- fewer than 3 standout facts existed in the source.",
         )
 
-    attribute_title = f"{title_result_digi.title} {slots.inverter}".strip()
     attributes, unmatched = build_attributes(
-        title=attribute_title,
+        title=row.title,
         description=row.description,
         product_type=product_type,
         warranty_headline=warranty_headline,
@@ -765,7 +752,7 @@ def _report_name(word: str, evidence: WordEvidence) -> str:
 def run(
     rows: list[InputRow],
     flags: QCFlagCollector,
-    prepared: tuple[list[RowAnalysis], Corpus] | None = None,
+    prepared: PreparedRows | tuple[list[RowAnalysis], Corpus] | None = None,
     vendor_cfg: VendorConfig | None = None,
 ) -> list[ProductRecord]:
     # The SKU registry upper-cases everything it hands out; the Handle registry
@@ -779,9 +766,10 @@ def run(
     sku_registry = UniqueRegistry(upper_sku_normaliser)
     handle_registry = UniqueRegistry(handle_normaliser)
     if prepared is None:
-        analyses, corpus = read_rows(rows, vendor_cfg=vendor_cfg)
-    else:
-        analyses, corpus = prepared
+        prepared = read_rows(rows, vendor_cfg=vendor_cfg)
+    analyses, corpus = prepared
+    if isinstance(prepared, PreparedRows) and (prepared.rows != tuple(rows) or prepared.vendor_cfg != vendor_cfg):
+        raise ValueError("prepared canonical facts belong to different input rows or vendor configuration")
     # The vote is a fact about THIS sheet: a corpus read from another one would print its brands'
     # names here with no error, and the row-identity check below compares Titles only.  So the
     # reading carries the number of rows it was voted from.
@@ -794,10 +782,10 @@ def run(
     # so Pass 2 can see which models collide without redundantly running title, description,
     # warranty, or attribute builders twice per row.
     sku_prefix = resolve_cell(vendor_cfg, "digi").sku_prefix
-    row_cores: list[_RowCore] = []
-    for row in rows:
-        core = _extract_row_core(row, vendor_cfg=vendor_cfg)
-        row_cores.append(core)
+    row_cores = prepared.cores if isinstance(prepared, PreparedRows) else tuple(
+        _extract_row_core(row, vendor_cfg=vendor_cfg) for row in rows
+    )
+    for core in row_cores:
         sku_registry.register_base(build_sku_token(core.model, prefix=sku_prefix))
         handle_registry.register_base(build_handle_token(core.model, core.product_type))
 
@@ -892,12 +880,13 @@ def print_summary(
     print()
     print("PER-PLATFORM CELL COUNTS")
     if "digi" in scope:
-        print(f"  DigiMall Category empty : {flags.count(CAT_CATEGORY_DIGI):5} rows")
+        print(f"  DigiMall Category empty : {sum(r.category.digi_path is None for r in records):5} rows")
         print(f"  DigiMall Brands empty   : {flags.count(CAT_BRAND_DIGI):5} rows")
     if "alfa" in scope:
-        print(f"  Alfa     Category empty : {flags.count(CAT_CATEGORY_ALFA):5} rows")
+        print(f"  Alfa     Category empty : {sum(r.category.alfa_id is None for r in records):5} rows")
         print(f"  Alfa     Brands empty   : {flags.count(CAT_BRAND_ALFA):5} rows")
-    print(f"  AC rows with unknown inverter status : {flags.count(CAT_AC_INVERTER_UNKNOWN):5} rows")
+    print(f"  Category sibling ambiguities : {flags.count(CAT_SIBLING_AMBIGUOUS):5} rows")
+    print(f"  Category inactive targets    : {flags.count(CAT_INACTIVE_TARGET):5} rows")
 
     # Which Description shape served each file.  Same rule as the lookup tables below: name the cell
     # the reader has to edit, and say nothing about the file this run did not produce.
@@ -1105,7 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
     write_title_sample(args.sample_titles, records)
 
     print_summary(
-        records, flags, args.digi, args.alfa, prepared[1], args.platform, vendor_cfg=vendor_cfg
+        records, flags, args.digi, args.alfa, prepared.corpus, args.platform, vendor_cfg=vendor_cfg
     )
     print()
     print(f"  QC report        : {args.qc}")

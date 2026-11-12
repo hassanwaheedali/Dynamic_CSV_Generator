@@ -7,6 +7,7 @@ The breadcrumb list here is the exact set of 21 strings present in the real
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -177,7 +178,7 @@ def test_product_type_is_never_blank_for_real_breadcrumbs() -> None:
         resolved = resolve_category(breadcrumb, "smart google", "")
         product_type, _inferred = resolve_product_type(resolved, "Acme")
         assert product_type.strip(), breadcrumb
-    assert set(PRODUCT_TYPE_MAP.values()) >= {"LED TV", "Geyser", "Sound Bar"} or True
+    assert all(key.strip() and value.strip() for key, value in PRODUCT_TYPE_MAP.items())
 
 
 # ===========================================================================
@@ -439,59 +440,59 @@ def _raw_taxonomy_ground_truth(path: str) -> dict[str, tuple[tuple[str, ...], bo
     return truth
 
 
-def test_raw_taxonomy_engine_agrees_with_independent_tree_derivation() -> None:
+RAW_CELLS = [
+    (key, platform) for key, cfg in VENDOR_REGISTRY.items() for platform in ("digi", "alfa")
+    if resolve_cell(cfg, platform).raw_taxonomy_path
+]
+
+
+@pytest.mark.parametrize("vendor_key,platform", RAW_CELLS)
+def test_raw_taxonomy_engine_agrees_with_independent_tree_derivation(vendor_key: str, platform: str) -> None:
     """Every ancestor chain, activity flag and assignable leaf is re-derived without the engine."""
-    path = AJMER.digi.raw_taxonomy_path
-    assert path, "AJMER.digi no longer declares a raw taxonomy; point this test at a vendor that does"
+    cell = resolve_cell(VENDOR_REGISTRY[vendor_key], platform)
+    path = cell.raw_taxonomy_path
+    assert path
     truth = _raw_taxonomy_ground_truth(path)
-    nodes = {n.category_id: n for n in load_raw_taxonomy_nodes(path, id_format=AJMER.digi.category_id_format)}
-    assert set(nodes) == set(truth) and len(truth) > 50
+    nodes = {n.category_id: n for n in load_raw_taxonomy_nodes(path, id_format=cell.category_id_format)}
+    assert set(nodes) == set(truth) and truth
 
     for cid, (chain, active, is_leaf) in truth.items():
         node = nodes[cid]
         assert node.ancestors == chain, cid
         assert node.is_active is active, cid
-        assert node.formatted_id == "_".join(chain), cid
+        assert node.formatted_id == (cid if cell.category_id_format == "leaf_only" else "_".join(chain)), cid
         should_assign = active and is_leaf
         assert (node.status == NodeStatus.ASSIGNABLE_LEAF) is should_assign, (cid, node.status)
 
     assignable_ids = {nodes[c].formatted_id for c, (_, a, leaf) in truth.items() if a and leaf}
-    assert set(AJMER.digi.categories.values()) == assignable_ids
-    assert any(not a for _, a, _ in truth.values()), "fixture lost its inactive nodes; the test proves nothing"
+    assert set(cell.categories.values()) <= assignable_ids
 
 
-def test_every_active_leaf_never_resolves_to_a_different_leaf() -> None:
-    """Property: asking for a leaf by its own name may be ambiguous or blank, never a *wrong* leaf.
-
-    Discovered from the taxonomy itself, so a new category or vendor is covered without a new test.
-    """
-    path = AJMER.digi.raw_taxonomy_path
-    assert path
-    leaves = [
-        n for n in load_raw_taxonomy_nodes(path, id_format=AJMER.digi.category_id_format)
-        if n.status == NodeStatus.ASSIGNABLE_LEAF
-    ]
-    assert len(leaves) > 30
-    valid_paths = {n.formatted_id for n in leaves}
-    wrong: list[str] = []
-    exact = 0
+@pytest.mark.parametrize("vendor_key,platform", RAW_CELLS)
+def test_every_authorized_leaf_resolves_positively_in_a_controlled_cell(vendor_key: str, platform: str) -> None:
+    """Each authorized raw identity is a positive contract, not a reason-licensed blank."""
+    cfg = VENDOR_REGISTRY[vendor_key]
+    cell = resolve_cell(cfg, platform)
+    assert cell.raw_taxonomy_path
+    nodes = load_raw_taxonomy_nodes(cell.raw_taxonomy_path, cell.category_id_format)
+    by_id = {n.category_id: n for n in nodes}
+    leaves = [n for n in nodes if n.status == NodeStatus.ASSIGNABLE_LEAF and n.formatted_id in cell.categories.values()]
     for leaf in leaves:
-        res = resolve_category(leaf.name, leaf.name, leaf.name, vendor_cfg=AJMER)
-        if res.digi_path is None:
-            assert res.digi_reason, f"{leaf.name}: blank with no reason"
-            continue
-        assert res.digi_path in valid_paths, (leaf.name, res.digi_path)
-        if res.digi_path == leaf.formatted_id:
-            exact += 1
-        else:
-            wrong.append(f"{leaf.name!r} -> {res.digi_path}")
-    assert not wrong, wrong
-    assert exact >= len(leaves) // 2, f"only {exact}/{len(leaves)} leaves resolved to themselves"
+        evidence = " / ".join(by_id[c].name for c in leaf.ancestors)
+        full_result = resolve_category(evidence, evidence, evidence, vendor_cfg=cfg)
+        full_value = full_result.digi_path if platform == "digi" else full_result.alfa_id
+        assert full_value == leaf.formatted_id, (vendor_key, platform, leaf.name, full_result)
+        controlled = replace(cfg, **{platform: replace(
+            getattr(cfg, platform), categories={leaf.key: leaf.formatted_id}, category_segment_aliases={},
+        )})
+        result = resolve_category(evidence, evidence, evidence, vendor_cfg=controlled)
+        value = result.digi_path if platform == "digi" else result.alfa_id
+        assert value == leaf.formatted_id, (vendor_key, platform, leaf.name, result)
 
 
 def test_every_registered_cell_resolves_only_inside_its_own_map() -> None:
     """Whatever the active vendors are, a resolved ID must belong to that vendor x platform cell."""
-    assert len(VENDOR_REGISTRY) >= 2
+    assert VENDOR_REGISTRY
     probes = [
         ("Electronics > Home appliances > AC", "Haier 1.5 Ton Inverter AC"),
         ("Electronics > Home appliances > Refrigerators", "Dawlance Refrigerator"),

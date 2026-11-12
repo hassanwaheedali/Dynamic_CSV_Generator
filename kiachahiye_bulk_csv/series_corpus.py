@@ -58,6 +58,7 @@ import sku_handle
 import textutils
 import warranty_terms
 from brands import BRAND_ALIASES, BRAND_DISPLAY_MAP, BRANDS_DIGI, resolve_brand
+from models import ResolvedBrand
 
 if TYPE_CHECKING:
     from vendor_config import VendorConfig
@@ -215,12 +216,14 @@ def _vendor_vocabularies(
     """Category words, glued brand words, and multi-word brand phrases from ``vendor_cfg``."""
     if vendor_cfg is None:
         return frozenset(), frozenset(), ()
+    from vendor_config import resolve_cell
+
     cat_words: set[str] = set()
-    cat_words |= _flatten(vendor_cfg.product_type_map)
-    cat_words |= _flatten(vendor_cfg.digi.categories)
-    cat_words |= _flatten(vendor_cfg.alfa.categories)
-    cat_words |= _flatten(vendor_cfg.digi_segment_aliases)
-    cat_words |= _flatten(vendor_cfg.alfa_segment_aliases)
+    for platform in ("digi", "alfa"):
+        cell = resolve_cell(vendor_cfg, platform)
+        cat_words |= _flatten(cell.product_type_map)
+        cat_words |= _flatten(cell.categories)
+        cat_words |= _flatten(cell.category_segment_aliases)
 
     raw_names = (
         set(vendor_cfg.brand_display_map)
@@ -598,6 +601,7 @@ def _vocabulary(
     color: str,
     inverter: str,
     vendor_cfg: VendorConfig | None = None,
+    resolved_brand: ResolvedBrand | None = None,
 ) -> tuple[_Vocabulary, str]:
     """The word sets one text brings to the claim test, built from the row's own columns.
 
@@ -606,7 +610,7 @@ def _vocabulary(
     a Title are the same slots, but a Description states category words the Title never writes, and
     a row may not lend a claim from one column to the other.
     """
-    row_brand_raw = resolve_brand(brand, "", vendor_cfg=vendor_cfg).raw or brand
+    row_brand_raw = (resolved_brand or resolve_brand(brand, "", vendor_cfg=vendor_cfg)).raw or brand
     row_words = _words(row_brand_raw)
     row_context = _words(product_type) | _words(breadcrumb)
     v_cat_words, v_brand_words, v_brand_phrases = _vendor_vocabularies(vendor_cfg)
@@ -828,6 +832,7 @@ def analyze_row(
     inverter: str = "",
     description: str = "",
     vendor_cfg: VendorConfig | None = None,
+    resolved_brand: ResolvedBrand | None = None,
 ) -> RowAnalysis:
     """Read one row once: normalise its shape, let the slots claim it, return the residue.
 
@@ -849,6 +854,7 @@ def analyze_row(
         "color": color,
         "inverter": inverter,
         "vendor_cfg": vendor_cfg,
+        "resolved_brand": resolved_brand,
     }
     vocabulary, row_brand_raw = _vocabulary(pieces=tuple(_pieces(normalized)[0]), **row_inputs)
     read = _read(normalized, vocabulary)

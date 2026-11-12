@@ -247,6 +247,32 @@ def test_one_warranty_line_naming_no_part_prints_one_row(
     failures = _gate(result, tmp_path / "input.csv")
     assert [name for name in failures if "repeats a label" in name] == []
     assert _failure(failures, "every Description, Short Description") == ""
+    assert _failure(failures, "Attribute_Warranty and the warranty table agree") == ""
+
+
+def test_audit_rejects_owned_but_semantically_wrong_category(pipeline: Pipeline, tmp_path: Path) -> None:
+    result = pipeline([HAIER_FREEZER], KIACHAHIYE)
+    _rewrite_cell(result["digi_path"], "Category", KIACHAHIYE.digi.categories["microwaves"])
+    audit.main([
+        "--vendor", "kiachahiye", "--input", str(tmp_path / "input.csv"),
+        "--digi", str(result["digi_path"]), "--alfa", str(result["alfa_path"]), "--qc", str(result["qc_path"]),
+    ])
+    checks = {name: (ok, detail) for ok, name, detail in audit.RESULTS}
+    assert _failure(checks, "every DigiMall category is semantically compatible")
+
+
+def test_audit_rejects_an_inapplicable_allowed_attribute(pipeline: Pipeline, tmp_path: Path) -> None:
+    result = pipeline([HAIER_FREEZER])
+    _rewrite_cell(result["digi_path"], "Attribute_Air Conditioner Type", "Split")
+    failures = _gate(result, tmp_path / "input.csv")
+    assert any(not ok and "not applicable" in name for name, (ok, _detail) in failures.items())
+
+
+def test_audit_reads_warranty_boundaries_from_an_html_source_table(pipeline: Pipeline, tmp_path: Path) -> None:
+    row = {**HAIER_FREEZER, "Description": "<table><tr><td>Warranty</td><td>.5 Years</td></tr></table>"}
+    result = pipeline([row])
+    failures = _gate(result, tmp_path / "input.csv")
+    assert _failure(failures, "Attribute_Warranty and the warranty table agree") == ""
 
 
 def test_the_alfa_gate_ignores_a_digmall_only_defect(

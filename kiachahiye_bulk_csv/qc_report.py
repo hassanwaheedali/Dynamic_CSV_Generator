@@ -46,7 +46,7 @@ CAT_SEO_TITLE_LENGTH = "seo_title_length"
 CAT_TITLE_DESCRIPTION_CONFLICT = "title_description_conflict"
 
 # Pulls the column and the raw string back out of an "attribute_empty" message.
-_ATTRIBUTE_GAP_RE = re.compile(r"^(Attribute_\w+): raw signal '([^']*)'")
+_ATTRIBUTE_GAP_RE = re.compile(r"^(Attribute_[^:]+): raw signal '([^']*)'")
 
 # Flags that genuinely need a human decision, versus notes that simply record a
 # deterministic default (a source with no weight column, the fixed quantity

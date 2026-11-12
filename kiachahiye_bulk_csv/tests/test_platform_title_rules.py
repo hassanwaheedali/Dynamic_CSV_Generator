@@ -10,6 +10,7 @@ Fully dynamic and config-driven:
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -121,7 +122,9 @@ def test_all_registered_vendors_dynamically_adhere_to_platform_config(
         include_warranty=digi_cell.include_warranty,
         formula=digi_cell.title_formula,
         expected_inverter_word="Inverter",
-        include_color=digi_cell.include_color,
+        include_color=digi_cell.include_color and "deep freezer" not in {
+            t.lower() for t in digi_cell.omit_title_color_categories
+        },
     )
 
     # Validate Alfa platform dynamically against resolved alfa_cell
@@ -132,7 +135,9 @@ def test_all_registered_vendors_dynamically_adhere_to_platform_config(
         include_warranty=alfa_cell.include_warranty,
         formula=alfa_cell.title_formula,
         expected_inverter_word="Inverter",
-        include_color=alfa_cell.include_color,
+        include_color=alfa_cell.include_color and "deep freezer" not in {
+            t.lower() for t in alfa_cell.omit_title_color_categories
+        },
     )
 
 
@@ -608,7 +613,7 @@ def test_registered_formulas_render_independently_for_every_cell(
     }
     if formula in expected:
         assert actual["Title"] == expected[formula]
-    assert actual["Title"]
+    assert {"tcl", "55", "inch", "led", "tv", "55p735"} <= set(re.findall(r"[a-z0-9]+", actual["Title"].lower()))
     assert actual["SEO Title"] == _TV_SEO
 
 

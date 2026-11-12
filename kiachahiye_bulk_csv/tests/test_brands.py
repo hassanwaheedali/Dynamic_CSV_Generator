@@ -91,3 +91,15 @@ def test_fixed_adversarial_spellings_from_the_real_sheet() -> None:
     for near_miss in ("Dawlance Pak", "Haierr", "TCL Pakistan Ltd", "Greee"):
         res = resolve_brand(near_miss)
         assert res.digi_id is None and res.alfa_id is None, near_miss
+
+
+@pytest.mark.parametrize("vendor_key", list(VENDOR_REGISTRY))
+def test_every_configured_alias_normalizes_and_resolves_independently(vendor_key: str) -> None:
+    cfg = VENDOR_REGISTRY[vendor_key]
+    for spelling, target in cfg.brand_aliases.items():
+        result = resolve_brand(spelling, vendor_cfg=cfg)
+        assert result.normalized == target, (vendor_key, spelling)
+        for platform, attr in (("digi", "digi_id"), ("alfa", "alfa_id")):
+            table = resolve_cell(cfg, platform).brands
+            expected = table.get(target)
+            assert getattr(result, attr) == expected, (vendor_key, platform, spelling)

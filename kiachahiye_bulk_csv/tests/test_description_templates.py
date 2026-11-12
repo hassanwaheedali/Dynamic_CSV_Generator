@@ -74,8 +74,8 @@ WITH_NOISE = [
 ]
 
 SHEETS = [
-    Path("data/input/Products.csv"),
-    Path("data/input/Step 1.csv"),
+    Path(__file__).resolve().parent.parent / "data/input/Products.csv",
+    Path(__file__).resolve().parent.parent / "data/input/Step 1.csv",
 ]
 
 

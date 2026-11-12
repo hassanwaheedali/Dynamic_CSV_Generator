@@ -252,7 +252,7 @@ def test_run_executes_heavy_builders_once_per_row(monkeypatch) -> None:
     orig_slots = pipeline_main.extract_title_slots
     orig_desc = pipeline_main.build_description_bundle
     orig_attr = pipeline_main.build_attributes
-    orig_warranty = pipeline_main.resolve_warranty
+    orig_warranty = pipeline_main.extract_warranty
 
     def spy_slots(*args, **kwargs):
         counts["slots"] += 1
@@ -273,7 +273,7 @@ def test_run_executes_heavy_builders_once_per_row(monkeypatch) -> None:
     monkeypatch.setattr(pipeline_main, "extract_title_slots", spy_slots)
     monkeypatch.setattr(pipeline_main, "build_description_bundle", spy_desc)
     monkeypatch.setattr(pipeline_main, "build_attributes", spy_attr)
-    monkeypatch.setattr(pipeline_main, "resolve_warranty", spy_warranty)
+    monkeypatch.setattr(pipeline_main, "extract_warranty", spy_warranty)
 
     rows = [
         InputRow(

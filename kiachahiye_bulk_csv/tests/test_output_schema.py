@@ -59,7 +59,7 @@ def test_neither_header_contains_the_other_platforms_columns() -> None:
     for column in digi_only:
         assert column not in ALFA_HEADER
     for column in ALFA_HEADER:
-        assert column in DIGI_HEADER or column not in DIGI_HEADER
+        assert column in DIGI_HEADER
 
 
 def test_no_suffixed_column_names_from_the_old_single_file_design() -> None:

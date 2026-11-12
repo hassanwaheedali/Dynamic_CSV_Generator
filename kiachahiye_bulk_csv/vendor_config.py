@@ -237,6 +237,30 @@ def resolve_cell(vendor_cfg: VendorConfig | None, platform: str) -> ResolvedCell
     )
 
 
+def resolve_shared_product_type_map(vendor_cfg: VendorConfig | None) -> Mapping[str, str]:
+    """Merge source-identity vocabulary; explicit cell declarations must agree.
+
+    Product Type is shared by both output files. Cell maps may add vocabulary and
+    override inherited vendor values, but conflicting explicit names are invalid.
+    Marketplace category keys or IDs never participate in this policy.
+    """
+    result = dict(resolve_cell(vendor_cfg, "digi").product_type_map)
+    result.update(resolve_cell(vendor_cfg, "alfa").product_type_map)
+    if vendor_cfg is not None:
+        explicit = [
+            c.product_type_map for c in (vendor_cfg.digi, vendor_cfg.alfa) if c.product_type_map is not None
+        ]
+        if len(explicit) == 2:
+            conflicts = {
+                key for key in explicit[0].keys() & explicit[1].keys() if explicit[0][key] != explicit[1][key]
+            }
+            if conflicts:
+                raise ConfigError(f"shared Product Type has conflicting cell overrides: {sorted(conflicts)}")
+        for mapping in explicit:
+            result.update(mapping)
+    return MappingProxyType(result)
+
+
 _SHARED_BRAND_ALIASES: dict[str, str] = {
     "superasia": "super asia",
     "xiaomi": "xioami",
@@ -574,6 +598,7 @@ def _description_template_errors(cfg: VendorConfig, platform: str) -> list[str]:
 def validate_vendor_cfg(cfg: VendorConfig) -> None:
     """Fail loudly if required fields are absent or obviously wrong."""
     errors: list[str] = []
+    resolve_shared_product_type_map(cfg)
     if not cfg.sku_prefix or not cfg.sku_prefix.replace("-", "").isalnum():
         errors.append(f"sku_prefix {cfg.sku_prefix!r} must be a non-empty alphanumeric string")
     if not cfg.digi.vendor_name.strip():

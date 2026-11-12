@@ -15,6 +15,24 @@ import unicodedata
 
 _WS_RE = re.compile(r"\s+")
 
+NEGATIVE_SPEC_ANSWER_RE = re.compile(
+    r"^(?:no|false|off|disabled|unsupported|not\s+(?:supported|available|enabled|applicable)|none|n/?a)\b",
+    re.IGNORECASE,
+)
+POSITIVE_SPEC_ANSWER_RE = re.compile(r"^(?:yes|true|on|enabled|supported|available)\b", re.IGNORECASE)
+
+
+def primary_feature_evidence(text: str) -> str:
+    """Exclude accessory controls from evidence about the appliance's technology."""
+    text = re.sub(
+        r"(?im)^[ \t]*(?:[•*-]\s*)?(?:remote(?:\s+control)?|sensor|control)"
+        r"(?:\s+(?:type|features?))?\s*:[^\n\r]*", " ", text,
+    )
+    return re.sub(
+        r"\bsmart(?:\s+(?:led\s+)?tv)?\s+(?:remote(?:\s+control)?|control|sensor)s?\b",
+        " ", text, flags=re.IGNORECASE,
+    )
+
 
 def normalize(text: str) -> str:
     """Lowercase, strip, collapse internal whitespace (cached-lookup key form)."""
@@ -192,6 +210,7 @@ def strip_markup_keep_lines(text: str) -> str:
     Plain text passes through untouched, which is the case for every row of the
     current sheet.
     """
+    text = re.sub(r"</t[dh]>\s*<t[dh]\b[^>]*>", "\t", text, flags=re.IGNORECASE)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(
         r"</?(?:p|div|li|ul|ol|tr|h[1-6]|table|thead|tbody)\b[^>]*>", "\n", text,

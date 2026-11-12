@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from models import CategoryStatus, ResolvedCategory
+from textutils import NEGATIVE_SPEC_ANSWER_RE, POSITIVE_SPEC_ANSWER_RE, primary_feature_evidence
 
 if TYPE_CHECKING:
     from vendor_config import ResolvedCellConfig, VendorConfig
@@ -719,21 +720,22 @@ def _word_in(phrase: str, text: str) -> bool:
     return bool(phrase and re.search(rf"\b{re.escape(phrase)}\b", text))
 
 
-def _match_table_key(segment: str, table_keys: list[str]) -> str | None:
-    """Deterministic whole-word key match against a flat category dictionary."""
+def _match_table_keys(segment: str, table_keys: list[str]) -> list[str]:
+    """Return equally specific matches without allowing declaration order to decide."""
     if segment in table_keys:
-        return segment
+        return [segment]
     folded = _singularise(segment)
-    for key in table_keys:
-        if _singularise(key) == folded:
-            return key
-    for key in sorted(table_keys, key=len, reverse=True):
-        if _word_in(key, segment) or _word_in(_singularise(key), folded):
-            return key
-    for key in sorted(table_keys, key=len, reverse=True):
-        if _word_in(segment, key) or _word_in(folded, _singularise(key)):
-            return key
-    return None
+    exact = [k for k in table_keys if _singularise(k) == folded]
+    if exact:
+        return sorted(exact)
+    for matches in (
+        [k for k in table_keys if _word_in(k, segment) or _word_in(_singularise(k), folded)],
+        [k for k in table_keys if _word_in(segment, k) or _word_in(folded, _singularise(k))],
+    ):
+        if matches:
+            longest = max(map(len, matches))
+            return sorted(k for k in matches if len(k) == longest)
+    return []
 
 
 def _split_primary_secondary(text: str) -> tuple[str, str]:
@@ -751,7 +753,9 @@ def _scan_concepts_in_zone(text: str) -> tuple[tuple[str, ...], frozenset[str]]:
     """Scan a text zone longest-phrase-first, masking matched character spans."""
     if not text or not text.strip():
         return (), frozenset()
-    norm = re.sub(r"\s+", " ", text.strip().lower())
+    norm = re.sub(r"\s+", " ", primary_feature_evidence(text).strip().lower())
+    # Display/control technology describes a feature, not the appliance carrying it.
+    norm = re.sub(r"\b(?:led|oled|qled)\s+(?:display|indicator|light)s?\b", " ", norm)
     consumed = [False] * len(norm)
     matched_with_pos: list[tuple[int, str]] = []
     traits: set[str] = set()
@@ -784,8 +788,34 @@ def _extract_traits(
     """Extract bound polarity and subtype traits without allowing negative terms to trigger positive."""
     traits: set[str] = set()
     combined = f"{leaf_segment}\n{primary_text}\n{full_text}".strip()
+    combined = primary_feature_evidence(combined)
     if not combined:
         return frozenset()
+
+    # Bind labelled boolean values before any positive keyword can consume their label.
+    # A negative steam function does not by itself establish a dry-iron subtype.
+    boolean_axes = (
+        (r"inverter", "ac_type:inverter", "ac_type:non_inverter"),
+        (r"smart(?:\s+(?:led\s+)?tv)?", "tv_type:smart", "tv_type:basic"),
+        (r"steam", "iron_type:steam", "iron_type:non_steam"),
+    )
+    bound_axes: set[str] = set()
+    for label, positive, negative in boolean_axes:
+        pattern = re.compile(
+            rf"\b{label}(?:[ \t]+(?:function|technology|support))?[ \t]*[:=\t][ \t]*"
+            r"(?P<answer>[^\n\r]*)", re.IGNORECASE,
+        )
+        def bind_answer(match: re.Match[str], positive: str = positive, negative: str = negative) -> str:
+            answer = match.group("answer").strip()
+            if NEGATIVE_SPEC_ANSWER_RE.match(answer):
+                traits.add(negative)
+            elif POSITIVE_SPEC_ANSWER_RE.match(answer):
+                traits.add(positive)
+            else:
+                return answer
+            bound_axes.add(positive.partition(":")[0])
+            return " "
+        combined = pattern.sub(bind_answer, combined)
 
     # 1. AC Inverter / Non-Inverter & Floor Standing
     masked_ac = combined
@@ -826,7 +856,7 @@ def _extract_traits(
         if _STEAM_IRON_TRAIT_RE.search(iron_scope):
             # Ignore "garment steamer" when checking for steam iron trait
             cleaned_iron = re.sub(r"\bgarment\s+steamers?\b", " ", iron_scope, flags=re.IGNORECASE)
-            if _STEAM_IRON_TRAIT_RE.search(cleaned_iron):
+            if _STEAM_IRON_TRAIT_RE.search(cleaned_iron) and "iron_type" not in bound_axes:
                 traits.add("iron_type:steam")
 
     # 5. Mixer / Blender subtypes
@@ -905,6 +935,12 @@ def extract_product_concept(
     primary_title_zone, secondary_title_zone = _split_primary_secondary(title)
     title_concepts, title_phrase_traits = _scan_concepts_in_zone(primary_title_zone)
     sec_concepts, _ = _scan_concepts_in_zone(secondary_title_zone)
+    structured_type = re.search(
+        r"(?im)^[ \t]*(?:[•*-]\s*)?product[ \t]+type[ \t]*[:=\t][ \t]*([^\n\r]+)", description,
+    )
+    specified_concepts, _ = _scan_concepts_in_zone(structured_type.group(1)) if structured_type else ((), frozenset())
+    if specified_concepts:
+        title_concepts = specified_concepts
 
     # Reconcile Breadcrumb Concepts with Title Primary Concepts:
     # 1. If breadcrumb had no specific appliance concept (empty or only structural parents),
@@ -938,13 +974,17 @@ def extract_product_concept(
         resolved_concepts = leaf_concepts
 
     active_concept_set = frozenset(resolved_concepts)
+    bound_title_traits = _extract_traits(primary_title_zone)
+    bound_title_axes = {
+        t.partition(":")[0] for t in bound_title_traits
+        if t.endswith((":non_inverter", ":basic", ":non_steam"))
+    }
     title_traits = (
-        leaf_traits
-        | title_phrase_traits
+        frozenset(t for t in title_phrase_traits if t.partition(":")[0] not in bound_title_axes)
         | _extract_traits(
             primary_text=primary_title_zone,
             full_text="",
-            leaf_segment=leaf_segment_str,
+            leaf_segment="",
             active_concepts=active_concept_set,
         )
     )
@@ -952,18 +992,25 @@ def extract_product_concept(
     desc_traits = (
         _extract_traits(
             primary_text="",
-            full_text=description,
+            full_text="\n".join(_split_primary_secondary(line)[0] for line in description.splitlines()),
             leaf_segment="",
             active_concepts=active_concept_set,
         )
         if description
         else frozenset()
     )
-    # Generic axis-precedence rule: a trait axis explicitly stated in the Breadcrumb/Title
-    # is authoritative and is never overridden by marketing comparisons in Description prose.
-    all_traits = title_traits | frozenset(
-        t for t in desc_traits if t.partition(":")[0] not in title_axes
+    spec_traits = _extract_traits(
+        "\n".join(_split_primary_secondary(line)[0] for line in description.splitlines() if re.search(r"[:=\t]", line)),
+        active_concepts=active_concept_set,
     )
+    breadcrumb_traits = leaf_traits | _extract_traits(leaf_segment_str, active_concepts=active_concept_set)
+    # Source title, labelled specifications, source folder, then prose. A folder's
+    # positive keyword must not erase an explicit negative specification.
+    all_traits = title_traits
+    occupied_axes = set(title_axes)
+    for evidence_traits in (spec_traits, breadcrumb_traits, desc_traits):
+        all_traits |= frozenset(t for t in evidence_traits if t.partition(":")[0] not in occupied_axes)
+        occupied_axes |= {t.partition(":")[0] for t in evidence_traits}
 
     if resolved_concepts and resolved_concepts[0] in CONCEPT_PRODUCT_TYPES:
         canonical_pt = CONCEPT_PRODUCT_TYPES[resolved_concepts[0]]
@@ -1138,6 +1185,17 @@ def load_raw_taxonomy_nodes(
             status = NodeStatus.DEPLETED_BRANCH
 
         concepts, req_traits, rank = own_analysis[cid]
+        # A leaf's form factor does not erase its parent's technology constraints.
+        inherited_axes: dict[str, set[str]] = {}
+        for ancestor_id in ancestors:
+            ancestor_traits = own_analysis[ancestor_id][1]
+            for axis in {t.partition(":")[0] for t in ancestor_traits}:
+                inherited_axes[axis] = {t for t in ancestor_traits if t.partition(":")[0] == axis}
+        own_axes = {t.partition(":")[0] for t in req_traits}
+        req_traits = req_traits | frozenset(
+            t for axis, values in inherited_axes.items() if axis not in own_axes for t in values
+        )
+        rank = max((_TRAIT_RANKS.get(t, 0) for t in req_traits), default=0)
         # If a child node states only a subtype trait (e.g. "Inverters", "Non-Invertors",
         # "Floor Standing" under "Air Conditioners"), inherit concepts from its nearest ancestor.
         if not concepts:
@@ -1171,17 +1229,22 @@ def load_raw_taxonomy_nodes(
     return tuple(nodes)
 
 
-@lru_cache(maxsize=8)
 def load_raw_taxonomy_leaf_map(
     raw_path: str, id_format: str = "ancestor_chain"
 ) -> dict[str, str]:
-    """Return {normalized_key: formatted_id} for all active assignable leaves in raw_path."""
+    """Independent declarations backed by immutable nodes; repeated names keep every ID."""
     nodes = load_raw_taxonomy_nodes(raw_path, id_format=id_format)
-    return {
-        node.key: node.formatted_id
-        for node in nodes
-        if node.status == NodeStatus.ASSIGNABLE_LEAF
-    }
+    by_id = {n.category_id: n for n in nodes}
+    leaves = [n for n in nodes if n.status == NodeStatus.ASSIGNABLE_LEAF]
+    result: dict[str, str] = {}
+    for node in leaves:
+        key = node.key
+        if sum(n.key == key for n in leaves) > 1:
+            key = " / ".join(by_id[cid].key for cid in node.ancestors)
+        if key in result:
+            key = f"{key} [{node.category_id}]"
+        result[key] = node.formatted_id
+    return result
 
 
 def _compile_cell_taxonomy(cell: ResolvedCellConfig) -> TaxonomyTree:
@@ -1195,66 +1258,13 @@ def _compile_cell_taxonomy(cell: ResolvedCellConfig) -> TaxonomyTree:
         raw_nodes = load_raw_taxonomy_nodes(
             cell.raw_taxonomy_path, id_format=cell.category_id_format
         )
-        seen_ids: set[str] = set()
-        for rnode in raw_nodes:
-            node_to_add = rnode
-            seen_ids.add(rnode.formatted_id)
-            if rnode.status == NodeStatus.ASSIGNABLE_LEAF:
-                override_id = authorized_map.get(rnode.key)
-                if override_id is None and rnode.formatted_id in authorized_ids:
-                    override_id = rnode.formatted_id
-                if override_id is None:
-                    # Leaf exists in platform tree but is not authorized in this cell's categories map
-                    continue
-                if override_id != rnode.formatted_id:
-                    node_to_add = TaxonomyNode(
-                        category_id=rnode.category_id,
-                        name=rnode.name,
-                        key=rnode.key,
-                        parent_id=rnode.parent_id,
-                        handle=rnode.handle,
-                        is_active=rnode.is_active,
-                        ancestors=rnode.ancestors,
-                        formatted_id=override_id,
-                        status=rnode.status,
-                        concepts=rnode.concepts,
-                        required_traits=rnode.required_traits,
-                        trait_rank=rnode.trait_rank,
-                    )
-                seen_ids.add(override_id)
-            nodes.append(node_to_add)
-            if node_to_add.status == NodeStatus.ASSIGNABLE_LEAF:
-                by_key[node_to_add.key] = node_to_add
-
-        # Include any custom flat entries in cell.categories that were added outside raw_taxonomy_path
-        for key, val in authorized_map.items():
-            norm_key = key.strip().lower()
-            if val in seen_ids:
-                # Point alias key at the existing assignable leaf node
-                for existing in nodes:
-                    if existing.formatted_id == val and existing.status == NodeStatus.ASSIGNABLE_LEAF:
-                        by_key[norm_key] = existing
-                        break
-                continue
-            concepts, req_traits, rank = _node_concepts_and_traits(norm_key)
-            if not concepts:
-                concepts = frozenset({f"dynamic:{_singularise(norm_key)}"})
-            custom_node = TaxonomyNode(
-                category_id=val,
-                name=key,
-                key=norm_key,
-                parent_id=None,
-                handle="",
-                is_active=True,
-                ancestors=tuple(val.split("_")),
-                formatted_id=val,
-                status=NodeStatus.ASSIGNABLE_LEAF,
-                concepts=concepts,
-                required_traits=req_traits,
-                trait_rank=rank,
-            )
-            nodes.append(custom_node)
-            by_key[norm_key] = custom_node
+        # Authorize exact raw identities. A declaration cannot change a node's
+        # ID, ancestry, activity or semantic meaning by assigning it a new label.
+        nodes = [n for n in raw_nodes if n.status != NodeStatus.ASSIGNABLE_LEAF or n.formatted_id in authorized_ids]
+        assignable = {n.formatted_id: n for n in nodes if n.status == NodeStatus.ASSIGNABLE_LEAF}
+        for key, value in authorized_map.items():
+            if value in assignable:
+                by_key[key.strip().lower()] = assignable[value]
         return TaxonomyTree(nodes=tuple(nodes), by_key=by_key)
 
     # Flat dictionary compilation (e.g. KCC.digi, KCC.alfa, AJMER.alfa)
@@ -1325,16 +1335,27 @@ def _resolve_for_cell(
                 if n.status == NodeStatus.ASSIGNABLE_LEAF
                 and (n.concepts & candidate_node.concepts)
             ]
-            if len(sibling_leaves) == 1 and not sibling_leaves[0].required_traits:
+            if (
+                len(sibling_leaves) == 1 and not sibling_leaves[0].required_traits
+                and (not target_concepts or target_concepts <= candidate_node.concepts)
+            ):
                 direct_alias_node = sibling_leaves[0]
             break
         if not target_concepts:
-            matched_k = _match_table_key(seg, table_keys)
-            if matched_k is not None and matched_k in tree.by_key:
-                direct_alias_node = tree.by_key[matched_k]
+            matches = _match_table_keys(seg, table_keys)
+            matched_nodes = {tree.by_key[k].formatted_id: tree.by_key[k] for k in matches}
+            if len(matched_nodes) > 1:
+                return None, None, CategoryStatus.SIBLING_AMBIGUOUS, f"ambiguous {platform_label} category keys: {matches}"
+            if len(matched_nodes) == 1:
+                direct_alias_node = next(iter(matched_nodes.values()))
                 break
 
     if direct_alias_node is not None:
+        if not direct_alias_node.required_traits <= traits:
+            return (
+                None, None, CategoryStatus.SIBLING_AMBIGUOUS,
+                f"missing subtype signal for {platform_label} category {direct_alias_node.name!r}",
+            )
         return (
             direct_alias_node.formatted_id,
             direct_alias_node.key,
@@ -1370,6 +1391,9 @@ def _resolve_for_cell(
         for n in matching_nodes
         if n.status in (NodeStatus.ASSIGNABLE_LEAF, NodeStatus.INACTIVE_NODE)
     ]
+    active_candidates = [n for n in leaf_candidates if n.status == NodeStatus.ASSIGNABLE_LEAF]
+    if active_candidates:
+        leaf_candidates = active_candidates
     depleted_candidates = [
         n for n in matching_nodes if n.status == NodeStatus.DEPLETED_BRANCH
     ]
@@ -1560,69 +1584,30 @@ def resolve_product_type(
     concepts resolve deterministically to their canonical Product Type with
     ``was_inferred=False``.
     """
-    from vendor_config import resolve_cell  # noqa: PLC0415
-
-    digi_cell = resolve_cell(vendor_cfg, "digi")
-    alfa_cell = resolve_cell(vendor_cfg, "alfa")
-    pt_map = digi_cell.product_type_map
-    alfa_cats = alfa_cell.categories
-    digi_cats = digi_cell.categories
+    from vendor_config import resolve_shared_product_type_map  # noqa: PLC0415
 
     concept = extract_product_concept(
-        category.raw,
-        title=title,
-        description=description,
-        source_brand=source_brand,
-    )
+        category.raw, title=title, description=description, source_brand=source_brand,
+    ) if title or description else None
+    canonical = concept.canonical_product_type if concept else category.product_type
+    inferred = concept.inferred if concept else category.product_type_inferred
+    if not canonical:
+        concept = extract_product_concept(category.raw, source_brand=source_brand)
+        canonical, inferred = concept.canonical_product_type, concept.inferred
 
-    # When Title/Description narrows a multi-concept umbrella breadcrumb (e.g. "Iron & Garment steamer"
-    # narrowed to "Garment Steamer"), return the narrowed canonical Product Type directly.
-    if (
-        not concept.inferred
-        and len(concept.breadcrumb_concepts) > 1
-        and len(concept.primary_concepts) == 1
-    ):
-        return concept.canonical_product_type, False
+    pt_map = resolve_shared_product_type_map(vendor_cfg)
 
-    # 1. Check explicit cell product_type_map overrides first
-    if pt_map:
-        if category.matched_key and category.matched_key in pt_map:
-            return pt_map[category.matched_key], False
-        if category.alfa_id:
-            for key, value in alfa_cats.items():
-                if value == category.alfa_id and key in pt_map:
-                    return pt_map[key], False
-        if category.digi_path:
-            for key, value in digi_cats.items():
-                if value == category.digi_path and key in pt_map:
-                    return pt_map[key], False
-        segments = [
-            s.strip().lower() for s in _BREADCRUMB_DELIM_RE.split(category.raw) if s.strip()
-        ]
-        if segments:
-            leaf_seg = segments[-1]
-            if leaf_seg in pt_map:
-                return pt_map[leaf_seg], False
-            folded = _singularise(leaf_seg)
-            if folded in pt_map:
-                return pt_map[folded], False
-
-    # 2. Canonical ProductConcept resolution (independent of category mapping tables)
-    if not concept.inferred:
-        return concept.canonical_product_type, False
-
-    if category.product_type and not category.product_type_inferred:
-        return category.product_type, False
-
-    if pt_map:
-        segments = [
-            s.strip().lower() for s in _BREADCRUMB_DELIM_RE.split(category.raw) if s.strip()
-        ]
-        for seg in reversed(segments[:-1]):
-            if seg in pt_map:
-                return pt_map[seg], False
-            folded = _singularise(seg)
-            if folded in pt_map:
-                return pt_map[folded], False
-
-    return _fallback_inferred_product_type(category.raw, source_brand, title=title), True
+    segments = [s.strip().lower() for s in _BREADCRUMB_DELIM_RE.split(category.raw) if s.strip()]
+    for key in [canonical.lower(), *reversed(segments)]:
+        key_concepts, _ = _scan_concepts_in_zone(key)
+        # A combined source folder cannot rename a narrowed intrinsic identity.
+        if len(key_concepts) > 1:
+            continue
+        if not inferred and key_concepts and canonical not in {
+            CONCEPT_PRODUCT_TYPES.get(c) for c in key_concepts
+        }:
+            continue
+        for candidate in (key, _singularise(key)):
+            if candidate in pt_map:
+                return pt_map[candidate], False
+    return canonical, inferred

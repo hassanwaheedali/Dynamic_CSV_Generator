@@ -158,8 +158,10 @@ def has_explicit_non_numeric_term(warranty_text: str) -> bool:
     """True when the row states ``N/A`` / ``Lifetime`` rather than a duration."""
     return _EXPLICIT_TERM_RE.search(warranty_text) is not None
 
+_DURATION_NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
 _DURATION_RE = re.compile(
-    r"\b(\d{1,2})\s*-?\s*(years?|yrs?|months?|mos?)\b", re.IGNORECASE
+    rf"(?<![\w.\d-])({_DURATION_NUMBER}(?:\s*(?:[-–]|to)\s*{_DURATION_NUMBER})?)"
+    r"\s*-?\s*(years?|yrs?|months?|mos?)\b", re.IGNORECASE
 )
 # Matches a warranty clause line, keeping whatever the shop wrote in front of the word
 # "warranty" -- "Motor Warranty: 10" must arrive with "Motor" intact, or the part label is lost,
@@ -169,10 +171,13 @@ _DURATION_RE = re.compile(
 # stops at a full stop and at 40 characters for the same reason -- an opening sentence about the
 # product names its parts in passing, and is not a label.
 _WARRANTY_VALUE_RE = re.compile(
-    r"(?im)^[ \t]*(?:[-•*]\s*)?(?P<label>[^.\n\r:]{0,40}?warrant(?:y|ies))"
-    r"\s*:[ \t]+(?P<value>[^\n\r]+)"
+    r"(?im)^[ \t]*(?:[-•*]\s*)?(?P<label>(?:[^.\n\r:]|\.(?=\d)){0,40}?warrant(?:y|ies))"
+    r"(?:[ \t]*:[ \t]+|\t[ \t]*)(?P<value>[^\n\r]+)"
 )
-_WARRANTY_SENTENCE_RE = re.compile(r"(?i)([^.\n\r]{0,120}warrant[^.\n\r]{0,120})")
+_WARRANTY_SENTENCE_RE = re.compile(
+    r"(?i)((?:[^.\n\r]|\.(?=\d)){0,120}warrant"
+    r"(?:[^.\n\r]|\.(?=\d)){0,120})"
+)
 #: The ways the shop writes "this warranty never expires", spelled once for every reader.
 _LIFETIME_PHRASE = r"lifetime|life\s*time|full\s+life"
 # Terms that ARE the answer, even though they carry no number: the row is
@@ -337,7 +342,7 @@ def parse_warranty_parts(warranty_text: str) -> list[StatedPart]:
     """Split ``"3 Years Compressor, 1 Year General Warranty"`` into its parts."""
     parts: list[StatedPart] = []
     for raw_chunk in re.split(r"[,;]|\s\+\s|\band\b", warranty_text):
-        chunk = raw_chunk.strip(" .")
+        chunk = raw_chunk.strip().removesuffix(".")
         if not chunk:
             continue
         duration_match = _DURATION_RE.search(chunk)
@@ -379,22 +384,25 @@ def _label_for(qualifier: str) -> str:
     return f"{cleaned.title()} Warranty"
 
 
-def build_stated_rows(warranty_text: str) -> list[SpecRow]:
+def build_stated_rows(warranty_text: str, parts: list[StatedPart] | None = None) -> list[SpecRow]:
     """Rows for the Description table: parts kept separate, never collapsed."""
     rows: list[SpecRow] = []
     seen: set[tuple[str, str]] = set()
-    for part in parse_warranty_parts(warranty_text):
-        if not part.duration:
+    for part in parse_warranty_parts(warranty_text) if parts is None else parts:
+        explicit = _EXPLICIT_TERM_RE.search(part.raw)
+        value = part.duration or (explicit.group(0) if explicit else None)
+        if value is None:
             continue
-        label = _label_for(part.part)
-        key = (label.lower(), part.duration.lower())
+        qualifier = _EXPLICIT_TERM_RE.sub("", part.part) if part.duration is None else part.part
+        label = _label_for(qualifier)
+        key = (label.lower(), value.lower())
         # The same fact written twice -- once in the opening sentence, once as a bullet -- is one
         # row.  Two identical rows made the table's duplicate-label rename print
         # `Compressor Warranty Warranty`.
         if key in seen:
             continue
         seen.add(key)
-        rows.append(SpecRow(label=label, value=part.duration, is_warranty=True))
+        rows.append(SpecRow(label=label, value=value, is_warranty=True))
     if not rows:
         # No parsable duration -- keep the text as found rather than inventing one.
         return [SpecRow(label="Warranty", value=warranty_text.strip(), is_warranty=True)]
@@ -413,48 +421,53 @@ def headline_duration(parts: list[StatedPart]) -> str | None:
     return dated[0].duration
 
 
+@dataclass(frozen=True)
+class WarrantyFacts:
+    """Warranty evidence extracted once for description, attributes and title."""
+
+    rows: tuple[SpecRow, ...]
+    headline: str | None
+    source: str
+    title: str | None
+
+
+def extract_warranty(
+    source_text: str, brand_key: str, product_type: str,
+    apply_tv_warranty_table: bool | None = None,
+) -> WarrantyFacts:
+    """Resolve stated and reference terms once without losing the source duration."""
+    stated = find_stated_warranty_text(source_text)
+    parts = parse_warranty_parts(stated) if stated else []
+    entries = lookup_terms(brand_key, product_type, source_text, apply_tv_warranty_table=apply_tv_warranty_table)
+    pair = headline_part_and_duration(parts)
+    title = None
+    if pair:
+        part_name, duration = pair
+        if part_name in ("Warranty", "") and entries:
+            ref_part, ref_duration = entries[0]
+            def clean(value: str) -> str:
+                return re.sub(r"(?i)\b(year|month)s\b", r"\1", value).lower()
+            if clean(duration) == clean(ref_duration) or ref_part.lower() in source_text.lower():
+                part_name = ref_part
+        title = format_main_warranty(part_name, duration)
+    elif entries and not (stated and has_explicit_non_numeric_term(stated)):
+        title = format_main_warranty(entries[0][0], entries[0][1])
+
+    if stated and (pair or has_explicit_non_numeric_term(stated)):
+        return WarrantyFacts(tuple(build_stated_rows(stated, parts)), headline_duration(parts), "stated", title)
+    if entries is not None:
+        rows = tuple(SpecRow(label=part, value=duration, is_warranty=True) for part, duration in entries)
+        return WarrantyFacts(rows, entries[0][1] if entries else None, f"reference-{brand_key}", title)
+    return WarrantyFacts(tuple(build_stated_rows(stated, parts)) if stated else (), None, "stated" if stated else "none", title)
+
+
 def resolve_warranty(
-    source_text: str,
-    brand_key: str,
-    product_type: str,
+    source_text: str, brand_key: str, product_type: str,
     apply_tv_warranty_table: bool | None = None,
 ) -> tuple[list[SpecRow], str | None, str]:
-    """Return ``(rows, headline_duration, source)`` for one product.
-
-    Order of authority:
-
-    1. a duration the row itself states  -> used, and the table is ignored;
-    2. an explicit non-numeric term (``N/A``, ``Lifetime``) -> kept exactly as
-       the row states it, because that IS the answer;
-    3. anything else -- no warranty text, or text with no duration in it
-       (``"Warranty: Official Haier Brand Warranty"``) -> the brand's reference
-       table, which is the authoritative terms for that brand and product type;
-    4. otherwise the row's own wording is kept so nothing is lost.
-    """
-    stated = find_stated_warranty_text(source_text)
-    if stated:
-        rounds = parse_warranty_parts(stated)
-        headline = headline_duration(rounds)
-        if headline:
-            return build_stated_rows(stated), headline, "stated"
-        if has_explicit_non_numeric_term(stated):
-            return build_stated_rows(stated), None, "stated"
-
-    entries = lookup_terms(
-        brand_key,
-        product_type,
-        source_text,
-        apply_tv_warranty_table=apply_tv_warranty_table,
-    )
-    if entries is None:
-        if stated:
-            return build_stated_rows(stated), None, "stated"
-        return [], None, "none"
-    rows = [
-        SpecRow(label=part, value=duration, is_warranty=True)
-        for part, duration in entries
-    ]
-    return rows, (entries[0][1] if entries else None), f"reference-{brand_key}"
+    """Return description rows, attribute duration and provenance for legacy callers."""
+    facts = extract_warranty(source_text, brand_key, product_type, apply_tv_warranty_table)
+    return list(facts.rows), facts.headline, facts.source
 
 
 def _headline_part_name(part_name: str) -> str:
@@ -526,33 +539,4 @@ def resolve_main_warranty(
     apply_tv_warranty_table: bool | None = None,
 ) -> str | None:
     """Return the formatted main warranty phrase for the title, or ``None``."""
-    entries = lookup_terms(
-        brand_key,
-        product_type,
-        source_text,
-        apply_tv_warranty_table=apply_tv_warranty_table,
-    )
-
-    stated = find_stated_warranty_text(source_text)
-    if stated:
-        rounds = parse_warranty_parts(stated)
-        headline_pair = headline_part_and_duration(rounds)
-        if headline_pair:
-            part_name, dur = headline_pair
-            # If stated headline part is generic ('Warranty'), but the reference
-            # table has a specific major component (e.g. Motor or Compressor):
-            if part_name in ("Warranty", "") and entries:
-                ref_part, ref_dur = entries[0]
-                dur_clean = re.sub(r"(?i)\b(year|month)s\b", r"\1", dur)
-                ref_dur_clean = re.sub(r"(?i)\b(year|month)s\b", r"\1", ref_dur)
-                if dur_clean.lower() == ref_dur_clean.lower() or ref_part.lower() in source_text.lower():
-                    part_name = ref_part
-            return format_main_warranty(part_name, dur)
-        if has_explicit_non_numeric_term(stated):
-            return None
-
-    if entries:
-        return format_main_warranty(entries[0][0], entries[0][1])
-
-    return None
-
+    return extract_warranty(source_text, brand_key, product_type, apply_tv_warranty_table).title

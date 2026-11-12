@@ -31,10 +31,17 @@ from collections import Counter
 from pathlib import Path
 
 import config as CONFIG
-from attributes import ALLOWED, match_warranty
+from attributes import ALLOWED, SCOPE, match_warranty
 from brands import resolve_brand
-from categories import resolve_category, resolve_product_type
+from categories import (
+    NodeStatus,
+    extract_product_concept,
+    load_raw_taxonomy_nodes,
+    resolve_category,
+    resolve_product_type,
+)
 from description_builder import TemplateShapeError
+from models import SpecRow
 from qc_report import CAT_ATTRIBUTE_EMPTY
 from sku_handle import extract_model
 from textutils import (
@@ -44,9 +51,10 @@ from textutils import (
     parse_weight_cell,
     parse_weight_unit,
     pick_weight_columns,
+    strip_markup_keep_lines,
 )
 from title_builder import INVERTER_CONCEPT_CATEGORIES, model_text_for_title, without_leading_type_words
-from vendor_config import VENDOR_REGISTRY, VendorConfig, get_vendor, resolve_cell
+from vendor_config import VENDOR_REGISTRY, ResolvedCellConfig, VendorConfig, get_vendor, resolve_cell
 from warranty import resolve_warranty
 from writers import ALFA_HEADER, DIGI_HEADER, template_for_cell
 
@@ -71,6 +79,49 @@ def source_weight(rec: dict[str, str], text: str) -> tuple[str, str]:
     return found if found is not None else ("", "")
 
 RESULTS: list[tuple[bool, str, str]] = []
+
+
+def category_assignment_problem(
+    cell: ResolvedCellConfig, value: str, source_concepts: frozenset[str], traits: frozenset[str],
+) -> str:
+    """Validate an emitted destination directly, independently of the category resolver."""
+    if not value:
+        return ""
+    if value not in cell.categories.values():
+        return "destination is not authorized in this cell"
+    if cell.raw_taxonomy_path:
+        nodes = [
+            n for n in load_raw_taxonomy_nodes(cell.raw_taxonomy_path, cell.category_id_format)
+            if n.formatted_id == value
+        ]
+        if len(nodes) != 1 or nodes[0].status != NodeStatus.ASSIGNABLE_LEAF:
+            return "destination is not an active assignable raw-taxonomy leaf"
+        node = nodes[0]
+        if source_concepts and not source_concepts <= node.concepts:
+            return "destination describes a different product concept"
+        if not node.required_traits <= traits:
+            return "destination requires unsupported subtype evidence"
+    else:
+        targets = [
+            extract_product_concept(key).primary_concepts
+            for key, target in cell.categories.items() if target == value
+        ]
+        known_targets = [frozenset(t) for t in targets if t]
+        if source_concepts and known_targets and not any(source_concepts <= t for t in known_targets):
+            return "destination describes a different product concept"
+    return ""
+
+
+def warranty_fact_present(wanted: SpecRow, rows: list[SpecRow]) -> bool:
+    """Compare warranty facts across supported label suffixes and merged duration rows."""
+    def label_key(value: str) -> str:
+        return re.sub(r"\s*warranty$", "", value.strip(), flags=re.IGNORECASE).lower()
+
+    return any(
+        label_key(row.label) == label_key(wanted.label)
+        and wanted.value.lower().strip() in {v.lower().strip() for v in row.value.split(",")}
+        for row in rows
+    )
 
 
 def check(ok: bool, name: str, detail: str = "") -> None:
@@ -219,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
 
     with args.input.open(encoding="utf-8-sig", newline="") as handle:
         source = list(csv.DictReader(handle))
+    for original in source:
+        original["Title"] = strip_markup_keep_lines(original.get("Title", "")).strip()
+        original["Description"] = strip_markup_keep_lines(original.get("Description", ""))
     # A file this run does not upload is a file this run does not open: it may be stale, half-
     # written or simply absent, and none of that belongs in the contract of the sheet he is
     # uploading.  A file it DOES upload must be there -- a missing one is named as a failure,
@@ -427,6 +481,21 @@ def main(argv: list[str] | None = None) -> int:
             all(r["Brands"].isdigit() or r["Brands"] == "" for r in file_rows),
             f"{file_label} Brands is numeric or empty",
         )
+        semantic_cell = cell_configs["digi" if file_label == "DigiMall" else "alfa"]
+        semantic_bad: list[str] = []
+        for number, (output, original) in enumerate(zip(file_rows, source, strict=True), start=2):
+            concept = extract_product_concept(
+                original.get("Categories", ""), original.get("Title", ""), original.get("Description", ""),
+            )
+            problem = category_assignment_problem(
+                semantic_cell, output["Category"], frozenset(concept.primary_concepts), concept.traits,
+            )
+            if problem:
+                semantic_bad.append(f"row {number}: {problem}")
+        check(
+            not semantic_bad, f"every {file_label} category is semantically compatible and assignable",
+            str(semantic_bad[:4]),
+        )
 
     # ----------------------------------------------------------- description
     for file_label, _header, file_rows, _text in files:
@@ -522,6 +591,9 @@ def main(argv: list[str] | None = None) -> int:
                         allowed = ALLOWED.get(column)
                         if allowed is not None and value not in allowed:
                             note(f"{column} value not in ALLOWED")
+                        scope = SCOPE.get(column)
+                        if scope is not None and r["Product Type"] not in scope:
+                            note(f"{column} not applicable to {r['Product Type']}")
 
             # price sanity -- the pipeline now derives a strike-through whenever the sheet's own
             # Regular Price could not be one, so a published row whose Compare At does not sit above
@@ -797,7 +869,7 @@ def main(argv: list[str] | None = None) -> int:
             rec["Categories"], text, text, vendor_cfg=vendor_cfg
         )
         product_type, _ = resolve_product_type(
-            category, resolved_brand.raw, vendor_cfg=vendor_cfg
+            category, resolved_brand.raw, vendor_cfg=vendor_cfg, title=rec["Title"], description=rec["Description"],
         )
         warranty_rows, headline, _src = resolve_warranty(
             text,
@@ -835,10 +907,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 continue
             for spec in warranty_rows:
-                if not any(
-                    sr.label == spec.label and sr.value == spec.value
-                    for sr in extracted_specs
-                ):
+                if not warranty_fact_present(spec, extracted_specs):
                     prefix = f"{file_label} " if len(files) > 1 else ""
                     warranty_bad.append(f"{prefix}{file_row['Title'][:34]} warranty row {spec.label!r} missing")
     check(not warranty_bad,

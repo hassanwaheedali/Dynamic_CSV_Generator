@@ -159,8 +159,8 @@ def test_alfa_cells_never_leave_the_stores_own_lists() -> None:
     Ajmer's rows in KiaChahiye's categories and brands.
     """
     sheets = [
-        Path("data/input/Products.csv"),
-        Path("data/input/Step 1.csv"),
+        Path(__file__).resolve().parent.parent / "data/input/Products.csv",
+        Path(__file__).resolve().parent.parent / "data/input/Step 1.csv",
     ]
     for sheet in sheets:
         if not sheet.exists():  # unit run on a checkout without the shop's sheets
@@ -1128,7 +1128,8 @@ def test_customizing_config_values_dynamically_updates_pipeline_outputs(
             AJMER.digi,
             vendor_name="Custom Digi Store",
             brands={"gree": 7771},
-            categories={**AJMER.digi.categories, "inverters": "999_888_777"},
+            categories={"ac inverter": "999_888_777"},
+            raw_taxonomy_path=None,
             include_inverter=True,
             include_warranty=True,
             include_color=True,
