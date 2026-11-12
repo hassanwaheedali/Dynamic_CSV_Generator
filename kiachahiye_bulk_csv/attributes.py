@@ -30,7 +30,12 @@ from __future__ import annotations
 
 import re
 
-from textutils import NEGATIVE_SPEC_ANSWER_RE, POSITIVE_SPEC_ANSWER_RE, primary_feature_evidence
+from textutils import (
+    NEGATIVE_SPEC_ANSWER_RE,
+    POSITIVE_SPEC_ANSWER_RE,
+    primary_feature_evidence,
+    strip_markup_keep_lines,
+)
 
 # ===========================================================================
 #  EDIT HERE -- the closed vocabulary for every Attribute_* column
@@ -334,7 +339,11 @@ NUMERIC_PATTERNS: dict[str, str] = {
     "Attribute_Air Conditioner Capacity": r"(?<![\d.])(?P<n1>\d+(?:\.\d+)?)\s*(?:-\s*(?P<n2>\d+(?:\.\d+)?)\s*)?(?P<unit>Ton)\b",
     "Attribute_Display Size": r"(?<![\d.])(?P<n1>\d+(?:\.\d+)?)\s*(?:-\s*(?P<n2>\d+(?:\.\d+)?)\s*)?-?\s?(?P<unit>inch|inches|\")\b",
     "Attribute_Watts": r"(?<![\d.])(?P<n1>\d+(?:\.\d+)?)\s*(?:-\s*(?P<n2>\d+(?:\.\d+)?)\s*)?(?P<unit>W)\b",
-    "Attribute_Volt": r"(?<![\d.])(?P<n1>\d+(?:\.\d+)?)\s*(?:[-\u2013/]\s*(?P<n2>\d+(?:\.\d+)?)\s*)?(?P<unit>V)\b",
+    "Attribute_Volt": (
+        r"(?<![\d.])(?P<n1>\d+(?:\.\d+)?)\s*"
+        r"(?:(?:V\s*)?(?P<range_sep>[-–—~∼/]|to)\s*(?P<n2>\d+(?:\.\d+)?)\s*)?"
+        r"(?P<unit>V)\b"
+    ),
     "Attribute_Geyser Capacity": (
         r"(?<![\d.])(?P<n1>\d+(?:\.\d+)?)\s*(?:-\s*(?P<n2>\d+(?:\.\d+)?)\s*)?"
         r"(?P<unit>Ltr|Litre|Liter|L|gal|Gallon)\b" + _RATE_GUARD
@@ -347,7 +356,11 @@ _LABEL_HINTS: dict[str, tuple[str, ...]] = {
     "Attribute_Air Conditioner Capacity": ("capacity", "tonnage"),
     "Attribute_Display Size": ("screen size", "display size", "size"),
     "Attribute_Watts": ("power", "rating power", "watt"),
-    "Attribute_Volt": ("voltage",),
+    "Attribute_Volt": (
+        "voltage", "input voltage", "rated voltage", "operating voltage",
+        "supply voltage", "mains voltage", "power supply", "power supply voltage",
+        "power input", "power supply source",
+    ),
     "Attribute_Geyser Capacity": ("capacity",),
 }
 
@@ -362,10 +375,12 @@ def _allowed_lookup(column: str) -> dict[str, str]:
 
 
 def _candidate_tokens(text: str, column: str) -> list[str]:
-    """Ordered candidate tokens: label-hinted lines first, then everything else."""
+    """Prefer labelled numeric facts; voltage requires an explicit product-level field."""
     pattern = NUMERIC_PATTERNS.get(column)
     if pattern is None:
         return []
+    if column == "Attribute_Volt":
+        return _product_voltage_tokens(text, pattern)
     hints = _LABEL_HINTS.get(column, ())
     preferred: list[str] = []
     other: list[str] = []
@@ -394,10 +409,56 @@ def _tokens_in(text: str, pattern: str) -> list[str]:
         second = groups.get("n2")
         unit = (groups.get("unit") or "").strip()
         if second:
-            tokens.append(f"{number}-{second} {unit}".strip())
+            if groups.get("range_sep"):
+                # Voltage ranges/alternatives retain their actual separator and
+                # any unit on the first bound; only whitespace may be collapsed.
+                bounds = text[match.start():match.start("unit")].strip()
+                tokens.append(f"{bounds} {unit}")
+            else:
+                tokens.append(f"{number}-{second} {unit}".strip())
         else:
             tokens.append(f"{number} {unit}".strip())
     return tokens
+
+
+def _product_voltage_tokens(text: str, pattern: str) -> list[str]:
+    """Read whole-product supply fields without borrowing a component's voltage.
+
+    Exact field labels distinguish Voltage from Pump Voltage or Voltage Regulator.
+    Only the first voltage in a field is its primary value; parenthetical component
+    ratings cannot rescue a primary value outside the marketplace vocabulary.
+    """
+    labels = "|".join(re.escape(label) for label in _LABEL_HINTS["Attribute_Volt"])
+    field_re = re.compile(
+        r"^[ \t]*(?:(?:â€¢|[•·*–—-])[ \t]*)?"
+        rf"(?P<label>{labels})(?:[ \t]*\([ \t]*V[ \t]*\))?"
+        r"(?:[ \t]*/[ \t]*frequency)?[ \t]*(?:[:=][ \t]*|\t[ \t]*)(?P<value>[^\r\n]*)$",
+        re.IGNORECASE,
+    )
+    candidates: list[str] = []
+    for line in strip_markup_keep_lines(text).splitlines():
+        field = field_re.match(line)
+        if field is not None:
+            value = field.group("value").strip()
+            first_number = re.search(r"\d", value)
+            if first_number is None:
+                continue
+            voltage = re.search(pattern, value, re.IGNORECASE)
+            if voltage is None and "voltage" not in field.group("label").lower():
+                # Power Input/Supply may instead state watts; that is not a
+                # missing match in the voltage vocabulary.
+                continue
+            prefix = value[:voltage.start()].strip() if voltage is not None else ""
+            supply_mode = re.fullmatch(
+                r"(?:AC|DC)(?:\s*/\s*(?:AC|DC))?[\s:~∼-]*|[~∼]\s*", prefix, re.IGNORECASE,
+            )
+            if voltage is None or voltage.start() != first_number.start() or (prefix and supply_mode is None):
+                # Keep unsupported primary wording for QC instead of skipping
+                # ahead to a later, recognizable component rating.
+                candidates.append(value)
+            else:
+                candidates.append(_tokens_in(value, pattern)[0])
+    return candidates
 
 
 def _match_numeric(text: str, column: str) -> tuple[str | None, str | None]:
@@ -405,6 +466,8 @@ def _match_numeric(text: str, column: str) -> tuple[str | None, str | None]:
     candidates = _candidate_tokens(text, column)
     if not candidates:
         return None, None
+    if column == "Attribute_Volt" and len({_collapse_ws(c).lower() for c in candidates}) > 1:
+        return None, ", ".join(candidates)
     lookup = _allowed_lookup(column)
     for candidate in candidates:
         hit = lookup.get(_collapse_ws(candidate).lower())

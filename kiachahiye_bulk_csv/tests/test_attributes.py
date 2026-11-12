@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 import main as pipeline_main
 from attributes import ALLOWED, SCOPE, build_attributes
 from models import InputRow
 from qc_report import QCFlagCollector
 from sku_handle import clean_model_code
-from vendor_config import KIACHAHIYE
+from tests.conftest import Pipeline
+from vendor_config import KIACHAHIYE, VENDOR_REGISTRY
 
 
 def attributes_for(
@@ -61,6 +64,142 @@ def test_range_is_never_rounded_into_a_single_value() -> None:
     )
     assert "Attribute_Volt" not in values
     assert any(column == "Attribute_Volt" for column, _signal in unmatched)
+
+
+@pytest.mark.parametrize("prefix", ["", "• ", "â€¢ ", "- "])
+def test_product_voltage_range_never_falls_back_to_a_component(prefix: str) -> None:
+    values, gaps = attributes_for(
+        "Dawlance DBD-1034 Water Dispenser",
+        f"{prefix}Refill System: Auto Refill Technology with 12V Pump (0.41 A)\n"
+        f"{prefix}Voltage: 220-240 V\n{prefix}Frequency: 50 Hz",
+        "Water Dispenser",
+    )
+    assert "Attribute_Volt" not in values
+    assert ("Attribute_Volt", "220-240 V") in gaps
+
+
+@pytest.mark.parametrize("label", [
+    "Voltage", "Input Voltage", "Rated Voltage", "Operating Voltage", "Power Supply",
+    "Rated Voltage (V)", "Rated Voltage / Frequency", "Power Input", "Power supply source",
+])
+def test_product_voltage_outranks_component_voltage(label: str) -> None:
+    values, _gaps = attributes_for(
+        "Dawlance Water Dispenser", f"Refill System: 12V Pump\n{label}: 220 V", "Water Dispenser",
+    )
+    assert values["Attribute_Volt"] == "220V"
+
+
+@pytest.mark.parametrize("description", [
+    "Refill System: Auto Refill Technology with 12V Pump (0.41 A)",
+    "Pump Voltage: 12V\nDisplay Voltage: 120V",
+    "Voltage Regulator: 12V",
+    "Voltage: Not specified\nRefill System: 12V Pump",
+    "Voltage: Not specified (12V pump)",
+    "Voltage: Pump 12V; product supply unspecified",
+])
+def test_missing_product_voltage_stays_blank_despite_component_signals(description: str) -> None:
+    values, _gaps = attributes_for("Dawlance Water Dispenser", description, "Water Dispenser")
+    assert "Attribute_Volt" not in values
+
+
+def test_unlisted_product_voltage_is_reported_without_selecting_an_allowed_component() -> None:
+    values, gaps = attributes_for(
+        "Dawlance Water Dispenser", "Voltage: 230V\nRefill System: 12V Pump", "Water Dispenser",
+    )
+    assert "Attribute_Volt" not in values
+    assert ("Attribute_Volt", "230 V") in gaps
+
+
+def test_component_voltage_in_the_product_voltage_field_cannot_replace_the_primary_value() -> None:
+    values, gaps = attributes_for(
+        "Dawlance Water Dispenser", "Voltage: 230V (internal pump: 12V)", "Water Dispenser",
+    )
+    assert "Attribute_Volt" not in values
+    assert ("Attribute_Volt", "230 V") in gaps
+
+
+def test_a_real_12v_product_is_still_allowed() -> None:
+    values, _gaps = attributes_for("Portable Fan", "Voltage: 12V", "Fan")
+    assert values["Attribute_Volt"] == "12V"
+
+
+def test_dc_product_voltage_with_the_unit_in_the_label_still_matches() -> None:
+    values, _gaps = attributes_for("Solar DC Air Cooler", "Rated Voltage (V): DC-12V", "Air Cooler")
+    assert values["Attribute_Volt"] == "12V"
+
+
+@pytest.mark.parametrize("voltage", ["220~240V", "100V~240V", "220–240V", "110V/220V"])
+def test_the_whole_product_voltage_expression_is_preserved(voltage: str) -> None:
+    values, gaps = attributes_for("Water Dispenser", f"Voltage: {voltage}\nRefill System: 12V Pump", "Water Dispenser")
+    assert "Attribute_Volt" not in values
+    assert any(column == "Attribute_Volt" and raw.replace(" ", "") == voltage for column, raw in gaps)
+
+
+def test_an_unrecognized_primary_voltage_unit_never_promotes_a_later_component() -> None:
+    values, gaps = attributes_for("Water Dispenser", "Voltage: 230 volts (pump 12V)", "Water Dispenser")
+    assert "Attribute_Volt" not in values
+    assert any(column == "Attribute_Volt" and "230" in raw for column, raw in gaps)
+
+
+@pytest.mark.parametrize("label", ["Power Input", "Power Supply"])
+def test_a_power_field_in_watts_does_not_become_a_voltage_gap(label: str) -> None:
+    values, gaps = attributes_for("Microwave Oven", f"{label}: 1000W", "Microwave Oven")
+    assert "Attribute_Volt" not in values
+    assert not any(column == "Attribute_Volt" for column, _raw in gaps)
+
+
+def test_conflicting_product_voltage_fields_are_reported_instead_of_guessed() -> None:
+    values, gaps = attributes_for("Appliance", "Voltage: 220V\nRated Voltage: 240V", "Iron")
+    assert "Attribute_Volt" not in values
+    assert any(column == "Attribute_Volt" and "220" in raw and "240" in raw for column, raw in gaps)
+
+
+def test_an_explicitly_allowed_product_voltage_range_can_be_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(ALLOWED, "Attribute_Volt", [*ALLOWED["Attribute_Volt"], "220-240V"])
+    values, gaps = attributes_for(
+        "Dawlance Water Dispenser", "Refill System: 12V Pump\nVoltage: 220-240V", "Water Dispenser",
+    )
+    assert values["Attribute_Volt"] == "220-240V"
+    assert not any(column == "Attribute_Volt" for column, _raw in gaps)
+
+
+def test_removing_the_product_voltage_from_allowed_never_promotes_a_component(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(ALLOWED, "Attribute_Volt", ["12V"])
+    values, gaps = attributes_for(
+        "Water Dispenser", "Voltage: 220V\nRefill System: 12V Pump", "Water Dispenser",
+    )
+    assert "Attribute_Volt" not in values
+    assert ("Attribute_Volt", "220 V") in gaps
+
+
+def test_repeated_identical_product_voltage_fields_are_consistent() -> None:
+    values, _gaps = attributes_for("Iron", "Voltage: 220V\nRated Voltage: 220 V", "Iron")
+    assert values["Attribute_Volt"] == "220V"
+
+
+def test_table_cells_preserve_the_product_voltage_label() -> None:
+    values, _gaps = attributes_for(
+        "Water Dispenser",
+        "<table><tr><td>Refill System</td><td>12V Pump</td></tr>"
+        "<tr><td>Voltage</td><td>220V</td></tr></table>",
+        "Water Dispenser",
+    )
+    assert values["Attribute_Volt"] == "220V"
+
+
+@pytest.mark.parametrize("vendor_key", list(VENDOR_REGISTRY))
+def test_html_source_product_voltage_does_not_publish_pump_voltage(pipeline: Pipeline, vendor_key: str) -> None:
+    result = pipeline([{
+        "Title": "Dawlance DBD-1034 Glass Door Bottom Load Water Dispenser Champagne",
+        "Description": "â€¢ Refill System: Auto Refill Technology with 12V Pump (0.41 A)<br>"
+                       "â€¢ Voltage: 220-240 V<br>â€¢ Compressor Warranty: 5 Years",
+        "Categories": "Water Dispenser", "Brand": "Dawlance", "Sell Price": "10000", "Original Price": "11000",
+    }], VENDOR_REGISTRY[vendor_key])
+    assert result["digi"][0]["Attribute_Volt"] == ""
+    assert any(
+        flag.category == "attribute_empty" and "Attribute_Volt:" in flag.message and "220-240" in flag.message
+        for flag in result["flags"].flags
+    )
 
 
 def test_whitespace_only_collapse_allows_12_kg_to_match_12KG() -> None:

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 ### Fixed
+- Product voltage attributes no longer borrow pump or other component voltages
+  when the whole-product supply voltage is missing, ambiguous or outside DigiMall's
+  allowed list. Explicit source voltage ranges remain intact and produce QC gaps.
 - Product identity and taxonomy assignments now use source evidence independently
   of marketplace IDs, reject invalid raw destinations, and retain ambiguity when
   subtype evidence is missing.

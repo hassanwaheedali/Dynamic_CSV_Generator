@@ -556,6 +556,13 @@ make `audit.py` and `thin_report.py` read rows through the template's `extract()
   an allowed string. Whitespace inside a token is ignored (`12 kg` = `12KG`), but
   units and punctuation are never rewritten — so `16 Cu.Ft` does **not** match
   `16 Cu Ft`, and a range like `220-240V` matches neither `220V` nor `240V`.
+* **Voltage describes the whole product.** `Attribute_Volt` reads explicit supply
+  fields such as `Voltage`, `Input Voltage`, `Rated Voltage`, `Operating Voltage`
+  or `Power Supply`. Component ratings such as `Refill System: 12V Pump` and
+  `Pump Voltage: 12V` are not fallback candidates. An unlisted product voltage
+  or conflicting product-level fields leave the attribute blank with a QC gap;
+  missing product-level voltage stays blank. A product explicitly rated `12V`
+  can still publish `12V` when it is in the allowed list.
 * **A flow rate is never a capacity.** `2.5 L/H` is a cooling rate, not a 2.5-litre
 tank: the volume patterns refuse a `L`/`Ltr`/`Litre` unit immediately followed by
 `/` or `per`, so a litre-per-hour phrasing can never be published as a tank size.
