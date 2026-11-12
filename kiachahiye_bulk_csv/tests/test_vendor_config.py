@@ -768,7 +768,7 @@ def test_series_corpus_respects_active_vendor_vocabulary_without_cross_store_lea
 
 
 def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workflow(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Missing mappings never borrow IDs across stores/platforms/globals, leave CSV blank, and keep QC/UI."""
     # 1. Every store x platform cell resolves ONLY its own configured IDs, never another store's or global tables.
@@ -799,6 +799,11 @@ def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workfl
 
     # 2. End-to-end verification of missing mappings (e.g. Ajmer.digi and unmapped brand/category on any vendor):
     # CSV fields stay blank (""), CSV generation succeeds, QC flags and UI summary table are emitted, and audit passes.
+    configured = VENDOR_REGISTRY["ajmer"]
+    missing_cfg = dataclasses.replace(configured, digi=dataclasses.replace(
+        configured.digi, brands={key: value for key, value in configured.digi.brands.items() if key != "gree"},
+    ))
+    monkeypatch.setitem(VENDOR_REGISTRY, "ajmer", missing_cfg)
     sheet = tmp_path / "unmapped.csv"
     with sheet.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle, quoting=csv.QUOTE_ALL)
@@ -828,7 +833,7 @@ def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workfl
             ]
         )
 
-    # Row 1: Gree is missing from AJMER.digi.brands, while Inverter AC resolves from AJMER.digi's raw taxonomy.
+    # Row 1: Gree is deliberately missing from this fixture's DigiMall map; AC still resolves from its taxonomy.
     # Row 2: Baking & Flavours exists in AJMER.alfa ("11856"), but NOT in AJMER.digi (leaves Category blank).
     digi_out = tmp_path / "ajmer_digi.csv"
     alfa_out = tmp_path / "ajmer_alfa.csv"
@@ -857,7 +862,7 @@ def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workfl
         ajmer_alfa_rows = list(csv.DictReader(f))
 
     # Row 1: Ajmer.digi and Ajmer.alfa resolve strictly from their own configured maps.
-    assert ajmer_digi_rows[0]["Brands"] == str(AJMER.digi.brands.get("gree", ""))
+    assert ajmer_digi_rows[0]["Brands"] == ""
     assert ajmer_digi_rows[0]["Category"] == (
         AJMER.digi.categories.get("ac inverter")
         or AJMER.digi.categories.get("inverters")
@@ -874,7 +879,7 @@ def test_strict_negative_brand_and_category_isolation_and_missing_mapping_workfl
 
     # Row 2: Ajmer.digi leaves Category blank when unmapped (never borrowing from Ajmer.alfa);
     #        Ajmer.alfa resolves its own configured IDs.
-    assert ajmer_digi_rows[1]["Brands"] == str(AJMER.digi.brands.get("gree", ""))
+    assert ajmer_digi_rows[1]["Brands"] == ""
     assert ajmer_digi_rows[1]["Category"] == AJMER.digi.categories.get("baking & flavours", "")
     assert ajmer_alfa_rows[1]["Brands"] == str(AJMER.alfa.brands.get("gree", ""))
     assert ajmer_alfa_rows[1]["Category"] == AJMER.alfa.categories.get("baking & flavours", "")

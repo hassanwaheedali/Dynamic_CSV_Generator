@@ -15,6 +15,8 @@
   four digits, excluding stated measurements; ambiguous numbers remain unresolved.
 
 ### Added
+- Ajmer DigiMall brand mappings for Gree, EcoStar, Haier and Dawlance, supplied
+  by the user and maintained separately from the engine remediation.
 - The file menu in `run_pipeline.bat` and `run_ui.py` lists CSVs from all
   `data/input` subfolders, with folder paths to distinguish matching filenames.
 

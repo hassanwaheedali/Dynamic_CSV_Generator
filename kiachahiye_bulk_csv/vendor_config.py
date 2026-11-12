@@ -504,7 +504,10 @@ AJMER = VendorConfig(
         raw_taxonomy_path="data/digimall_taxonomy.json",
         category_id_format="underscore_path",
         brands={
-            # TODO: fill from DigiMall admin panel for Ajmer's seller account
+            "gree": 3790,
+            "ecostar": 3789,
+            "haier": 3759,
+            "dawlance": 3755,
         },
         categories=category_tables.load_raw_taxonomy_leaf_map("data/digimall_taxonomy.json"),
     ),

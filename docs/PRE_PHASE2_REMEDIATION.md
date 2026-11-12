@@ -76,3 +76,18 @@ The supplied repository taxonomy snapshot contains 116 nodes: 64 assignable leav
 | Ajmer DigiMall seller literal, Data Electronics | User-confirmed | The user confirmed the exact seller-name literal. This confirmation does not independently establish live taxonomy validity or seller category permissions. |
 
 The passing tests and CSV audits support engineering correctness against the supplied snapshot and configured permissions. They do not establish that the same category assignments are currently authorized for live marketplace uploads. Final review must report engineering-remediation readiness separately from live-upload readiness; the latter remains unverified on the evidence collected here.
+
+## User-supplied configuration at commit preparation
+
+The engine remediation is committed separately as `575b752` (`fix: stabilize product evidence before Phase 2`). The user added the following Ajmer DigiMall brand declarations and confirmed that these additions were theirs:
+
+| Brand key | Declared DigiMall ID |
+|---|---:|
+| gree | 3790 |
+| ecostar | 3789 |
+| haier | 3759 |
+| dawlance | 3755 |
+
+These entries are maintained in a separate configuration commit. They are user-supplied declarations, not independently verified live seller brand permissions. The repository suite and real-data audits are rerun against the updated configuration before committing it. The missing-brand workflow test explicitly removes Gree from a temporary configuration, so it continues testing a real negative case when production mappings are populated.
+
+Revalidation with these declarations passed **891 tests with zero skips** in 166.79 seconds (`pytest-config-commit-final.log`), the 68 focused vendor/brand cases, mypy and Ruff. All six real-data generation runs and their **58/58** audits passed again (`precommit-generation.log` and `generation-final/summary.json`).
